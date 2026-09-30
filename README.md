@@ -25,6 +25,22 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
 - ib-2-3-android: iOS apps (UE3) on Android — again the opposite direction.
 - No project found that runs APKs natively on an iPhone.
 
+## Status
+
+- **`apkscan`** (host tool, `make test`): reads the arm64-v8a `.so` files of an APK and counts
+  the instructions that cannot run unmodified on iOS — Linux `svc #0` syscalls, `tpidr_el0`
+  thread-pointer access, and x18 shadow-call-stack pushes/pops. These are exactly the sites
+  the loader will have to rewrite or trap. Run `tools/apkscan.py app.apk`.
+
+## Distribution
+
+This targets **sideloading** (SideStore / AltStore / Sideloadly) with JIT through StikDebug,
+like Madeira. The App Store only allows WebKit's own JIT, so an App Store build would have
+to run everything as WebAssembly inside `WKWebView`: fine for Java/Kotlin apps (ART compiled
+to Wasm), slow for native `.so` code (an ARM64 interpreter or translator in Wasm). The design
+keeps the syscall layer and framework independent of how code executes, so that path stays
+open.
+
 ## Architecture sketch
 
 ```
