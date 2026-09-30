@@ -1,0 +1,58 @@
+# apk-on-iphone
+
+**Run Android apps natively on a non-jailbroken iPhone.** Not streaming, not a VM: the APK's own
+ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux.
+
+> Status: idea. Nothing here runs yet.
+
+## Why it might be possible now
+
+- **No CPU translation.** Android apps and their `.so` libraries are ARM64, like the iPhone.
+  Madeira (Windows games on iPhone) spends most of its effort translating x86; here that
+  cost is zero for native code.
+- **JIT is available.** StikDebug attaches a debugger and unlocks JIT on iOS 17-27, which
+  ART (Android's Java runtime) needs for usable speed. Without JIT, ART's interpreter
+  still works, only slower.
+- **The pieces exist as open source:** AOSP's ART and bionic, and the Madeira/Wine
+  playbook for doing all of this inside one iOS process.
+
+## Prior art (checked 2026-10-01)
+
+- Cloud / remote: Redfinger, BrowserStack, Parsec to a PC emulator — streaming, not native.
+- UTM on iOS: full Android VM, needs JIT, very slow; guides like leiting2327/run-apk-on-ios.
+- Cycada (Columbia, 2010s): research compatibility layer for **iOS apps on Android** — the
+  opposite direction, but the closest design reference.
+- ib-2-3-android: iOS apps (UE3) on Android — again the opposite direction.
+- No project found that runs APKs natively on an iPhone.
+
+## Architecture sketch
+
+```
+APK ──► ART (dex → interpreter / JIT) ──► Android framework (Java)
+                    │                              │
+               bionic libc  ◄── native .so ──►  libandroid, EGL/GLES, AAudio
+                    │
+        Linux syscall layer (futex, mmap, epoll, binder…)  ← the "Wine" part
+                    │
+                 iOS (Darwin) · Metal · AVAudio · UIKit surface
+```
+
+1. **Syscall layer:** a user-space Linux ABI on Darwin — the hard core of the project.
+   Binder can be emulated in-process (all "processes" are threads of one iOS app,
+   exactly like Madeira's in-process wineserver).
+2. **Graphics:** GLES → Metal via ANGLE (ANGLE already has a Metal backend).
+3. **Framework:** a trimmed AOSP `system_server` running in-process; SurfaceFlinger
+   replaced by a single `CAMetalLayer`.
+
+## Milestones
+
+1. A static ARM64 Linux "hello world" (bionic) runs inside an iOS app.
+2. `dalvikvm` runs a `.dex` that prints to the log.
+3. A pure-Java APK draws a `View` on screen.
+4. A GLES game (NDK) renders a frame.
+5. The demo video: a real Play Store game on an iPhone.
+
+## Risks
+
+Size of the Android framework, Google Play Services (most apps need them; microG is the
+open replacement), Apple's sideloading limits (7-day signing, JIT only with a debugger).
