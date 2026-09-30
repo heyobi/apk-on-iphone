@@ -31,6 +31,8 @@ struct aoi_cpu {
     int n, z, c, v;
     uint64_t vreg[32][2];       /* SIMD&FP V0-V31, little-endian lo/hi halves */
     uint32_t fpcr, fpsr;
+    uint64_t excl_addr;         /* exclusive monitor for ldxr/stxr */
+    int excl_valid;
     uint64_t tpidr;             /* guest thread pointer, never the host's */
     struct aoi_mem *mem;
     enum aoi_stop stop;

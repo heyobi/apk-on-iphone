@@ -6,10 +6,13 @@ A **no-JIT AArch64 interpreter** loads real Android `.so` files from an APK, lin
 them, and runs their code on any host — no iPhone, no JIT.
 
 - `make test` — freestanding aarch64-linux ELF at -O0 and -O1, plus tpidr_el0. Green.
-- `make build/gmpdemo && ./build/gmpdemo <libgmp.so> 50` — the **real `libgmp.so` from
-  the Qalculate APK** computes `50! = 30414093201713378043612608166064768844377641568960512000000000000`
-  (checked against Python for n = 10, 50, 100). n ≥ ~300 stops at the next unimplemented
-  NEON instruction (`cnt v6.16b`, pc 0x40043764 in libgmp).
+- `./build/gmpdemo <libgmp.so> N` — the **real `libgmp.so` from the Qalculate APK**
+  computes N! with GMP's own code, including its NEON paths. Checked against Python:
+  5000! (0.09 s), 20000! (0.6 s), **100000! — 456,574 digits, 327 M guest instructions,
+  6.8 s** (≈ 48 M instructions/s interpreted).
+- `./build/isacheck words.txt` — **all 284,953 distinct instruction words in Qalculate's
+  9 libraries: 0 missing, 0 wrong** against Unicorn (system/hint/exception encodings and
+  words that fault on every random state are skipped).
 
 ## The reference-CPU oracle (use it for every new instruction)
 
@@ -33,17 +36,20 @@ encoding (`llvm-objdump` or capstone disassembles it), implement it, rerun until
 
 ## Instruction coverage
 
-Across **all 9 Qalculate libraries (1.47 M instructions) there are only 213 distinct
-mnemonics**; ~59 are FP/SIMD, 15 atomics. So the CPU layer is a finite list, not an
-open-ended one — and it is shared by every app.
+Across all 9 Qalculate libraries (1.47 M instructions) there are 213 distinct mnemonics.
+`tools/isawords.py *.so > words.txt` lists every distinct encoding; `build/isacheck`
+runs each once on our CPU and once on Unicorn from 4 random register states and prints
+per mnemonic what is missing or wrong. For a new APK: run those two, fix the table.
 
-Implemented now: integer base set, extr, ccmp/ccmn, add/sub extended (SP), bitfield,
-all integer and SIMD&FP ld/st forms (incl. literal, ld1-4/st1-4 multiple), movi/mvni/
-orr/bic vector immediate, V register file.
+- `core/cpu.c` — integer base set, all integer and SIMD&FP load/store forms, atomics
+  (ldar/stlr, ldxr/stxr with a monitor, cas, LSE ldadd/ldclr/ldeor/ldset/max/min/swp).
+- `core/simd.c` — NEON integer (three-same, two-reg misc, across-lanes, shifts, widen/
+  narrow, copy/dup/ins/umov, zip/uzp/trn, ext, tbl, ld1 lane/ld1r) and floating point
+  (scalar arithmetic/fma/compare/convert/round, vector fadd…fdiv/fmla/compares/converts,
+  by-element fmul/fmla) with ARM NaN rules.
 
-Missing (by frequency in these libs): NEON arithmetic (cnt, addv, ext, ushll/sshll,
-dup, umov, cmhi, tbl, …), scalar FP (fmov, fcmp, fcsel, scvtf, fmul, fdiv, fcvt*),
-atomics (ldar/stlr, ldxr/stxr, ldadd, cas, swp).
+Not covered yet: half precision, saturating and crypto NEON ops, ld2-4 single-lane —
+none occur in Qalculate; other apps will tell (isacheck).
 
 ## Architecture recap (what each file is)
 
@@ -62,7 +68,7 @@ atomics (ldar/stlr, ldxr/stxr, ldadd, cas, swp).
 ## The bigger roadmap (unchanged)
 
 1. **(done)** interpret a real native lib from an APK. ← we are here, minus get_str.
-2. NEON/FP + atomics, so libqalculate's math runs → compute "2+2" and big
+2. **(CPU done for this app)** NEON/FP + atomics. Next: bionic shim + libc++ so libqalculate's math runs → compute "2+2" and big
    expressions through Qalculate's real engine, headless.
 3. bionic proper + dynamic linker for a full lib set; then ART (the dex runtime)
    for the Java/Kotlin half; then a UI surface (Compose → Metal).

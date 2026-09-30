@@ -29,7 +29,8 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
 
 - **`gmpdemo`** (`make build/gmpdemo`): loads the **real `libgmp.so` from the Qalculate APK**,
   links it (32 libc imports bound to a small host shim in `core/bionic.c`), and computes
-  `50!` correctly with GMP's own code. `make build/gmpdemo-check` cross-checks every
+  `100000!` correctly with GMP's own code (327 M instructions, 6.8 s). All 284,953 distinct
+  instruction encodings in Qalculate's libraries match Unicorn (`build/isacheck`). `make build/gmpdemo-check` cross-checks every
   instruction against Unicorn; see `docs/STATUS.md`.
 - **`aoirun`** (host tool, `make test`): a no-JIT AArch64 interpreter + a small Linux/aarch64
   syscall layer + an ELF loader. It runs a real static `aarch64-linux` ELF and produces correct

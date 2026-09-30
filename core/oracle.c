@@ -28,7 +28,8 @@ struct oracle {
     int wlen[MAXW];
     uint8_t wold[MAXW][16], wnew[MAXW][16];
     uint64_t checked;
-    int failed;
+    int failed, quiet;
+    char what[16];
 };
 
 static struct oracle O;
@@ -89,13 +90,16 @@ static void before(struct aoi_cpu *c)
 
 static void fail(struct aoi_cpu *c, const char *what, uint64_t ours, uint64_t ref)
 {
-    if (!O.failed)
-        fprintf(stderr, "[oracle] MISMATCH after %" PRIu64 " instructions at pc=0x%" PRIx64
-                " insn=0x%08x\n", O.checked, O.pc, O.insn);
-    fprintf(stderr, "[oracle]   %-6s ours=0x%016" PRIx64 " ref=0x%016" PRIx64 "\n", what, ours, ref);
+    int first = !O.failed;
+    if (first) snprintf(O.what, sizeof O.what, "%s", what);
     O.failed = 1;
     c->stop = AOI_STOP_UNDEF;       /* stop the run where it went wrong */
     c->fault_insn = O.insn;
+    if (O.quiet) return;
+    if (first)
+        fprintf(stderr, "[oracle] MISMATCH after %" PRIu64 " instructions at pc=0x%" PRIx64
+                " insn=0x%08x\n", O.checked, O.pc, O.insn);
+    fprintf(stderr, "[oracle]   %-6s ours=0x%016" PRIx64 " ref=0x%016" PRIx64 "\n", what, ours, ref);
 }
 
 static void after(struct aoi_cpu *c)
@@ -124,7 +128,7 @@ static void after(struct aoi_cpu *c)
             memcpy(&b, O.wnew[i], O.wlen[i] > 8 ? 8 : (size_t)O.wlen[i]);
             snprintf(name, sizeof name, "mem");
             fail(c, name, a, b);
-            fprintf(stderr, "[oracle]   (store to 0x%" PRIx64 ", %d bytes)\n", O.waddr[i], O.wlen[i]);
+            if (!O.quiet) fprintf(stderr, "[oracle]   (store to 0x%" PRIx64 ", %d bytes)\n", O.waddr[i], O.wlen[i]);
         }
     }
     for (k = 0; k < c->nwlog; k++) {
@@ -165,3 +169,8 @@ void aoi_oracle_report(struct aoi_cpu *c, enum aoi_stop st)
     fprintf(stderr, "[oracle] %" PRIu64 " instructions cross-checked%s\n", O.checked,
             O.failed ? ", first mismatch above" : ", all identical");
 }
+
+void aoi_oracle_reset(int quiet) { O.failed = 0; O.quiet = quiet; O.uc_ok = 0; }
+int aoi_oracle_mismatch(void) { return O.failed; }
+int aoi_oracle_ref_ran(void) { return O.uc_ok; }
+const char *aoi_oracle_what(void) { return O.what; }

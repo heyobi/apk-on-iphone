@@ -50,7 +50,7 @@ int main(int argc, char **argv)
     size_t size = 0;
     void *so;
     unsigned long n = argc > 2 ? strtoul(argv[2], NULL, 10) : 50;
-    uint64_t z, str, strbuf, a[3];
+    uint64_t z, str, a[3];
     uint64_t f_init, f_fac, f_get;
     uint8_t *p;
 
@@ -72,8 +72,7 @@ int main(int argc, char **argv)
     z = aoi_dl_malloc(&dl, 16);                       /* mpz_t: {int alloc; int size; mp_limb_t *d} */
     a[0] = z;                   if (check(&cpu, aoi_call(&cpu, f_init, a, 1, 0), "mpz_init")) return 1;
     a[0] = z; a[1] = n;         if (check(&cpu, aoi_call(&cpu, f_fac, a, 2, 0), "mpz_fac_ui")) return 1;
-    strbuf = aoi_dl_malloc(&dl, 4096);               /* caller-provided output buffer */
-    a[0] = strbuf; a[1] = 10; a[2] = z;
+    a[0] = 0; a[1] = 10; a[2] = z;                   /* NULL: GMP allocates the string itself */
     if (check(&cpu, aoi_call(&cpu, f_get, a, 3, 0), "mpz_get_str")) return 1;
     str = cpu.x[0];
 
