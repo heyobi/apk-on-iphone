@@ -18,4 +18,6 @@ for opt in 0 1; do
         echo "FAIL -O$opt: rc=$rc out=[$out]" ; fail=1
     fi
 done
+clang --target=aarch64-linux-gnu -nostdlib -static -fuse-ld=lld -o "$DIR/build/tpidr.elf" "$DIR/tests/tpidr.S"
+if "$AOIRUN" "$DIR/build/tpidr.elf" 2>/dev/null; then echo "OK  tpidr_el0 write/read round-trip"; else echo "FAIL tpidr_el0"; fail=1; fi
 exit $fail

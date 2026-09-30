@@ -22,7 +22,8 @@ struct aoi_mem {
     struct aoi_region r[AOI_MAX_REGIONS];
 };
 
-enum aoi_stop { AOI_RUN = 0, AOI_STOP_EXIT, AOI_STOP_UNDEF, AOI_STOP_FAULT, AOI_STOP_SYSCALL };
+enum aoi_stop { AOI_RUN = 0, AOI_STOP_EXIT, AOI_STOP_UNDEF, AOI_STOP_FAULT, AOI_STOP_SYSCALL,
+                AOI_STOP_RETURN, AOI_STOP_IMPORT };
 
 struct aoi_cpu {
     uint64_t x[31];
@@ -35,6 +36,15 @@ struct aoi_cpu {
     uint32_t fault_insn;
     int exit_code;
     uint64_t steps;
+
+    /* Host calls. A branch into [thunk_base, thunk_base + 4*n) does not execute
+     * guest code: slot 0 means "the host's call returned" (AOI_STOP_RETURN); any
+     * other slot runs host_call(cpu, slot), puts the result in x0 and returns to
+     * x30. This is how imports such as malloc are served by the host. */
+    uint64_t thunk_base, thunk_slots;
+    uint64_t (*host_call)(struct aoi_cpu *cpu, unsigned slot);
+    void *host_ctx;
+    const char *stop_name;      /* import name for AOI_STOP_IMPORT */
 };
 
 /* Guest memory access. Returns NULL (and sets a fault) if [addr, addr+len) is unmapped. */
@@ -43,6 +53,11 @@ uint8_t *aoi_mem_map(struct aoi_mem *mem, uint64_t base, uint64_t size);
 
 /* Runs until the guest exits or stops; at most max_steps instructions (0 = no limit). */
 enum aoi_stop aoi_cpu_run(struct aoi_cpu *cpu, uint64_t max_steps);
+
+/* Calls guest function fn(args...) on the current stack and runs to its return.
+ * Needs thunk_base set. Returns the stop reason (AOI_STOP_RETURN on success). */
+enum aoi_stop aoi_call(struct aoi_cpu *cpu, uint64_t fn, const uint64_t *args, int nargs,
+                       uint64_t max_steps);
 
 /* Provided by the syscall layer (core/linux.c). Returns the value for x0, or
  * sets cpu->stop to end the run. */

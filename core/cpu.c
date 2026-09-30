@@ -127,6 +127,16 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         uint32_t insn;
         uint64_t next;
         if (max_steps && c->steps >= max_steps) break;
+        if (c->thunk_slots && c->pc >= c->thunk_base && c->pc < c->thunk_base + 4 * c->thunk_slots) {
+            unsigned slot = (unsigned)((c->pc - c->thunk_base) / 4);
+            uint64_t r;
+            if (slot == 0) { c->stop = AOI_STOP_RETURN; break; }
+            r = c->host_call(c, slot);
+            if (c->stop != AOI_RUN) break;
+            c->x[0] = r;
+            c->pc = c->x[30];
+            continue;
+        }
         insn = (uint32_t)rd(c, c->pc, 4);
         if (c->stop != AOI_RUN) break;
         c->steps++;
@@ -158,16 +168,14 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         } else if (insn == 0xd4000001u) {                          /* svc #0 */
             uint64_t r = aoi_linux_syscall(c);
             if (c->stop == AOI_RUN) c->x[0] = r;
-        } else if ((insn & 0xfffffc1fu) == 0xd53bd040u) {          /* mrs xN, tpidr_el0 */
+        } else if ((insn & 0xffffffe0u) == 0xd53bd040u) {          /* mrs xN, tpidr_el0 */
             setX(c, insn & 31, c->tpidr);
-        } else if ((insn & 0xfffffc1fu) == 0xd51bd040u) {          /* msr tpidr_el0, xN */
+        } else if ((insn & 0xffffffe0u) == 0xd51bd040u) {          /* msr tpidr_el0, xN */
             c->tpidr = X(c, insn & 31);
         } else if (insn == 0xd503201fu || (insn & 0xfffff01fu) == 0xd503201fu) {
             /* nop / hint */
         /* ---- moves (wide immediate) ---- */
-        } else if ((insn & 0x1f800000u) == 0x12800000u ||
-                   (insn & 0x1f800000u) == 0x52800000u ||
-                   (insn & 0x1f800000u) == 0x72800000u) {          /* movn/movz/movk */
+        } else if ((insn & 0x1f800000u) == 0x12800000u && ((insn >> 29) & 3) != 1) { /* movn/movz/movk */
             int is64 = insn >> 31, opc = (insn >> 29) & 3, sh = ((insn >> 21) & 3) * 16;
             uint64_t imm = (uint64_t)((insn >> 5) & 0xffff) << sh, r;
             int rd_ = insn & 31;
@@ -291,6 +299,98 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             else { r = b; if (o2 == 1) r += 1; else if (o2 == 2) r = ~r; else if (o2 == 3 && op) r = (uint64_t)(-(int64_t)r); }
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
+        /* ---- data processing (1 source): rbit/rev/clz/cls ---- */
+        } else if ((insn & 0x5fe00000u) == 0x5ac00000u && ((insn >> 16) & 0x1f) == 0) {
+            int is64 = insn >> 31, op = (insn >> 10) & 0x3f;
+            int rn = (insn >> 5) & 31, rd_ = insn & 31, width = is64 ? 64 : 32;
+            uint64_t a = X(c, rn), r = 0; int i;
+            if (!is64) a &= 0xffffffffu;
+            switch (op) {
+            case 0: for (i = 0; i < width; i++) if (a >> i & 1) r |= (uint64_t)1 << (width - 1 - i); break; /* rbit */
+            case 2: for (i = 0; i < width; i += 8) r |= ((a >> i) & 0xff) << (width - 8 - i); break;        /* rev32/rev(32) */
+            case 3: if (is64) { for (i = 0; i < 64; i += 8) r |= ((a >> i) & 0xff) << (56 - i); }
+                    else { for (i = 0; i < 32; i += 8) r |= ((a >> i) & 0xff) << (24 - i); } break;         /* rev */
+            case 4: { int z = 0; while (z < width && !((a >> (width - 1 - z)) & 1)) z++; r = z; } break;    /* clz */
+            case 5: { int cnt = 0, msb = (a >> (width - 1)) & 1, k;
+                      for (k = width - 2; k >= 0; k--) { if (((a >> k) & 1) == (uint64_t)msb) cnt++; else break; } r = cnt; } break; /* cls */
+            default: c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto done1;
+            }
+            if (!is64) r &= 0xffffffffu;
+            setX(c, rd_, r);
+            if (0) { done1: break; }
+        /* ---- add/sub with carry: adc/adcs/sbc/sbcs ---- */
+        } else if ((insn & 0x1fe0fc00u) == 0x1a000000u) {
+            int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
+            int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
+            uint64_t a = X(c, rn), b = X(c, rm), r;
+            r = addflags(c, a, sub ? ~b : b, c->c, is64, setf);
+            if (!is64) r &= 0xffffffffu;
+            setX(c, rd_, r);
+        /* ---- data processing (3 source): madd/msub ---- */
+        } else if ((insn & 0x1f000000u) == 0x1b000000u) {
+            int is64 = insn >> 31, o0 = (insn >> 15) & 1, op31 = (insn >> 21) & 7;
+            int rm = (insn >> 16) & 31, ra = (insn >> 10) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
+            uint64_t n_ = X(c, rn), m = X(c, rm), acc = X(c, ra), r;
+            if (op31 == 0) {                           /* madd/msub */
+                if (!is64) { n_ = (uint32_t)n_; m = (uint32_t)m; acc = (uint32_t)acc; }
+                r = o0 ? acc - n_ * m : acc + n_ * m;
+            } else if (op31 == 1) {                    /* smaddl/smsubl (32x32+64, signed) */
+                int64_t prod = (int64_t)(int32_t)n_ * (int64_t)(int32_t)m;
+                r = o0 ? acc - (uint64_t)prod : acc + (uint64_t)prod;
+            } else if (op31 == 5) {                    /* umaddl/umsubl (32x32+64, unsigned) */
+                uint64_t prod = (uint64_t)(uint32_t)n_ * (uint32_t)m;
+                r = o0 ? acc - prod : acc + prod;
+            } else if (op31 == 2) {                    /* umulh */
+                r = (uint64_t)(((unsigned __int128)n_ * m) >> 64);
+            } else if (op31 == 6) {                    /* smulh */
+                r = (uint64_t)(((__int128)(int64_t)n_ * (int64_t)m) >> 64);
+            } else { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+            if (!is64) r &= 0xffffffffu;
+            setX(c, rd_, r);
+        /* ---- data processing (2 source): udiv/sdiv/lslv/lsrv/asrv/rorv ---- */
+        } else if ((insn & 0x5fe00000u) == 0x1ac00000u) {
+            int is64 = insn >> 31, op = (insn >> 10) & 0x3f;
+            int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
+            uint64_t a = X(c, rn), b = X(c, rm), r; unsigned sh;
+            if (!is64) { a = (uint32_t)a; b = (uint32_t)b; }
+            switch (op) {
+            case 2:  r = b == 0 ? 0 : a / b; break;                          /* udiv */
+            case 3:  r = b == 0 ? 0 : is64 ? (uint64_t)((int64_t)a / (int64_t)b)
+                                           : (uint32_t)((int32_t)a / (int32_t)b); break; /* sdiv */
+            case 8:  sh = b & (is64 ? 63 : 31); r = a << sh; break;          /* lslv */
+            case 9:  sh = b & (is64 ? 63 : 31); r = a >> sh; break;          /* lsrv */
+            case 10: sh = b & (is64 ? 63 : 31);
+                     r = is64 ? (uint64_t)((int64_t)a >> sh) : (uint32_t)((int32_t)a >> sh); break; /* asrv */
+            case 11: sh = b & (is64 ? 63 : 31);
+                     r = is64 ? (a >> sh) | (sh ? a << (64 - sh) : 0)
+                              : ((uint32_t)a >> sh) | (sh ? (uint32_t)a << (32 - sh) : 0); break; /* rorv */
+            default: c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto done;
+            }
+            if (!is64) r &= 0xffffffffu;
+            setX(c, rd_, r);
+            if (0) { done: break; }
+        /* ---- bitfield: sbfm/bfm/ubfm (incl lsl/lsr/asr/sxt/uxt imm) ---- */
+        } else if ((insn & 0x1f800000u) == 0x13000000u) {
+            int is64 = insn >> 31, opc = (insn >> 29) & 3;
+            int immr = (insn >> 16) & 0x3f, imms = (insn >> 10) & 0x3f;
+            int rn = (insn >> 5) & 31, rd_ = insn & 31, width = is64 ? 64 : 32;
+            uint64_t src = X(c, rn), mask = width == 64 ? ~0ULL : 0xffffffffu, r;
+            uint64_t rot = ((src >> immr) | (immr ? src << (width - immr) : 0)) & mask;
+            uint64_t top = imms >= immr ? (uint64_t)(imms - immr + 1) : (uint64_t)(imms + 1);
+            uint64_t field, fmask;
+            fmask = top >= 64 ? ~0ULL : (((uint64_t)1 << top) - 1);
+            field = rot & fmask;
+            if (opc == 1) {                            /* bfm: keep other bits of dest */
+                uint64_t dst = X(c, rd_) & mask;
+                r = (dst & ~fmask) | field;
+            } else if (opc == 2) {                     /* ubfm: zero-extend */
+                r = field;
+            } else {                                   /* sbfm: sign-extend from bit top-1 */
+                uint64_t sb = top ? ((uint64_t)1 << (top - 1)) : 0;
+                r = (field ^ sb) - sb;
+            }
+            if (!is64) r &= 0xffffffffu;
+            setX(c, rd_, r);
         /* ---- pc-relative ---- */
         } else if ((insn & 0x9f000000u) == 0x90000000u) {          /* adrp */
             uint64_t imm = (sextn((((insn >> 5) & 0x7ffff) << 2) | ((insn >> 29) & 3), 21)) << 12;
@@ -306,4 +406,14 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         if (c->stop == AOI_RUN) c->pc = next;
     }
     return c->stop;
+}
+
+enum aoi_stop aoi_call(struct aoi_cpu *c, uint64_t fn, const uint64_t *args, int nargs,
+                       uint64_t max_steps)
+{
+    int i;
+    for (i = 0; i < nargs && i < 8; i++) c->x[i] = args[i];
+    c->x[30] = c->thunk_base;       /* returning lands on slot 0 */
+    c->pc = fn;
+    return aoi_cpu_run(c, max_steps ? c->steps + max_steps : 0);
 }

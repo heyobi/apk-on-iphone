@@ -1,0 +1,44 @@
+# apkscan / gmpdemo output (2026-10-01)
+
+## Qalculate arm64-v8a libraries
+```
+/root/.claude/uploads/ef357edb-88b4-5fc6-b1c0-1683064f3cdf/51248bc2-com.jherkenhoff.qalculate_72.apk: 1 dex file(s), 9 arm64-v8a native libraries
+/tmp/tmpmzlb1twi/libandroidx.graphics.path.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x9fe0, min align 0x4000
+  1808 instructions scanned
+         6  mrs xN, tpidr_el0 (first at 0xd84)
+/tmp/tmpmzlb1twi/libc++_shared.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x15e948, min align 0x4000
+  332478 instructions scanned
+/tmp/tmpmzlb1twi/libdatastore_shared_counter.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x9429, min align 0x4000
+  1136 instructions scanned
+         1  mrs xN, tpidr_el0 (first at 0xe68)
+/tmp/tmpmzlb1twi/libgmp.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x751d8, min align 0x4000
+  110620 instructions scanned
+/tmp/tmpmzlb1twi/libiconv.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0xebdbc, min align 0x4000
+  232048 instructions scanned
+/tmp/tmpmzlb1twi/libmpfr.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x75038, min align 0x4000
+  109576 instructions scanned
+/tmp/tmpmzlb1twi/libqalculate.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x6fcb88, min align 0x4000
+  1765232 instructions scanned
+         3  svc #0 (Linux syscall) (first at 0xff4d4)
+/tmp/tmpmzlb1twi/libqalculate_swig.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x16cfb0, min align 0x4000
+  362076 instructions scanned
+         2  svc #0 (Linux syscall) (first at 0x8d9bc)
+       692  mrs xN, tpidr_el0 (first at 0xc7d34)
+/tmp/tmpmzlb1twi/libxml2.so
+  type shared/PIE, 3 PT_LOAD, span 0x0-0x13be38, min align 0x4000
+  305340 instructions scanned
+```
+
+## gmpdemo: real libgmp.so computing 50! (get_str WIP)
+```
+[gmpdemo] libgmp.so at 0x40000000, 32 imports bound
+[gmpdemo] mpz_get_str: fault at 0x6fff7fffff (pc=0x40042798)
+```

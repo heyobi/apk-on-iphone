@@ -3,7 +3,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g -Wall -Wextra -std=c11
 AARCH64 := clang --target=aarch64-linux-gnu -nostdlib -static -fuse-ld=lld
 
-CORE := core/elf.c core/scan.c core/cpu.c core/linux.c core/load.c
+CORE := core/elf.c core/scan.c core/cpu.c core/linux.c core/load.c core/dl.c core/bionic.c
 
 all: build/apkscan
 
@@ -37,3 +37,6 @@ build/hello.elf: tests/hello.c | build
 
 run: build/aoirun build/hello.elf
 	./build/aoirun build/hello.elf
+
+build/gmpdemo: tools/gmpdemo.c $(CORE) core/*.h | build
+	$(CC) $(CFLAGS) -o $@ tools/gmpdemo.c $(CORE)

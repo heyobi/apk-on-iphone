@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void *slurp(const char *path, size_t *size)
 {
