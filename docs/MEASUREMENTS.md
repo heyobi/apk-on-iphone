@@ -35,3 +35,26 @@ What it says:
 So the per-app patching is small. The real work is the platform around it: bionic
 (`libc`, `libm`, `libdl`, `liblog`), the dynamic linker, ART with JNI, and — for this app —
 Jetpack Compose's rendering stack, which is the largest single piece.
+
+## cube.run 1.2 (libGDX 3D game, 9.8 MB)
+
+1 `classes.dex` (7.1 MB: libGDX + Kotlin coroutines + AndroidX, all Java) and **one**
+small native library, `libgdx.so` (40,260 instructions, 164 KB) — the math/buffer helpers
+of libGDX. The game logic is Java; rendering goes through `android.opengl.GLES20/30`.
+
+- **CPU:** `isacheck` on libgdx.so's 13,433 distinct words: 102 uses missing at first
+  (fcvtn/fcvtl, mla, addhn, uhadd, scalar mov from lane), **0 wrong**. After adding those
+  six forms: 0 missing, 0 wrong — and Qalculate still 0/0. The CPU layer carried over.
+- **libc:** libgdx.so imports 13 functions (malloc, free, realloc, memcpy, memset,
+  strncmp, strtol, pow, ldexp, `__memcpy_chk`, `__stack_chk_fail`, `__cxa_atexit/finalize`).
+- **Android API surface** (method references in the dex into framework packages):
+  about 3,200 `android.*` methods over ~400 classes — `android.view` 954, `android.app`
+  396, `android.widget` 384, `android.content` 341, `android.graphics` 294,
+  **`android.opengl` 258** (GLES20/GLES30 + GLSurfaceView/EGL), `android.os` 221,
+  `android.media` 58 (sound). AndroidX and Kotlin are inside the dex: they are app code
+  and come for free once ART runs.
+
+What it says: for a game like this the native CPU work is small and already done. The
+path to a first frame is **ART (runs the dex) + a thin framework slice (Activity,
+GLSurfaceView, input, audio) + GLES → Metal (ANGLE)** — a much smaller UI target than
+Qalculate's Jetpack Compose, so it is the better first "draws on screen" app.

@@ -154,6 +154,15 @@ static uint64_t vfp_expand(unsigned imm8, int dbl)
     return sign << 31 | ((!b6) << 7 | (b6 ? 0x1fULL : 0) << 2 | hi) << 23 | frac << 19;
 }
 
+/* fcvt between single and double, keeping a NaN's payload (quieted) */
+static uint64_t cvt_sd(uint64_t a, int to_dbl)
+{
+    if (isnan_b(a, !to_dbl))
+        return to_dbl ? (a & 0x80000000u) << 32 | 0x7ff8000000000000ULL | (a & 0x3fffffu) << 29
+                      : (uint64_t)((a >> 32) & 0x80000000u) | 0x7fc00000u | ((a >> 29) & 0x3fffffu);
+    return to_dbl ? db((double)bf((uint32_t)a)) : fb((float)bd(a));
+}
+
 /* acc + a*b fused, with the FMA NaN order (addend first); neg_* flip signs first */
 static uint64_t fma_bits(uint64_t acc, uint64_t a, uint64_t b, int dbl, int neg_prod, int neg_acc)
 {
@@ -260,6 +269,11 @@ static int three_same(struct aoi_cpu *c, uint32_t insn)
         case 0x0c: z = u ? (x > y ? x : y) : (uint64_t)(sxv > syv ? sxv : syv); break;   /* max */
         case 0x0d: z = u ? (x < y ? x : y) : (uint64_t)(sxv < syv ? sxv : syv); break;   /* min */
         case 0x13: if (u || size == 3) return 0; z = x * y; break;                  /* mul */
+        case 0x12: if (size == 3) return 0;                                          /* mla / mls */
+                   z = u ? lane(c->vreg[d], i, esz) - x * y : lane(c->vreg[d], i, esz) + x * y; break;
+        case 0x00: case 0x02:                                                        /* [su]hadd / [su]rhadd */
+            if (size == 3) return 0;
+            z = u ? (x + y + (op == 2)) >> 1 : (uint64_t)((sxv + syv + (op == 2)) >> 1); break;
         case 0x08: {                                                                 /* sshl/ushl */
             int sh = (int8_t)(y & 0xff), bits = 8 * esz;
             if (sh >= 0) z = sh >= bits ? 0 : x << sh;
@@ -287,6 +301,17 @@ static int two_misc(struct aoi_cpu *c, uint32_t insn)
     const uint64_t *a = c->vreg[n];
     vec r = {0, 0};
 
+    if ((op == 0x16 || op == 0x17) && !u && size == 1) {   /* fcvtn{2} d->s, fcvtl{2} s->d */
+        if (op == 0x16) {
+            r[0] = q ? c->vreg[d][0] : 0; r[1] = 0;
+            for (i = 0; i < 2; i++) setlane(r, i + (q ? 2 : 0), 4, cvt_sd(lane(a, i, 8), 0));
+            c->vreg[d][0] = r[0]; c->vreg[d][1] = q ? r[1] : 0;
+            return 1;
+        }
+        for (i = 0; i < 2; i++) setlane(r, i, 8, cvt_sd(lane(a, i + (q ? 2 : 0), 4), 1));
+        setv(c, d, r, 1);
+        return 1;
+    }
     if (op >= 0x0c && op != 0x12) {                   /* FP forms: size = a:sz */
         int dbl = size & 1, fesz = dbl ? 8 : 4, key = u << 6 | (size >> 1) << 5 | op;
         uint64_t z;
@@ -450,6 +475,17 @@ static int three_diff(struct aoi_cpu *c, uint32_t insn)
     int m = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, i, half = q ? 8 / esz : 0;
     vec r = {0, 0};
     if (size == 3) return 0;
+    if (op == 0x4 || op == 0x6) {                      /* [r]addhn{2} / [r]subhn{2}: high half, narrowed */
+        int bits = 8 * esz;
+        r[0] = q ? c->vreg[d][0] : 0;
+        for (i = 0; i < 8 / esz; i++) {
+            uint64_t x = lane(c->vreg[n], i, 2 * esz), y = lane(c->vreg[m], i, 2 * esz);
+            uint64_t z = (op == 4 ? x + y : x - y) + (u ? 1ULL << (bits - 1) : 0);
+            setlane(r, i + half, esz, (z >> bits) & emask(esz));
+        }
+        c->vreg[d][0] = r[0]; c->vreg[d][1] = q ? r[1] : 0;
+        return 1;
+    }
     for (i = 0; i < 8 / esz; i++) {
         uint64_t x, y, z, acc = lane(c->vreg[d], i, 2 * esz);
         x = op == 1 || op == 3 ? lane(c->vreg[n], i, 2 * esz) : lane(c->vreg[n], i + half, esz);
@@ -609,6 +645,17 @@ static int fp_elem(struct aoi_cpu *c, uint32_t insn, int scalar)
     return 1;
 }
 
+/* mov (scalar, element) = dup b/h/s/d, v.t[i] */
+static int scalar_dup(struct aoi_cpu *c, uint32_t insn)
+{
+    int imm5 = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, size, esz;
+    if (!(imm5 & 0xf)) return 0;
+    size = __builtin_ctz((unsigned)imm5); esz = 1 << size;
+    c->vreg[d][0] = lane(c->vreg[n], imm5 >> (size + 1), esz);
+    c->vreg[d][1] = 0;
+    return 1;
+}
+
 /* ld1/st1 (single structure, one lane) and ld1r */
 static int ldst_single(struct aoi_cpu *c, uint32_t insn)
 {
@@ -719,10 +766,7 @@ static int fp_scalar(struct aoi_cpu *c, uint32_t insn)
         case 4: case 5: {                                                     /* fcvt s<->d */
             int to_dbl = op == 5;
             if (to_dbl == dbl) return 0;
-            if (isnan_b(a, dbl)) {                     /* keep the payload, quieted */
-                r = to_dbl ? (a & 0x80000000u) << 32 | 0x7ff8000000000000ULL | (a & 0x3fffffu) << 29
-                           : (uint64_t)((a >> 32) & 0x80000000u) | 0x7fc00000u | ((a >> 29) & 0x3fffffu);
-            } else r = to_dbl ? db((double)bf((uint32_t)a)) : fb((float)bd(a));
+            r = cvt_sd(a, to_dbl);
             c->vreg[d][0] = r & emask(to_dbl ? 8 : 4); c->vreg[d][1] = 0;
             return 1; }
         case 8: case 9: case 10: case 11: case 12: case 14: case 15: {       /* frint* */
@@ -780,6 +824,7 @@ int aoi_simd_step(struct aoi_cpu *c, uint32_t insn)
     else if ((insn & 0xbfe08c00u) == 0x0e000000u) ok = tbl(c, insn);
     else if ((insn & 0xbf000000u) == 0x0d000000u) ok = ldst_single(c, insn);
     else if ((insn & 0xdf3e0c00u) == 0x5e200800u) ok = scalar_misc(c, insn);
+    else if ((insn & 0xffe0fc00u) == 0x5e000400u) ok = scalar_dup(c, insn);
     else if ((insn & 0xdf3e0c00u) == 0x5e300800u) ok = scalar_pairwise(c, insn);
     else if ((insn & 0x9f000400u) == 0x0f000000u) ok = fp_elem(c, insn, 0);
     else if ((insn & 0xdf000400u) == 0x5f000000u) ok = fp_elem(c, insn, 1);
