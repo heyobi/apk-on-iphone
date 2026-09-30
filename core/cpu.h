@@ -29,6 +29,8 @@ struct aoi_cpu {
     uint64_t x[31];
     uint64_t sp, pc;
     int n, z, c, v;
+    uint64_t vreg[32][2];       /* SIMD&FP V0-V31, little-endian lo/hi halves */
+    uint32_t fpcr, fpsr;
     uint64_t tpidr;             /* guest thread pointer, never the host's */
     struct aoi_mem *mem;
     enum aoi_stop stop;
@@ -45,6 +47,14 @@ struct aoi_cpu {
     uint64_t (*host_call)(struct aoi_cpu *cpu, unsigned slot);
     void *host_ctx;
     const char *stop_name;      /* import name for AOI_STOP_IMPORT */
+
+    /* Optional per-instruction hook (the reference-CPU oracle, core/oracle.c):
+     * called with after=0 before and after=1 after each guest instruction.
+     * While it is set, wr() logs the stores of the current instruction. */
+    void (*trace)(struct aoi_cpu *cpu, int after);
+    void *trace_ctx;
+    uint64_t wlog_addr[4];
+    int wlog_len[4], nwlog;
 };
 
 /* Guest memory access. Returns NULL (and sets a fault) if [addr, addr+len) is unmapped. */

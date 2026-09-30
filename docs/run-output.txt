@@ -37,8 +37,10 @@
   305340 instructions scanned
 ```
 
-## gmpdemo: real libgmp.so computing 50! (get_str WIP)
+## gmpdemo: real libgmp.so computing 50!
 ```
 [gmpdemo] libgmp.so at 0x40000000, 32 imports bound
-[gmpdemo] mpz_get_str: fault at 0x6fff7fffff (pc=0x40042798)
+[gmpdemo] 1516 guest instructions interpreted
+[oracle] 1516 instructions cross-checked, all identical
+50! = 30414093201713378043612608166064768844377641568960512000000000000
 ```

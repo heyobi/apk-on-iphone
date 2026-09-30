@@ -39,18 +39,42 @@ static void wr(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
     uint8_t *p = aoi_mem_ptr(c->mem, a, (uint64_t)len);
     int i;
     if (!p) { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return; }
+    if (c->trace && c->nwlog < 4) { c->wlog_addr[c->nwlog] = a; c->wlog_len[c->nwlog++] = len; }
     for (i = 0; i < len; i++) p[i] = (uint8_t)(v >> (8 * i));
 }
-
-/* X registers: index 31 reads as zero (XZR) except where the encoding means SP. */
-static uint64_t X(struct aoi_cpu *c, int i) { return i == 31 ? 0 : c->x[i]; }
-static void setX(struct aoi_cpu *c, int i, uint64_t v) { if (i != 31) c->x[i] = v; }
 
 static uint64_t sextn(uint64_t v, int bits)
 {
     uint64_t m = (uint64_t)1 << (bits - 1);
     return (v ^ m) - m;
 }
+
+/* SIMD&FP register load/store of 1, 2, 4, 8 or 16 bytes. A load zeroes the rest of Vt. */
+static void vld(struct aoi_cpu *c, int t, uint64_t a, int bytes)
+{
+    uint64_t lo = rd(c, a, bytes > 8 ? 8 : bytes), hi = bytes > 8 ? rd(c, a + 8, 8) : 0;
+    if (c->stop != AOI_RUN) return;
+    c->vreg[t][0] = lo; c->vreg[t][1] = hi;
+}
+static void vst(struct aoi_cpu *c, int t, uint64_t a, int bytes)
+{
+    wr(c, a, c->vreg[t][0], bytes > 8 ? 8 : bytes);
+    if (bytes > 8) wr(c, a + 8, c->vreg[t][1], 8);
+}
+
+/* Integer load: opc 1 = zero-extend, 2 = sign-extend to 64, 3 = sign-extend to 32. */
+static void ild(struct aoi_cpu *c, int t, uint64_t a, int bytes, int opc)
+{
+    uint64_t v = rd(c, a, bytes);
+    if (c->stop != AOI_RUN) return;
+    if (opc == 2 && bytes < 8) v = sextn(v, bytes * 8);
+    else if (opc == 3) v = sextn(v, bytes * 8) & 0xffffffffu;
+    t == 31 ? (void)0 : (void)(c->x[t] = v);
+}
+
+/* X registers: index 31 reads as zero (XZR) except where the encoding means SP. */
+static uint64_t X(struct aoi_cpu *c, int i) { return i == 31 ? 0 : c->x[i]; }
+static void setX(struct aoi_cpu *c, int i, uint64_t v) { if (i != 31) c->x[i] = v; }
 
 /* AArch64 bitmask immediate decode (N:immr:imms) for AND/ORR/EOR/ANDS immediate. */
 static int decode_bitmask(int n, int immr, int imms, int is64, uint64_t *out)
@@ -75,6 +99,16 @@ static int decode_bitmask(int n, int immr, int imms, int is64, uint64_t *out)
     for (i = 0; i < (is64 ? 64 : 32); i += esize) *out |= ror << i;
     *out &= mask;
     return 1;
+}
+
+/* DecodeBitMasks(immediate=FALSE) for sbfm/bfm/ubfm: esize is the register width. */
+static void bitfield_masks(unsigned R, unsigned S, unsigned width, uint64_t *wmask, uint64_t *tmask)
+{
+    uint64_t mask = width == 64 ? ~0ULL : 0xffffffffu;
+    uint64_t welem = S + 1 >= 64 ? ~0ULL : ((uint64_t)1 << (S + 1)) - 1;
+    unsigned d = (S - R) & (width - 1);
+    *wmask = R ? ((welem >> R) | (welem << (width - R))) & mask : welem & mask;
+    *tmask = d + 1 >= 64 ? ~0ULL : ((uint64_t)1 << (d + 1)) - 1;
 }
 
 static void setflags64(struct aoi_cpu *c, uint64_t r) { c->z = r == 0; c->n = (int)(r >> 63); }
@@ -141,6 +175,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         if (c->stop != AOI_RUN) break;
         c->steps++;
         next = c->pc + 4;
+        if (c->trace) { c->nwlog = 0; c->trace(c, 0); }
 
         /* ---- branches ---- */
         if ((insn & 0xfc000000u) == 0x14000000u) {                 /* b */
@@ -238,6 +273,75 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             if (opc == 3) { setflags64(c, is64 ? r : (uint32_t)r); c->c = 0; c->v = 0; }
             setX(c, rd_, r);
+        /* ---- SIMD&FP load/store (V bit set): q/d/s/h/b registers ---- */
+        } else if ((insn & 0x3e000000u) == 0x2c000000u) {          /* stp/ldp s/d/q */
+            int opc = insn >> 30, load = (insn >> 22) & 1, mode = (insn >> 23) & 3;
+            int rt = insn & 31, rn = (insn >> 5) & 31, rt2 = (insn >> 10) & 31;
+            int scale = 2 + opc, bytes = 1 << scale;
+            int64_t off = (int64_t)sextn((insn >> 15) & 0x7f, 7) * bytes;
+            uint64_t base = (rn == 31) ? c->sp : c->x[rn], a = (mode == 1) ? base : base + off;
+            if (opc == 3) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+            if (load) { vld(c, rt, a, bytes); vld(c, rt2, a + bytes, bytes); }
+            else { vst(c, rt, a, bytes); vst(c, rt2, a + bytes, bytes); }
+            if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
+        } else if ((insn & 0x3f000000u) == 0x3d000000u) {          /* ldr/str b..q [Xn, #uimm] */
+            int size = insn >> 30, opc = (insn >> 22) & 3, rn = (insn >> 5) & 31, rt = insn & 31;
+            int bytes = (opc & 2) ? 16 : 1 << size;
+            uint64_t a = ((rn == 31) ? c->sp : c->x[rn]) + ((uint64_t)((insn >> 10) & 0xfff) * (uint64_t)bytes);
+            if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
+        } else if ((insn & 0x3f200000u) == 0x3c000000u) {          /* ldur/stur, pre/post b..q */
+            int size = insn >> 30, opc = (insn >> 22) & 3, mode = (insn >> 10) & 3;
+            int rn = (insn >> 5) & 31, rt = insn & 31, bytes = (opc & 2) ? 16 : 1 << size;
+            int64_t off = (int64_t)sextn((insn >> 12) & 0x1ff, 9);
+            uint64_t base = (rn == 31) ? c->sp : c->x[rn], a = (mode == 1) ? base : base + off;
+            if (mode == 2) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+            if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
+            if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
+        } else if ((insn & 0x3f200c00u) == 0x3c200800u) {          /* ldr/str b..q [Xn, Xm{,ext}] */
+            int size = insn >> 30, opc = (insn >> 22) & 3, rm = (insn >> 16) & 31;
+            int option = (insn >> 13) & 7, S = (insn >> 12) & 1, rn = (insn >> 5) & 31, rt = insn & 31;
+            int bytes = (opc & 2) ? 16 : 1 << size, sh = (opc & 2) ? 4 : size;
+            uint64_t idx = X(c, rm), a;
+            if (option == 2) idx = (uint32_t)idx; else if (option == 6) idx = sextn((uint32_t)idx, 32);
+            a = ((rn == 31) ? c->sp : c->x[rn]) + (S ? idx << sh : idx);
+            if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
+        } else if ((insn & 0x3f000000u) == 0x1c000000u) {          /* ldr s/d/q, literal */
+            int opc = insn >> 30;
+            vld(c, insn & 31, c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2), 4 << opc);
+        } else if ((insn & 0x3f000000u) == 0x18000000u) {          /* ldr w/x, ldrsw, prfm literal */
+            int opc = insn >> 30;
+            uint64_t a = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
+            if (opc != 3) ild(c, insn & 31, a, opc == 1 ? 8 : 4, opc == 2 ? 2 : 1);
+        } else if ((insn & 0xbfbf0000u) == 0x0c000000u || (insn & 0xbfa00000u) == 0x0c800000u) {
+            /* ld1-ld4 / st1-st4 (multiple structures), optionally post-indexed */
+            int q = (insn >> 30) & 1, load = (insn >> 22) & 1, post = (insn >> 23) & 1;
+            int rm = (insn >> 16) & 31, opcode = (insn >> 12) & 0xf, size = (insn >> 10) & 3;
+            int rn = (insn >> 5) & 31, rt = insn & 31, rpt, selem, esz = 1 << size, elems, r_, e, k;
+            uint64_t base = (rn == 31) ? c->sp : c->x[rn], a = base;
+            switch (opcode) {
+            case 0x0: rpt = 1; selem = 4; break;  case 0x2: rpt = 4; selem = 1; break;
+            case 0x4: rpt = 1; selem = 3; break;  case 0x6: rpt = 3; selem = 1; break;
+            case 0x7: rpt = 1; selem = 1; break;  case 0x8: rpt = 1; selem = 2; break;
+            case 0xa: rpt = 2; selem = 1; break;
+            default: c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto ldst_done;
+            }
+            if (size == 3 && !q && selem > 1) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto ldst_done; }
+            elems = (q ? 16 : 8) / esz;
+            if (load) for (r_ = 0; r_ < rpt * selem; r_++) { int t = (rt + r_) & 31; c->vreg[t][0] = 0; c->vreg[t][1] = 0; }
+            for (r_ = 0; r_ < rpt; r_++)
+                for (e = 0; e < elems; e++)
+                    for (k = 0; k < selem; k++) {
+                        int t = (rt + r_ + k) & 31;
+                        uint8_t *lane = (uint8_t *)c->vreg[t] + e * esz;   /* host is little-endian */
+                        if (load) { uint64_t v = rd(c, a, esz); memcpy(lane, &v, (size_t)esz); }
+                        else { uint64_t v = 0; memcpy(&v, lane, (size_t)esz); wr(c, a, v, esz); }
+                        a += (uint64_t)esz;
+                    }
+            if (post && c->stop == AOI_RUN) {
+                uint64_t nb = base + (rm == 31 ? a - base : c->x[rm]);
+                if (rn == 31) c->sp = nb; else c->x[rn] = nb;
+            }
+            if (0) { ldst_done: break; }
         /* ---- load/store: register offset (integer) ---- */
         } else if ((insn & 0x3b200c00u) == 0x38200800u) {          /* ldr/str [Xn, Xm{,ext}] */
             int size = insn >> 30, opc = (insn >> 22) & 3;
@@ -245,15 +349,13 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             int rn = (insn >> 5) & 31, rt = insn & 31, bytes = 1 << size;
             uint64_t idx = X(c, rm);
             uint64_t base = (rn == 31) ? c->sp : c->x[rn], a;
-            if ((option & 3) == 2) idx = (uint32_t)idx;              /* UXTW */
+            if (option == 2) idx = (uint32_t)idx;                   /* UXTW */
             else if (option == 6) idx = sextn((uint32_t)idx, 32);   /* SXTW */
-            else if (option == 7) idx = (uint64_t)idx;              /* SXTX */
             if (S) idx <<= size;
             a = base + idx;
             if (opc == 0) wr(c, a, X(c, rt), bytes);
-            else { uint64_t v = rd(c, a, bytes);
-                   if (opc == 2 && size < 3) v = sextn(v, bytes * 8);
-                   setX(c, rt, v); }
+            else if (size == 3 && opc == 2) { /* prfm: no-op */ }
+            else ild(c, rt, a, bytes, opc);
         /* ---- load/store: unsigned offset (32/64-bit integer) ---- */
         } else if ((insn & 0x3b000000u) == 0x39000000u) {          /* ldr/str [Xn, #imm] unsigned */
             int size = insn >> 30, opc = (insn >> 22) & 3;
@@ -262,9 +364,8 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             uint64_t off = (uint64_t)((insn >> 10) & 0xfff) << size, a = base + off;
             int bytes = 1 << size;
             if (opc == 0) wr(c, a, X(c, rt), bytes);               /* store */
-            else { uint64_t v = rd(c, a, bytes);                   /* load (zero-extend) */
-                   if (opc == 2 && size < 3) v = sextn(v, bytes * 8);
-                   setX(c, rt, v); }
+            else if (size == 3 && opc == 2) { /* prfm: no-op */ }
+            else ild(c, rt, a, bytes, opc);
         /* ---- load/store: signed/unscaled/pre/post (9-bit imm) ---- */
         } else if ((insn & 0x3b200000u) == 0x38000000u) {          /* ldur/stur, pre/post index */
             int size = insn >> 30, opc = (insn >> 22) & 3, mode = (insn >> 10) & 3;
@@ -275,9 +376,8 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (mode == 3 || mode == 0) a = base + off;            /* pre-index / unscaled */
             if (mode == 1) a = base;                               /* post-index */
             if (opc == 0) wr(c, a, X(c, rt), bytes);
-            else { uint64_t v = rd(c, a, bytes);
-                   if (opc == 2 && size < 3) v = sextn(v, bytes * 8);
-                   setX(c, rt, v); }
+            else if (size == 3 && opc == 2) { /* prfum: no-op */ }
+            else ild(c, rt, a, bytes, opc);
             if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         /* ---- load/store pair ---- */
         } else if ((insn & 0x3a000000u) == 0x28000000u && ((insn >> 26) & 1) == 0) { /* stp/ldp */
@@ -287,7 +387,10 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             int64_t off = (int64_t)sextn((insn >> 15) & 0x7f, 7) << scale;
             uint64_t base = (rn == 31) ? c->sp : c->x[rn];
             uint64_t a = (mode == 1) ? base : base + off;
-            if (load) { setX(c, rt, rd(c, a, bytes)); setX(c, rt2, rd(c, a + bytes, bytes)); }
+            int sw = (insn >> 30) == 1;                            /* ldpsw */
+            if (load) { uint64_t v1 = rd(c, a, bytes), v2 = rd(c, a + bytes, bytes);
+                        if (sw) { v1 = sextn(v1, 32); v2 = sextn(v2, 32); }
+                        if (c->stop == AOI_RUN) { setX(c, rt, v1); setX(c, rt2, v2); } }
             else { wr(c, a, X(c, rt), bytes); wr(c, a + bytes, X(c, rt2), bytes); }
             if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         /* ---- conditional select (csel/csinc/csinv/csneg, incl cset/csetm) ---- */
@@ -296,7 +399,8 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             int rm = (insn >> 16) & 31, cond = (insn >> 12) & 0xf, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t a = X(c, rn), b = X(c, rm), r;
             if (cond_holds(c, (unsigned)cond)) r = a;
-            else { r = b; if (o2 == 1) r += 1; else if (o2 == 2) r = ~r; else if (o2 == 3 && op) r = (uint64_t)(-(int64_t)r); }
+            else if (!op) r = o2 ? b + 1 : b;                      /* csel / csinc */
+            else r = o2 ? (uint64_t)(-(int64_t)b) : ~b;            /* csneg / csinv */
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
         /* ---- data processing (1 source): rbit/rev/clz/cls ---- */
@@ -307,7 +411,8 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) a &= 0xffffffffu;
             switch (op) {
             case 0: for (i = 0; i < width; i++) if (a >> i & 1) r |= (uint64_t)1 << (width - 1 - i); break; /* rbit */
-            case 2: for (i = 0; i < width; i += 8) r |= ((a >> i) & 0xff) << (width - 8 - i); break;        /* rev32/rev(32) */
+            case 1: for (i = 0; i < width; i += 8) r |= ((a >> i) & 0xff) << (i ^ 8); break;                /* rev16 */
+            case 2: for (i = 0; i < width; i += 8) r |= ((a >> i) & 0xff) << ((i & ~31) + 24 - (i & 31)); break; /* rev32 / rev w */
             case 3: if (is64) { for (i = 0; i < 64; i += 8) r |= ((a >> i) & 0xff) << (56 - i); }
                     else { for (i = 0; i < 32; i += 8) r |= ((a >> i) & 0xff) << (24 - i); } break;         /* rev */
             case 4: { int z = 0; while (z < width && !((a >> (width - 1 - z)) & 1)) z++; r = z; } break;    /* clz */
@@ -340,9 +445,9 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             } else if (op31 == 5) {                    /* umaddl/umsubl (32x32+64, unsigned) */
                 uint64_t prod = (uint64_t)(uint32_t)n_ * (uint32_t)m;
                 r = o0 ? acc - prod : acc + prod;
-            } else if (op31 == 2) {                    /* umulh */
+            } else if (op31 == 6) {                    /* umulh (U=1) */
                 r = (uint64_t)(((unsigned __int128)n_ * m) >> 64);
-            } else if (op31 == 6) {                    /* smulh */
+            } else if (op31 == 2) {                    /* smulh */
                 r = (uint64_t)(((__int128)(int64_t)n_ * (int64_t)m) >> 64);
             } else { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
             if (!is64) r &= 0xffffffffu;
@@ -371,26 +476,80 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (0) { done: break; }
         /* ---- bitfield: sbfm/bfm/ubfm (incl lsl/lsr/asr/sxt/uxt imm) ---- */
         } else if ((insn & 0x1f800000u) == 0x13000000u) {
+            /* ARM ARM: bot = ROR(src, R) & wmask; top = dst (bfm), sign (sbfm) or 0 (ubfm);
+             * result = (top & ~tmask) | (bot & tmask) */
             int is64 = insn >> 31, opc = (insn >> 29) & 3;
-            int immr = (insn >> 16) & 0x3f, imms = (insn >> 10) & 0x3f;
-            int rn = (insn >> 5) & 31, rd_ = insn & 31, width = is64 ? 64 : 32;
-            uint64_t src = X(c, rn), mask = width == 64 ? ~0ULL : 0xffffffffu, r;
-            uint64_t rot = ((src >> immr) | (immr ? src << (width - immr) : 0)) & mask;
-            uint64_t top = imms >= immr ? (uint64_t)(imms - immr + 1) : (uint64_t)(imms + 1);
-            uint64_t field, fmask;
-            fmask = top >= 64 ? ~0ULL : (((uint64_t)1 << top) - 1);
-            field = rot & fmask;
-            if (opc == 1) {                            /* bfm: keep other bits of dest */
-                uint64_t dst = X(c, rd_) & mask;
-                r = (dst & ~fmask) | field;
-            } else if (opc == 2) {                     /* ubfm: zero-extend */
-                r = field;
-            } else {                                   /* sbfm: sign-extend from bit top-1 */
-                uint64_t sb = top ? ((uint64_t)1 << (top - 1)) : 0;
-                r = (field ^ sb) - sb;
-            }
-            if (!is64) r &= 0xffffffffu;
+            unsigned R = (insn >> 16) & 0x3f, S = (insn >> 10) & 0x3f, width = is64 ? 64 : 32;
+            int rn = (insn >> 5) & 31, rd_ = insn & 31;
+            uint64_t mask = is64 ? ~0ULL : 0xffffffffu, src = X(c, rn) & mask, dst = X(c, rd_) & mask;
+            uint64_t wmask, tmask, rot, bot, top, r;
+            if (opc == 3 || R >= width || S >= width) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+            bitfield_masks(R, S, width, &wmask, &tmask);
+            rot = R ? ((src >> R) | (src << (width - R))) & mask : src;
+            if (opc == 1) { bot = (dst & ~wmask) | (rot & wmask); top = dst; }
+            else { bot = rot & wmask; top = opc == 0 && (src >> S & 1) ? mask : 0; }
+            r = ((top & ~tmask) | (bot & tmask)) & mask;
             setX(c, rd_, r);
+        /* ---- extr (and ror immediate) ---- */
+        } else if ((insn & 0x7fa00000u) == 0x13800000u) {
+            int is64 = insn >> 31, lsb = (insn >> 10) & 0x3f;
+            int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
+            uint64_t hi = X(c, rn), lo = X(c, rm), r;
+            if (is64) r = lsb ? (lo >> lsb) | (hi << (64 - lsb)) : lo;
+            else { lo = (uint32_t)lo; hi = (uint32_t)hi; r = lsb ? ((lo >> lsb) | (hi << (32 - lsb))) & 0xffffffffu : lo; }
+            setX(c, rd_, r);
+        /* ---- conditional compare: ccmp/ccmn (register and immediate) ---- */
+        } else if ((insn & 0x3fe00410u) == 0x3a400000u) {
+            int is64 = insn >> 31, sub = (insn >> 30) & 1, imm = (insn >> 11) & 1;
+            int rm = (insn >> 16) & 31, cond = (insn >> 12) & 0xf, rn = (insn >> 5) & 31;
+            if (cond_holds(c, (unsigned)cond)) {
+                uint64_t a = X(c, rn), b = imm ? (uint64_t)rm : X(c, rm);
+                addflags(c, a, sub ? ~b : b, sub ? 1 : 0, is64, 1);
+            } else {
+                unsigned f = insn & 0xf;
+                c->n = f >> 3 & 1; c->z = f >> 2 & 1; c->c = f >> 1 & 1; c->v = f & 1;
+            }
+        /* ---- add/sub extended register (sp-capable) ---- */
+        } else if ((insn & 0x1fe00000u) == 0x0b200000u) {
+            int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
+            int rm = (insn >> 16) & 31, option = (insn >> 13) & 7, sh = (insn >> 10) & 7;
+            int rn = (insn >> 5) & 31, rd_ = insn & 31;
+            uint64_t a = (rn == 31) ? c->sp : c->x[rn], b = X(c, rm), r;
+            switch (option) {
+            case 0: b = (uint8_t)b; break;  case 1: b = (uint16_t)b; break;  case 2: b = (uint32_t)b; break;
+            case 4: b = sextn((uint8_t)b, 8); break;  case 5: b = sextn((uint16_t)b, 16); break;
+            case 6: b = sextn((uint32_t)b, 32); break;  default: break;
+            }
+            if (sh > 4) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+            b <<= sh;
+            r = addflags(c, a, sub ? ~b : b, sub ? 1 : 0, is64, setf);
+            if (!is64) r &= 0xffffffffu;
+            if (rd_ == 31 && !setf) c->sp = r; else setX(c, rd_, r);
+        /* ---- SIMD modified immediate: movi/mvni/orr/bic (vector), fmov (vector imm) ---- */
+        } else if ((insn & 0x9ff80400u) == 0x0f000400u) {
+            int q = (insn >> 30) & 1, op = (insn >> 29) & 1, cmode = (insn >> 12) & 0xf, rd_ = insn & 31;
+            uint64_t imm8 = ((insn >> 16) & 7) << 5 | ((insn >> 5) & 0x1f), imm = 0;
+            int i;
+            switch (cmode >> 1) {
+            case 0: case 1: case 2: case 3: imm = imm8 << (8 * (cmode >> 1)); imm |= imm << 32; break;
+            case 4: case 5: imm = imm8 << (8 * ((cmode >> 1) & 1)); imm |= imm << 16; imm |= imm << 32; break;
+            case 6: imm = (cmode & 1) ? (imm8 << 16) | 0xffff : (imm8 << 8) | 0xff; imm |= imm << 32; break;
+            case 7:
+                if (!(cmode & 1) && !op) { for (i = 0; i < 8; i++) imm |= imm8 << (8 * i); }   /* 8-bit */
+                else if (!(cmode & 1) && op) { for (i = 0; i < 8; i++) if (imm8 >> i & 1) imm |= (uint64_t)0xff << (8 * i); } /* 64-bit */
+                else { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto simdimm_done; }        /* fmov imm: later */
+                break;
+            }
+            if (cmode < 12 && (cmode & 1)) {                     /* orr / bic */
+                uint64_t m = op ? ~imm : imm;
+                if (op) { c->vreg[rd_][0] &= m; c->vreg[rd_][1] &= q ? m : 0; }
+                else { c->vreg[rd_][0] |= m; c->vreg[rd_][1] = q ? c->vreg[rd_][1] | m : 0; }
+                if (!q) c->vreg[rd_][1] = 0;
+            } else {                                             /* movi / mvni */
+                if (op && cmode != 14) imm = ~imm;
+                c->vreg[rd_][0] = imm; c->vreg[rd_][1] = q ? imm : 0;
+            }
+            if (0) { simdimm_done: break; }
         /* ---- pc-relative ---- */
         } else if ((insn & 0x9f000000u) == 0x90000000u) {          /* adrp */
             uint64_t imm = (sextn((((insn >> 5) & 0x7ffff) << 2) | ((insn >> 29) & 3), 21)) << 12;
@@ -404,6 +563,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             break;
         }
         if (c->stop == AOI_RUN) c->pc = next;
+        if (c->trace) c->trace(c, 1);
     }
     return c->stop;
 }

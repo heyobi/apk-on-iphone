@@ -3,6 +3,9 @@
 #include "../core/bionic.h"
 #include "../core/cpu.h"
 #include "../core/dl.h"
+#ifdef AOI_ORACLE
+#include "../core/oracle.h"
+#endif
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -24,6 +27,9 @@ static void *slurp(const char *path, size_t *size)
 
 static int check(struct aoi_cpu *cpu, enum aoi_stop st, const char *what)
 {
+#ifdef AOI_ORACLE
+    if (st != AOI_STOP_RETURN) aoi_oracle_report(cpu, st);
+#endif
     if (st == AOI_STOP_RETURN) return 0;
     fprintf(stderr, "[gmpdemo] %s: ", what);
     switch (st) {
@@ -45,7 +51,7 @@ int main(int argc, char **argv)
     void *so;
     unsigned long n = argc > 2 ? strtoul(argv[2], NULL, 10) : 50;
     uint64_t z, str, strbuf, a[3];
-    uint64_t f_init, f_fac, f_get, f_size;
+    uint64_t f_init, f_fac, f_get;
     uint8_t *p;
 
     if (argc < 2) { fprintf(stderr, "usage: %s libgmp.so [n]\n", argv[0]); return 2; }
@@ -56,11 +62,13 @@ int main(int argc, char **argv)
     f_init = aoi_dl_sym(&dl, "__gmpz_init");
     f_fac  = aoi_dl_sym(&dl, "__gmpz_fac_ui");
     f_get  = aoi_dl_sym(&dl, "__gmpz_get_str");
-    f_size = aoi_dl_sym(&dl, "__gmpz_sizeinbase");
     if (!f_init || !f_fac || !f_get) { fprintf(stderr, "GMP symbols not found\n"); return 1; }
     fprintf(stderr, "[gmpdemo] libgmp.so at 0x%" PRIx64 ", %u imports bound\n", dl.lib[0].base, dl.nslots - 1);
 
     aoi_dl_cpu(&dl, &cpu);
+#ifdef AOI_ORACLE
+    if ((err = aoi_oracle_attach(&cpu))) { fprintf(stderr, "oracle: %s\n", err); return 1; }
+#endif
     z = aoi_dl_malloc(&dl, 16);                       /* mpz_t: {int alloc; int size; mp_limb_t *d} */
     a[0] = z;                   if (check(&cpu, aoi_call(&cpu, f_init, a, 1, 0), "mpz_init")) return 1;
     a[0] = z; a[1] = n;         if (check(&cpu, aoi_call(&cpu, f_fac, a, 2, 0), "mpz_fac_ui")) return 1;
@@ -73,5 +81,8 @@ int main(int argc, char **argv)
     while ((p = aoi_mem_ptr(&dl.mem, str++, 1)) && *p) putchar(*p);
     putchar('\n');
     fprintf(stderr, "[gmpdemo] %" PRIu64 " guest instructions interpreted\n", cpu.steps);
+#ifdef AOI_ORACLE
+    aoi_oracle_report(&cpu, AOI_STOP_RETURN);
+#endif
     return 0;
 }

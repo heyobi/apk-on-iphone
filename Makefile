@@ -40,3 +40,11 @@ run: build/aoirun build/hello.elf
 
 build/gmpdemo: tools/gmpdemo.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/gmpdemo.c $(CORE)
+
+# Debug build that cross-checks every instruction against Unicorn (QEMU's AArch64 core).
+# pip install unicorn   (ships the headers and libunicorn.so.2)
+UNICORN ?= $(shell python3 -c "import unicorn,os;print(os.path.dirname(unicorn.__file__))" 2>/dev/null)
+ORACLE  := -DAOI_ORACLE -I$(UNICORN)/include core/oracle.c $(UNICORN)/lib/libunicorn.so.2 -Wl,-rpath,$(UNICORN)/lib
+
+build/gmpdemo-check: tools/gmpdemo.c $(CORE) core/oracle.c core/*.h | build
+	$(CC) $(CFLAGS) -o $@ tools/gmpdemo.c $(CORE) $(ORACLE)
