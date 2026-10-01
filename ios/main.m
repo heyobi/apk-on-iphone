@@ -201,12 +201,22 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *data = [docs stringByAppendingPathComponent:@"adata"];
     NSString *logPath = [docs stringByAppendingPathComponent:@"app.log"];
-    [fm removeItemAtPath:data error:nil];                       /* a fresh /data each run (for now) */
+    /* /data lives on between runs (the app's settings, history, ART's caches); what the
+     * bundle provides in it (aoi.dex, the classpath) is refreshed from this build */
     NSError *e = nil;
-    if (![fm copyItemAtPath:[root stringByAppendingPathComponent:@"data"] toPath:data error:&e]) {
+    NSString *bundled = [root stringByAppendingPathComponent:@"data"];
+    if (![fm fileExistsAtPath:data] && ![fm copyItemAtPath:bundled toPath:data error:&e]) {
         [self append:[NSString stringWithFormat:@"/data hazırlanamadı: %@", e.localizedDescription]];
         return;
     }
+    for (NSString *f in @[ @"local/tmp/aoi.dex", @"system/environ/classpath" ]) {
+        NSString *dst = [data stringByAppendingPathComponent:f];
+        [fm createDirectoryAtPath:dst.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm removeItemAtPath:dst error:nil];
+        [fm copyItemAtPath:[bundled stringByAppendingPathComponent:f] toPath:dst error:nil];
+    }
+    [fm createDirectoryAtPath:[data stringByAppendingPathComponent:@"dalvik-cache/arm64"]
+  withIntermediateDirectories:YES attributes:nil error:nil];   /* ART's oat files for the app and aoi.dex */
     NSString *apkDir = [data stringByAppendingPathComponent:@"app/apk"];
     [fm createDirectoryAtPath:apkDir withIntermediateDirectories:YES attributes:nil error:nil];
     [self.apk writeToFile:[apkDir stringByAppendingPathComponent:@"base.apk"] atomically:NO];
