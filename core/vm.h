@@ -24,6 +24,10 @@
 #define AOI_PROT_R 1
 #define AOI_PROT_W 2
 #define AOI_PROT_X 4
+/* userfaultfd: the page is mapped but "missing" (moved away by MREMAP_DONTUNMAP or
+ * zapped): every access faults until core/proc.c fills it (UFFDIO_COPY/ZEROPAGE,
+ * or zero-fill when no userfaultfd watches it). Its R/W/X bits stay as they were. */
+#define AOI_PROT_MISSING 0x40
 
 struct aoi_vm {
     uint8_t **chunk;                /* host memory per 2 MiB of guest space, or NULL */
@@ -61,5 +65,12 @@ int aoi_vm_write(struct aoi_vm *vm, uint64_t addr, const void *src, uint64_t len
 
 /* Zeroes the mapped pages of a range (madvise DONTNEED). */
 void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len);
+
+/* Marks the mapped pages of a range missing (on: their bytes become zero) or present. */
+void aoi_vm_set_missing(struct aoi_vm *vm, uint64_t addr, uint64_t len, int on);
+
+/* Moves the bytes of [src, src+len) to dst (both mapped, not overlapping): whole
+ * aligned 2 MiB chunks change owner instead of being copied. src is left zeroed. */
+void aoi_vm_move(struct aoi_vm *vm, uint64_t dst, uint64_t src, uint64_t len);
 
 #endif

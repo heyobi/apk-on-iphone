@@ -69,6 +69,8 @@ struct aoi_proc {
     FILE *trace;                    /* strace-style log, or NULL */
     FILE *log;                      /* where guest liblog lines go (logd emulation), or NULL */
     int uffd;                       /* offer userfaultfd (ART then picks the CMC GC and its boot image); off: ENOSYS */
+    struct { uint64_t start, len; } uffd_reg[16];   /* ranges registered with a userfaultfd (missing mode) */
+    int nuffd_reg;
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

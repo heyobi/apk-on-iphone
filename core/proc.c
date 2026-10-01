@@ -88,14 +88,45 @@ static const char *gstr(struct aoi_proc *p, uint64_t a, char *buf, size_t n)
 }
 
 /* Copies to / from guest memory; the space is sparse, so ranges may span chunks. */
+/* ---------- userfaultfd (SIGBUS mode) ----------
+ * A page becomes missing when MREMAP_DONTUNMAP moves its bytes away or madvise
+ * zaps it inside a registered range. Touching a missing page in a registered
+ * range is the guest's SIGBUS (ART's CMC GC then compacts into it with
+ * UFFDIO_COPY); anywhere else it is simply zero-filled, as the kernel would. */
+static int uffd_watched(struct aoi_proc *p, uint64_t a)
+{
+    int i;
+    for (i = 0; i < p->nuffd_reg; i++)
+        if (a - p->uffd_reg[i].start < p->uffd_reg[i].len) return 1;
+    return 0;
+}
+
+/* Zero-fills the unwatched missing pages of a range. 1 if there were any. */
+static int uffd_fill(struct aoi_proc *p, uint64_t a, uint64_t n)
+{
+    uint64_t q;
+    int any = 0;
+    if (a + n < a || a + n > p->vm.size) return 0;
+    for (q = a & ~(uint64_t)(AOI_VM_PAGE - 1); q < a + n; q += AOI_VM_PAGE)
+        if ((p->vm.prot[q / AOI_VM_PAGE] & AOI_PROT_MISSING) && !uffd_watched(p, q)) {
+            aoi_vm_set_missing(&p->vm, q, AOI_VM_PAGE, 0);
+            any = 1;
+        }
+    return any;
+}
+
 static int put(struct aoi_proc *p, uint64_t a, const void *src, uint64_t n)
 {
-    return !n || aoi_vm_write(&p->vm, a & 0x00ffffffffffffffULL, src, n, AOI_PROT_W);
+    a &= 0x00ffffffffffffffULL;
+    return !n || aoi_vm_write(&p->vm, a, src, n, AOI_PROT_W)
+        || (uffd_fill(p, a, n) && aoi_vm_write(&p->vm, a, src, n, AOI_PROT_W));
 }
 
 static int get(struct aoi_proc *p, uint64_t a, void *dst, uint64_t n)
 {
-    return !n || aoi_vm_read(&p->vm, a & 0x00ffffffffffffffULL, dst, n, AOI_PROT_R);
+    a &= 0x00ffffffffffffffULL;
+    return !n || aoi_vm_read(&p->vm, a, dst, n, AOI_PROT_R)
+        || (uffd_fill(p, a, n) && aoi_vm_read(&p->vm, a, dst, n, AOI_PROT_R));
 }
 
 /* Host read()/write() (pread/pwrite when off >= 0) straight into / out of guest
@@ -655,13 +686,36 @@ static int sig_send(struct aoi_proc *p, int i, int sig)
     return 1;
 }
 
-/* A CPU fault becomes SIGSEGV if the guest handles it. Returns 1 if delivered. */
+/* A CPU fault becomes SIGSEGV (or, on a userfaultfd-watched missing page, SIGBUS)
+ * if the guest handles it; an unwatched missing page is zero-filled and the
+ * instruction retried. Returns 1 if the guest continues. */
 static int sig_fault(struct aoi_proc *p)
 {
     uint8_t info[128];
     uint64_t a = p->cpu.fault_addr & 0x00ffffffffffffffULL;
     int mapped_page = a < p->vm.size && p->vm.prot[a / AOI_VM_PAGE];
     uint64_t h = p->sigact[11][0];
+    if (a < p->vm.size) {
+        uint64_t pg = a & ~(uint64_t)(AOI_VM_PAGE - 1);
+        if (!(p->vm.prot[pg / AOI_VM_PAGE] & AOI_PROT_MISSING) && pg + AOI_VM_PAGE < p->vm.size
+            && (p->vm.prot[pg / AOI_VM_PAGE + 1] & AOI_PROT_MISSING) && a + 64 > pg + AOI_VM_PAGE)
+            pg += AOI_VM_PAGE;                                     /* an access straddling into it */
+        if (p->vm.prot[pg / AOI_VM_PAGE] & AOI_PROT_MISSING) {
+            uint64_t sa = a > pg ? a : pg;
+            if (!uffd_watched(p, pg)) { uffd_fill(p, pg, AOI_VM_PAGE); p->cpu.stop = AOI_RUN; return 1; }
+            h = p->sigact[7][0];
+            if (h == 0 || h == 1) return 0;
+            memset(info, 0, sizeof info);
+            put32(info, 0, 7);
+            put32(info, 8, 2);                                     /* BUS_ADRERR, as userfaultfd's SIGBUS mode */
+            put64(info, 16, sa);
+            p->th[p->cur].sigmask &= ~SIGBIT(7);
+            if (p->trace) fprintf(p->trace, "[uffd] SIGBUS at %#llx\n", (unsigned long long)sa);
+            if (!sig_deliver(p, 7, info, sa)) return 0;
+            p->cpu.stop = AOI_RUN;
+            return 1;
+        }
+    }
     if (h == 0 || h == 1) return 0;                                /* no handler: stop and report */
     memset(info, 0, sizeof info);
     put32(info, 0, 11);
@@ -757,6 +811,14 @@ static int schedule(struct aoi_proc *p)
         {
             int64_t d = soonest - now;
             struct timespec ts;
+            if (p->trace) {
+                fprintf(p->trace, "[sched] idle %.3f ms:", (double)d / 1e6);
+                for (i = 0; i < AOI_PROC_THREADS; i++)
+                    if (p->th[i].state != AOI_T_FREE)
+                        fprintf(p->trace, " %d:%d%s", p->th[i].tid, p->th[i].state,
+                                p->th[i].deadline ? (p->th[i].deadline == soonest ? "*" : "t") : "");
+                fprintf(p->trace, "\n");
+            }
             ts.tv_sec = d / 1000000000; ts.tv_nsec = d % 1000000000;
             nanosleep(&ts, NULL);
         }
@@ -1313,6 +1375,49 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                 api[1] = 1u << 7;                                  /* SIGBUS mode only: no shmem, no minor faults */
                 api[2] = 1ULL << 0x3f | 1ULL << 0 | 1ULL << 1;     /* API, REGISTER, UNREGISTER */
                 r = put(p, a2, api, 24) ? 0 : err(L_EFAULT);
+            } else if (a1 == 0xc020aa00) {                         /* UFFDIO_REGISTER {start, len, mode, ioctls} */
+                uint64_t rg[4];
+                if (!get(p, a2, rg, 32)) { r = err(L_EFAULT); break; }
+                if (rg[0] % PAGE || !rg[1] || rg[1] % PAGE || rg[2] != 1) { r = err(L_EINVAL); break; }   /* MISSING only */
+                if (!mapped(p, rg[0], rg[1])) { r = err(L_ENOMEM); break; }
+                if (p->nuffd_reg == (int)(sizeof p->uffd_reg / sizeof p->uffd_reg[0])) { r = err(L_ENOMEM); break; }
+                p->uffd_reg[p->nuffd_reg].start = rg[0];
+                p->uffd_reg[p->nuffd_reg++].len = rg[1];
+                rg[3] = 1ULL << 2 | 1ULL << 3 | 1ULL << 4;          /* WAKE, COPY, ZEROPAGE */
+                r = put(p, a2, rg, 32) ? 0 : err(L_EFAULT);
+            } else if (a1 == 0x8010aa01) {                         /* UFFDIO_UNREGISTER {start, len} */
+                uint64_t rg[2];
+                int i, j;
+                if (!get(p, a2, rg, 16)) { r = err(L_EFAULT); break; }
+                for (i = j = 0; i < p->nuffd_reg; i++) {           /* drop the ranges inside, trim the others */
+                    uint64_t s0 = p->uffd_reg[i].start, e0 = s0 + p->uffd_reg[i].len, e1 = rg[0] + rg[1];
+                    if (s0 >= rg[0] && e0 <= e1) continue;
+                    if (s0 < rg[0] && e0 > rg[0]) e0 = rg[0];
+                    else if (s0 < e1 && e0 > e1) s0 = e1;
+                    p->uffd_reg[j].start = s0; p->uffd_reg[j++].len = e0 - s0;
+                }
+                p->nuffd_reg = j;
+                uffd_fill(p, rg[0], rg[1]);                        /* unwatched now: zero-fill on demand */
+                r = 0;
+            } else if (a1 == 0xc028aa03 || a1 == 0xc020aa04) {    /* UFFDIO_COPY {dst, src, len, mode, copy} / ZEROPAGE */
+                uint64_t u[5], o, dst, len;
+                int zero = a1 == 0xc020aa04;
+                uint8_t pg[4096];
+                if (!get(p, a2, u, zero ? 32 : 40)) { r = err(L_EFAULT); break; }
+                dst = u[0]; len = zero ? u[1] : u[2];
+                if (dst % PAGE || len % PAGE || !len) { r = err(L_EINVAL); break; }
+                for (o = 0, r = 0; o < len; o += PAGE) {
+                    if (!mapped(p, dst + o, PAGE)) { r = err(L_ENOENT); break; }
+                    if (!(p->vm.prot[(dst + o) / PAGE] & AOI_PROT_MISSING)) { r = err(L_EEXIST); break; }
+                    if (zero) memset(pg, 0, sizeof pg);
+                    else if (!get(p, u[1] + o, pg, PAGE)) { r = err(L_EFAULT); break; }
+                    aoi_vm_set_missing(&p->vm, dst + o, PAGE, 0);
+                    aoi_vm_write(&p->vm, dst + o, pg, PAGE, 0);
+                }
+                u[zero ? 3 : 4] = o ? o : r;                       /* bytes done, or the error */
+                put(p, a2, u, zero ? 32 : 40);
+            } else if (a1 == 0x8010aa02) {                         /* UFFDIO_WAKE: nobody sleeps in SIGBUS mode */
+                r = 0;
             } else {
                 if (p->trace) fprintf(p->trace, "[uffd] ioctl %#llx not implemented\n", (unsigned long long)a1);
                 r = err(L_EINVAL);
@@ -1341,6 +1446,19 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         if (!(a3 & 1)) { r = err(L_ENOMEM); break; }               /* growing needs MREMAP_MAYMOVE */
+        if (a3 & 4) {                                              /* MREMAP_DONTUNMAP: move the bytes, keep the */
+            if (a1 != a2 || a1 % PAGE) { r = err(L_EINVAL); break; }   /* source mapped but missing (userfaultfd) */
+            if (fixed && a4 < a0 + a1 && a0 < a4 + a1) { r = err(L_EINVAL); break; }
+            prot0 = p->vm.prot[a0 / PAGE] & 7;
+            na = aoi_vm_map(&p->vm, fixed ? a4 : 0, a1, (int)prot0 | AOI_PROT_W, fixed);
+            if (IS_ERR(na)) { r = na; break; }
+            uffd_fill(p, a0, a1);                                  /* (missing source pages move as zero) */
+            aoi_vm_move(&p->vm, na, a0, a1);
+            aoi_vm_protect(&p->vm, na, a1, (int)prot0);
+            aoi_vm_set_missing(&p->vm, a0, a1, 1);
+            r = na;
+            break;
+        }
         if (fixed && a4 < a0 + up(a1, PAGE) && a0 < a4 + up(a2, PAGE)) { r = err(L_EINVAL); break; }
         prot0 = p->vm.prot[a0 / PAGE] & 7;
         na = aoi_vm_map(&p->vm, fixed ? a4 : 0, a2, AOI_PROT_R | AOI_PROT_W, fixed);
@@ -1361,10 +1479,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_madvise:
         if (a2 == 4 || a2 == 9) {                                  /* MADV_DONTNEED / MADV_REMOVE: reads back as zero */
-            uint64_t i;
+            uint64_t q, e = a0 + up(a1, PAGE), n;
             if (mapped(p, a0, a1))
-                for (i = 0; i < up(a1, PAGE); i += PAGE)
-                    if (p->vm.prot[(a0 + i) / PAGE] & AOI_PROT_W) aoi_vm_zero(&p->vm, a0 + i, PAGE);
+                for (q = a0; q < e; q = n) {                       /* in runs: whole host pages are released, */
+                    int w = uffd_watched(p, q), k = (p->vm.prot[q / PAGE] & AOI_PROT_W) != 0;   /* not written */
+                    for (n = q + PAGE; n < e && uffd_watched(p, n) == w
+                         && ((p->vm.prot[n / PAGE] & AOI_PROT_W) != 0) == k; n += PAGE) {}
+                    if (w) aoi_vm_set_missing(&p->vm, q, n - q, 1);   /* zapped: missing again */
+                    else if (k) aoi_vm_zero(&p->vm, q, n - q);
+                }
         }
         r = 0;
         break;

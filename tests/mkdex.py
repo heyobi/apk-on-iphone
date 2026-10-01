@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""mkdex.py OUT.dex [LOOPS]: write a minimal dex (no Android SDK needed) holding
+"""mkdex.py OUT.dex [LOOPS [GARBAGE]]: write a minimal dex (no Android SDK needed) holding
 
     public class Hello {
         public static void main(String[] args) {
             int x = 0;
             for (int i = 0; i < LOOPS; i++) x = x + i;      // only with LOOPS
+            for (int i = 0; i < GARBAGE; i++) { byte[] b = new byte[1024]; }   // only with GARBAGE:
+            if (GARBAGE) Runtime.getRuntime().gc();          //   exercises the GC
             System.out.println("Merhaba from ART");
             if (LOOPS) System.out.println(String.valueOf(x));
         }
@@ -37,24 +39,27 @@ def align(buf, n):
         buf.append(0)
 
 
-def build(loops):
+def build(loops, garbage=0):
     strings = ["LHello;", "Ljava/io/PrintStream;", "Ljava/lang/Object;", "Ljava/lang/String;",
                "Ljava/lang/System;", MSG, "V", "VL", "VI", "LI", "I", "[Ljava/lang/String;", "main",
-               "out", "println", "valueOf"]
+               "out", "println", "valueOf", "Ljava/lang/Runtime;", "[B", "L", "getRuntime", "gc"]
     strings = sorted(set(strings), key=lambda s: s.encode())
     S = {s: i for i, s in enumerate(strings)}
     types = sorted(["LHello;", "Ljava/io/PrintStream;", "Ljava/lang/Object;", "Ljava/lang/String;",
-                    "Ljava/lang/System;", "V", "I", "[Ljava/lang/String;"], key=lambda t: S[t])
+                    "Ljava/lang/System;", "V", "I", "[Ljava/lang/String;", "Ljava/lang/Runtime;", "[B"],
+                   key=lambda t: S[t])
     T = {t: i for i, t in enumerate(types)}
     # protos: (shorty, return, params), sorted by return type, then params
     protos = [("VL", "V", ["Ljava/lang/String;"]), ("VL", "V", ["[Ljava/lang/String;"]),
-              ("LI", "Ljava/lang/String;", ["I"])]
+              ("LI", "Ljava/lang/String;", ["I"]), ("V", "V", []), ("L", "Ljava/lang/Runtime;", [])]
     protos.sort(key=lambda p: (T[p[1]], [T[x] for x in p[2]]))
-    P = {p[2][0] + "->" + p[1]: i for i, p in enumerate(protos)}
+    P = {(p[2][0] if p[2] else "") + "->" + p[1]: i for i, p in enumerate(protos)}
     fields = [("Ljava/lang/System;", "Ljava/io/PrintStream;", "out")]
     methods = [("LHello;", "main", P["[Ljava/lang/String;->V"]),
                ("Ljava/io/PrintStream;", "println", P["Ljava/lang/String;->V"]),
-               ("Ljava/lang/String;", "valueOf", P["I->Ljava/lang/String;"])]
+               ("Ljava/lang/String;", "valueOf", P["I->Ljava/lang/String;"]),
+               ("Ljava/lang/Runtime;", "getRuntime", P["->Ljava/lang/Runtime;"]),
+               ("Ljava/lang/Runtime;", "gc", P["->V"])]
     methods.sort(key=lambda m: (T[m[0]], S[m[1]], m[2]))
     M = {m[0] + "->" + m[1]: i for i, m in enumerate(methods)}
 
@@ -66,6 +71,15 @@ def build(loops):
         code += [0x0414, loops & 0xFFFF, loops >> 16]              # const v4, #LOOPS
         # loop: if-ge v3, v4, +6 ; add-int/2addr v2, v3 ; add-int/lit8 v3, v3, #1 ; goto -5
         code += [0x4335, 0x0006, 0x32B0, 0x03D8, 0x0103, 0xFB28]
+    if garbage:
+        code += [0x0312, 0x0414, garbage & 0xFFFF, garbage >> 16]  # const/4 v3,0 ; const v4, #GARBAGE
+        code += [0x0213, 1024]                                     # const/16 v2, 1024
+        # loop: if-ge v3, v4, +7 ; new-array v1, v2, [B ; add-int/lit8 v3, v3, #1 ; goto -6
+        code += [0x4335, 0x0007, 0x2123, T["[B"], 0x03D8, 0x0103, 0xFA28]
+        code += [0x0071, M["Ljava/lang/Runtime;->getRuntime"], 0x0000, 0x010C]   # invoke-static; move-result-object v1
+        code += [0x106E, M["Ljava/lang/Runtime;->gc"], 0x0001]                   # invoke-virtual {v1} gc
+        if loops:
+            code += [0x0212]                                       # const/4 v2, 0 (x again; loop result is lost)
     code += [0x0062, out, 0x011A, cs, 0x206E, pl, 0x0010]         # sget-object; const-string; invoke-virtual
     if loops:
         code += [0x1071, vo, 0x0002, 0x010C, 0x206E, pl, 0x0010]   # invoke-static valueOf(v2); move-result-object v1; println
@@ -92,6 +106,7 @@ def build(loops):
     align(data, 4)
     tl_off = {}
     off_typelists = here()
+    tl_off[()] = 0                                                 # no parameters: no type_list
     for p in protos:
         key = tuple(p[2])
         if key in tl_off:
@@ -99,7 +114,7 @@ def build(loops):
         align(data, 4)
         tl_off[key] = here()
         data += struct.pack("<I", len(key)) + struct.pack("<%dH" % len(key), *[T[x] for x in key])
-    n_typelists = len(tl_off)
+    n_typelists = len(tl_off) - 1
     off_strdata = here()
     str_off = []
     for s in strings:
@@ -139,4 +154,5 @@ def build(loops):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__.split("\n\n")[0])
-    open(sys.argv[1], "wb").write(build(int(sys.argv[2]) if len(sys.argv) > 2 else 0))
+    open(sys.argv[1], "wb").write(build(int(sys.argv[2]) if len(sys.argv) > 2 else 0,
+                                        int(sys.argv[3]) if len(sys.argv) > 3 else 0))

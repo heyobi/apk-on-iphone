@@ -28,16 +28,24 @@ check "toybox uname"  "aarch64"        /system/bin/toybox uname -m
 ENV=$(sh "$DIR/tools/android-setup.sh" "$R")
 check "getprop"       "34"             /system/bin/getprop ro.build.version.sdk
 python3 "$DIR/tests/mkdex.py" "$R/data/local/tmp/hello.dex"
+python3 "$DIR/tests/mkdex.py" "$R/data/local/tmp/gc.dex" 0 20000    # 20 MB of garbage, then Runtime.gc()
 # Boot dex files are system files: their structural verification is skipped
 # (-Xverify:none), as a device skips it through the boot image's vdex.
 # shellcheck disable=SC2086
 check "ART hello dex" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
     -cp /data/local/tmp/hello.dex Hello
+# shellcheck disable=SC2086
+check "ART GC (concurrent copying)" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
+    -cp /data/local/tmp/gc.dex Hello
 # The same with userfaultfd offered: ART then takes the CMC GC and maps the boot
 # image (15 components, AOT code for every boot class) instead of running imageless.
 export AOI_UFFD=1
 # shellcheck disable=SC2086
 check "ART hello, boot image + CMC" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
     -cp /data/local/tmp/hello.dex Hello
+# Compaction: MREMAP_DONTUNMAP, SIGBUS on missing pages, UFFDIO_COPY/ZEROPAGE.
+# shellcheck disable=SC2086
+check "ART GC, CMC compaction" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
+    -cp /data/local/tmp/gc.dex Hello
 unset AOI_UFFD
 exit $fail

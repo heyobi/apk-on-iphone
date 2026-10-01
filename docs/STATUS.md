@@ -155,19 +155,41 @@ were in the way, both found with the debug build's store watch (`AOI_WATCH`) and
   returned normally (ART's implicit null checks → NullPointerException) jumped to 0. A
   one-page `[vdso]` with `mov x8, #139; svc #0` now plays that role.
 
+**CMC compaction works too.** `tests/mkdex.py OUT 0 20000` writes a dex that allocates
+20 MB of `byte[1024]` and calls `Runtime.getRuntime().gc()`; under CMC ART logs
+"Background concurrent mark compact GC freed 20MB" and the explicit GC, and exits 0.
+What it took (core/proc.c, core/vm.c): a per-page **missing** bit in the VM (any access
+faults); `mremap(MREMAP_DONTUNMAP)` moves the bytes (whole aligned 2 MiB chunks change
+owner: the 256 MB moving space and the 1 GB linear-alloc space are not copied) and
+leaves the source missing; a missing page inside a range registered with
+UFFDIO_REGISTER raises the guest **SIGBUS** (BUS_ADRERR) that ART's handler answers with
+UFFDIO_COPY/ZEROPAGE; outside one it is zero-filled on touch, as the kernel would;
+madvise(DONTNEED/REMOVE) on a registered page makes it missing again; UNREGISTER and
+WAKE. Both GCs are in `make android-test` (CC by default, CMC with `AOI_UFFD=1`).
+
+**Memory fix that matters on the phone.** madvise(DONTNEED) zeroed page by page, and a
+4 KB page is smaller than a host page (16 KB on iOS), so every byte was written, and so
+allocated: the GC's 2.7 GB of madvise turned into 739 k host page faults and 1.5 GB RSS.
+Now runs of pages are released as whole host pages (`chunk_clear`). GC dex, host:
+
+| GC | before | after |
+|---|---|---|
+| CC (default) | 4.2 s, 722 MB RSS | **2.0 s, 155 MB** |
+| CMC + boot image | 18.5 s, 1.5 GB RSS | **4.0 s, 198 MB** |
+
 Where the 222 M go (`aoiproc -p`): 30 % liblz4 (decompressing the images), 29 % libart,
 20 % libartbase, 10 % linker64. Storing the images uncompressed in the root would remove
 the LZ4 third. The image only pays off with the full BCP (framework classes for real
 apps); for the bare hello the six core jars imageless stay cheapest (81 M), which is
-what the phone runs. userfaultfd stays off by default until compaction works: a GC that
-compacts needs UFFDIO_REGISTER/COPY/ZEROPAGE and MREMAP_DONTUNMAP, none implemented yet.
+what the phone runs. userfaultfd stays opt-in for now: the phone ships only the core
+jars (no boot image to gain), and CMC on the device is untested.
 `aoiproc -t` prints a frame-pointer backtrace on each guest SIGSEGV and every
 sigaction a guest installs.
 
 **Next, in order:**
-1. userfaultfd for CMC compaction: per-page "missing" state in the VM (access → guest
-   SIGBUS), UFFDIO_REGISTER/COPY/ZEROPAGE, MREMAP_DONTUNMAP; a dex that allocates enough
-   to force a GC as the test. Then uncompressed boot images and a full-BCP measurement.
+1. Uncompressed boot images in the root (LZ4 is 30 % of the image start), file
+   mappings backed by the host's own mmap instead of copies (RSS), then decide whether
+   the phone gets the full BCP + boot image + CMC.
 2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);

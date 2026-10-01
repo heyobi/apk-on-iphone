@@ -20,7 +20,7 @@ static inline uint8_t *gptr(struct aoi_cpu *c, uint64_t a, int len, int need)
         if (need != AOI_PROT_X) a = AOI_TBI(a);
         if (a + (uint64_t)len <= vm->size && (a ^ (a + (uint64_t)len - 1)) < AOI_VM_PAGE) {
             uint8_t f = vm->prot[a / AOI_VM_PAGE];
-            return f && (f & need) == need ? vm->chunk[a >> AOI_VM_CHUNK_SHIFT] + (a & (AOI_VM_CHUNK - 1)) : NULL;
+            return f && (f & (need | AOI_PROT_MISSING)) == need ? vm->chunk[a >> AOI_VM_CHUNK_SHIFT] + (a & (AOI_VM_CHUNK - 1)) : NULL;
         }
         return aoi_vm_ptr(vm, a, (uint64_t)len, need);
     }

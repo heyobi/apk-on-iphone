@@ -160,7 +160,8 @@ int aoi_vm_protect(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot)
     for (p = addr; p < addr + len; p += AOI_VM_PAGE)
         if (!vm->prot[PG(p)]) return -ENOMEM;
     if (!back(vm, addr, len, prot)) return -ENOMEM;
-    memset(vm->prot + PG(addr), prot | 0x80, PG(len));
+    for (p = addr; p < addr + len; p += AOI_VM_PAGE)                /* a missing page stays missing */
+        vm->prot[PG(p)] = (uint8_t)(prot | 0x80 | (vm->prot[PG(p)] & AOI_PROT_MISSING));
     return 0;
 }
 
@@ -171,7 +172,7 @@ static int pages_ok(struct aoi_vm *vm, uint64_t addr, uint64_t len, int need)
     if (addr + len < addr || addr + len > vm->size) return 0;
     for (p = down(addr, AOI_VM_PAGE), e = addr + len; p < e; p += AOI_VM_PAGE) {
         uint8_t f = vm->prot[PG(p)];
-        if (!f || (f & need) != need || !vm->chunk[CI(p)]) return 0;
+        if (!f || (f & (need | AOI_PROT_MISSING)) != need || !vm->chunk[CI(p)]) return 0;
     }
     return 1;
 }
@@ -219,10 +220,63 @@ int aoi_vm_write(struct aoi_vm *vm, uint64_t addr, const void *src, uint64_t len
     return 1;
 }
 
-void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len)
+void aoi_vm_set_missing(struct aoi_vm *vm, uint64_t addr, uint64_t len, int on)
 {
     uint64_t p, e;
     if (!range_ok(vm, addr, len ? len : 1)) return;
+    if (on) aoi_vm_zero(vm, addr, len);
     for (p = down(addr, AOI_VM_PAGE), e = up(addr + len, AOI_VM_PAGE); p < e; p += AOI_VM_PAGE)
-        if (vm->prot[PG(p)] && vm->chunk[CI(p)]) memset(vm->chunk[CI(p)] + (p & (AOI_VM_CHUNK - 1)), 0, AOI_VM_PAGE);
+        if (vm->prot[PG(p)]) {
+            if (on) vm->prot[PG(p)] |= AOI_PROT_MISSING;
+            else vm->prot[PG(p)] &= (uint8_t)~AOI_PROT_MISSING;
+        }
+}
+
+void aoi_vm_move(struct aoi_vm *vm, uint64_t dst, uint64_t src, uint64_t len)
+{
+    uint64_t o = 0, n;
+    uint8_t buf[AOI_VM_PAGE];
+    if (!range_ok(vm, dst, len) || !range_ok(vm, src, len)) return;
+    while (o < len) {
+        uint64_t s = src + o, d = dst + o;
+        if (!(s & (AOI_VM_CHUNK - 1)) && !(d & (AOI_VM_CHUNK - 1)) && len - o >= AOI_VM_CHUNK
+            && vm->chunk[CI(s)] && vm->chunk[CI(d)]) {
+            uint8_t *t = vm->chunk[CI(d)];                          /* swap owners, then clear the old dst memory */
+            if (aoi_vm_chunk_hook) {
+                aoi_vm_chunk_hook(vm, s, vm->chunk[CI(s)], 0);
+                aoi_vm_chunk_hook(vm, d, t, 0);
+            }
+            vm->chunk[CI(d)] = vm->chunk[CI(s)];
+            vm->chunk[CI(s)] = t;
+            chunk_clear(vm, s, AOI_VM_CHUNK);
+            if (aoi_vm_chunk_hook) {
+                aoi_vm_chunk_hook(vm, d, vm->chunk[CI(d)], 1);
+                aoi_vm_chunk_hook(vm, s, vm->chunk[CI(s)], 1);
+            }
+            o += AOI_VM_CHUNK;
+            continue;
+        }
+        n = AOI_VM_PAGE - (s & (AOI_VM_PAGE - 1));
+        if (n > len - o) n = len - o;
+        if (vm->prot[PG(s)] && vm->chunk[CI(s)] && vm->prot[PG(d)] && vm->chunk[CI(d)]) {
+            memcpy(buf, vm->chunk[CI(s)] + (s & (AOI_VM_CHUNK - 1)), (size_t)n);
+            memcpy(vm->chunk[CI(d)] + (d & (AOI_VM_CHUNK - 1)), buf, (size_t)n);
+            memset(vm->chunk[CI(s)] + (s & (AOI_VM_CHUNK - 1)), 0, (size_t)n);
+        }
+        o += n;
+    }
+}
+
+void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len)
+{
+    uint64_t p, q, e;
+    if (!range_ok(vm, addr, len ? len : 1)) return;
+    /* runs of mapped pages inside one chunk: chunk_clear hands whole host pages back
+     * to the system instead of writing (and so allocating) them */
+    for (p = down(addr, AOI_VM_PAGE), e = up(addr + len, AOI_VM_PAGE); p < e; p = q) {
+        uint64_t ce = down(p, AOI_VM_CHUNK) + AOI_VM_CHUNK;
+        if (!vm->prot[PG(p)] || !vm->chunk[CI(p)]) { q = p + AOI_VM_PAGE; continue; }
+        for (q = p; q < e && q < ce && vm->prot[PG(q)]; q += AOI_VM_PAGE) {}
+        chunk_clear(vm, p, q - p);
+    }
 }
