@@ -290,9 +290,9 @@ static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id, uint64_t gb
     sf->frame = id;
     sf->shown.gb = gb; sf->shown.number = number; sf->shown.ptr = ptr; sf->shown.cookie = cookie;
     sf->frames++;
-    if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u), frame number %llu, after %llu instructions\n",
+    if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u), frame number %llu, after %llu instructions, at %.3f s\n",
                           (unsigned long long)sf->frames, id, b->width, b->height, (unsigned long long)number,
-                          (unsigned long long)p->cpu.steps);
+                          (unsigned long long)p->cpu.steps, (double)now_ns() / 1e9);
     dump(p, b, sf->frames);
     if (p->frame && b->bpp == 4) {                             /* the host shows it: packed rows */
         uint8_t *px = malloc((size_t)b->width * b->height * 4);

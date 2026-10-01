@@ -157,6 +157,15 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         next = c->pc + 4;
         if (c->trace) { c->nwlog = 0; c->trace(c, 0); }
 
+        /* ---- SIMD & FP data processing (op0 x111), except modified immediate below: straight
+         * to simd.c instead of down the chain (Skia's raster pipeline is mostly these) ---- */
+        if ((insn & 0x0e000000u) == 0x0e000000u && (insn & 0x9ff80400u) != 0x0f000400u) {
+            if (!aoi_simd_step(c, insn)) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+            if (c->stop != AOI_RUN) break;
+            c->pc = next;
+            if (c->trace) c->trace(c, 1);
+            continue;
+        }
         /* ---- branches ---- */
         if ((insn & 0xfc000000u) == 0x14000000u) {                 /* b */
             next = c->pc + (sextn(insn & 0x3ffffff, 26) << 2);

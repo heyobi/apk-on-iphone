@@ -389,6 +389,34 @@ static int three_same(struct aoi_cpu *c, uint32_t insn, int scalar)
         int dbl = size & 1, fesz = dbl ? 8 : 4, fne = scalar ? 1 : (q ? 16 : 8) / fesz, hi = size >> 1;
         int k = u << 6 | hi << 5 | op;
         if (dbl && !q) return 0;
+        /* fast path: 4 x single fadd/fsub/fmul/fmax/fmin with the default FPCR (round to
+         * nearest, no flush-to-zero, no default NaN) is the host's IEEE arithmetic; a NaN
+         * anywhere takes the general path below (ARM's NaN propagation rules). Skia's
+         * raster pipeline is mostly these. */
+        if (!scalar && q && !dbl && !(c->fpcr & 0x03c00000u) &&
+            (k == 0x1a || k == 0x3a || k == 0x5b || k == 0x1e || k == 0x3e)) {
+            float x[4], y[4], z[4];
+            uint32_t xb[4], yb[4], zb[4];
+            int nan = 0;
+            memcpy(x, a, 16); memcpy(y, b, 16); memcpy(xb, a, 16); memcpy(yb, b, 16);
+            for (i = 0; i < 4; i++) nan |= x[i] != x[i] || y[i] != y[i];
+            if (!nan) {
+                for (i = 0; i < 4; i++)
+                    switch (k) {
+                    case 0x1a: z[i] = x[i] + y[i]; break;
+                    case 0x3a: z[i] = x[i] - y[i]; break;
+                    case 0x5b: z[i] = x[i] * y[i]; break;
+                    case 0x1e: if (x[i] == y[i]) { zb[i] = xb[i] & yb[i]; memcpy(&z[i], &zb[i], 4); }   /* +0 > -0 */
+                               else z[i] = x[i] > y[i] ? x[i] : y[i];
+                               break;
+                    default:   if (x[i] == y[i]) { zb[i] = xb[i] | yb[i]; memcpy(&z[i], &zb[i], 4); }
+                               else z[i] = x[i] < y[i] ? x[i] : y[i];
+                               break;
+                    }
+                for (i = 0; i < 4; i++) nan |= z[i] != z[i];   /* inf - inf, 0 * inf: ARM's default NaN */
+                if (!nan) { memcpy(c->vreg[d], z, 16); return 1; }
+            }
+        }
         /* scalar: fmulx, fcmeq/ge/gt, facge/gt, fabd, frecps, frsqrts */
         if (scalar && k != 0x1b && k != 0x1c && k != 0x5c && k != 0x7c && k != 0x5d && k != 0x7d
             && k != 0x7a && k != 0x1f && k != 0x3f) return 0;
