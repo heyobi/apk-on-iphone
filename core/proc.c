@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -913,7 +914,8 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 
 enum {
     NR_getcwd = 17, NR_pipe2 = 59, NR_eventfd2 = 19, NR_epoll_create1 = 20, NR_epoll_ctl = 21,
-    NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_socketpair = 199, NR_connect = 203, NR_sendto = 206, NR_recvfrom = 207,
+    NR_setsockopt = 208, NR_getsockopt = 209, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -1547,6 +1549,39 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         p->fd[n0].nonblock = p->fd[n1].nonblock = (a1 & 04000) != 0;
         gfd[0] = n0; gfd[1] = n1;
         r = put(p, a0, gfd, 8) ? 0 : err(L_EFAULT);
+        break;
+    }
+    case NR_socketpair: {                                          /* AF_UNIX: a host pair, non-blocking underneath */
+        int hv[2], t = (int)(a1 & 0xf), n0, n1, ht;
+        int32_t gfd[2];
+        if (a0 != 1) { r = err(L_EAFNOSUPPORT); break; }
+        ht = t == 1 ? SOCK_STREAM : t == 2 ? SOCK_DGRAM : t == 5 ? SOCK_SEQPACKET : -1;
+        if (ht < 0) { r = err(L_EINVAL); break; }
+        if (socketpair(AF_UNIX, ht, 0, hv)) { r = herr(); break; }
+        fcntl(hv[0], F_SETFL, O_NONBLOCK); fcntl(hv[1], F_SETFL, O_NONBLOCK);
+        fcntl(hv[0], F_SETFD, FD_CLOEXEC); fcntl(hv[1], F_SETFD, FD_CLOEXEC);
+        if ((n0 = fd_new(p, hv[0], "socket:[pair]", 0)) < 0) { close(hv[0]); close(hv[1]); r = err(L_EMFILE); break; }
+        if ((n1 = fd_new(p, hv[1], "socket:[pair]", 0)) < 0) { p->fd[n0].used = 0; close(hv[0]); close(hv[1]); r = err(L_EMFILE); break; }
+        p->fd[n0].kind = p->fd[n1].kind = AOI_FD_PIPE;
+        p->fd[n0].nonblock = p->fd[n1].nonblock = (a1 & 04000) != 0;   /* SOCK_NONBLOCK */
+        gfd[0] = n0; gfd[1] = n1;
+        r = put(p, a3, gfd, 8) ? 0 : err(L_EFAULT);
+        break;
+    }
+    case NR_sendto: case NR_recvfrom: {                            /* on host-backed sockets; addresses ignored */
+        if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind != AOI_FD_PIPE) { r = err(L_ENOTSOCK); break; }
+        r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, nr == NR_recvfrom, -1) : 0;
+        if (r == err(L_EAGAIN) && !f->nonblock && !(a3 & 0x40)) r = block_and_retry(p, 1000000);   /* MSG_DONTWAIT */
+        if (nr == NR_recvfrom && a5 && (int64_t)r >= 0) { uint32_t z = 0; put(p, a5, &z, 4); }   /* *addrlen = 0 */
+        break;
+    }
+    case NR_setsockopt: r = 0; break;                              /* buffer sizes and the like: accepted */
+    case NR_getsockopt: {                                          /* an int option: 0, or the buffer size */
+        uint32_t v = (a1 == 1 && (a2 == 7 || a2 == 8)) ? 65536 : 0, l = 4;   /* SO_SNDBUF / SO_RCVBUF */
+        if (a3) put(p, a3, &v, 4);
+        if (a4) put(p, a4, &l, 4);
+        r = 0;
         break;
     }
     case NR_socket: {                                              /* AF_UNIX only: logd, or nothing */

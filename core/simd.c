@@ -669,7 +669,19 @@ static int scalar_misc(struct aoi_cpu *c, uint32_t insn)
 static int scalar_pairwise(struct aoi_cpu *c, uint32_t insn)
 {
     int u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0x1f, n = insn >> 5 & 31, d = insn & 31;
-    if (u || size != 3 || op != 0x1b) return 0;       /* addp d, v.2d */
+    if (u) {                                          /* faddp / fmax(nm)p / fmin(nm)p: o1:sz = size */
+        int o1 = size >> 1, dbl = size & 1, f;
+        uint64_t x = dbl ? c->vreg[n][0] : c->vreg[n][0] & 0xffffffffu;
+        uint64_t y = dbl ? c->vreg[n][1] : c->vreg[n][0] >> 32;
+        if (op == 0x0c) f = o1 ? 7 : 6;               /* fminnmp / fmaxnmp */
+        else if (op == 0x0d && !o1) f = 2;            /* faddp */
+        else if (op == 0x0f) f = o1 ? 5 : 4;          /* fminp / fmaxp */
+        else return 0;
+        c->vreg[d][0] = fp2(f, x, y, dbl);
+        c->vreg[d][1] = 0;
+        return 1;
+    }
+    if (size != 3 || op != 0x1b) return 0;            /* addp d, v.2d */
     c->vreg[d][0] = c->vreg[n][0] + c->vreg[n][1];
     c->vreg[d][1] = 0;
     return 1;
