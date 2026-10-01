@@ -27,15 +27,19 @@ int aoi_jit_txm_likely(void);
  * without the script attached crashes the app. NULL on success. */
 const char *aoi_jit_txm_init(size_t size);
 int aoi_jit_txm_ready(void);
+/* What the handshake found (which layouts work), for the log. */
+const char *aoi_jit_txm_info(void);
 
 /* One image: `load` is where its code runs, `buf` where it is written. */
 struct aoi_jit_mem {
     int strategy;
     uint8_t *load, *buf;
     size_t span;
+    void *area;             /* TXM: the pool or slot it lives in */
 };
-/* Reserves room for an image of `span` bytes (buf is writable and zeroed). */
-const char *aoi_jit_reserve(int strategy, size_t span, struct aoi_jit_mem *m);
+/* Reserves room for an image of `span` bytes whose first `text` bytes are code
+ * (buf is writable and zeroed). */
+const char *aoi_jit_reserve(int strategy, size_t span, size_t text, struct aoi_jit_mem *m);
 /* Puts the image in place: [load, load+text) executable, the rest read-write.
  * Checks the kernel really granted execute. NULL on success. */
 const char *aoi_jit_seal(struct aoi_jit_mem *m, size_t text);

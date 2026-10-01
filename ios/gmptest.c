@@ -90,7 +90,7 @@ int aoi_jit_probe(int strategy, aoi_log_fn log, void *ctx)
     struct aoi_jit_mem m;
     const char *err;
     int r;
-    if ((err = aoi_jit_reserve(strategy, 2 * page, &m))) { LOG("  %s: %s", aoi_jit_name(strategy), err); return 0; }
+    if ((err = aoi_jit_reserve(strategy, 2 * page, page, &m))) { LOG("  %s: %s", aoi_jit_name(strategy), err); return 0; }
     memcpy(m.buf, code, sizeof code);
     if ((err = aoi_jit_seal(&m, page))) {
         LOG("  %s: %s", aoi_jit_name(strategy), err);
@@ -148,7 +148,7 @@ char *aoi_gmp_native(const void *so, size_t size, int strategy, unsigned long n,
 
     if ((err = aoi_native_layout(so, size, &lay))) { LOG("native: %s", err); return NULL; }
     if (!lay.text_ok) { LOG("native: code and data share a page; cannot protect them separately"); return NULL; }
-    if ((err = aoi_jit_reserve(strategy, lay.span, &m))) { LOG("native: %s", err); return NULL; }
+    if ((err = aoi_jit_reserve(strategy, lay.span, lay.text_end, &m))) { LOG("native: %s", err); return NULL; }
     if ((err = aoi_native_link(so, size, m.buf, m.load, resolve, NULL, &missing))) {
         LOG("native: %s%s%s", err, missing ? ": " : "", missing ? missing : "");
         aoi_jit_release(&m);

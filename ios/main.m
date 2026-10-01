@@ -120,8 +120,9 @@ static int list_cb(const char *name, size_t len, void *ctx);
     const char *err = aoi_jit_txm_init(kTxmPool);
     [d removeObjectForKey:kProbing];
     [d synchronize];
+    if (err && *aoi_jit_txm_info()) [self append:[NSString stringWithFormat:@"  %s", aoi_jit_txm_info()]];
     [self append:err ? [NSString stringWithFormat:@"TXM hazırlığı başarısız: %s", err]
-                     : [NSString stringWithFormat:@"TXM: %zu MB çalıştırılabilir alan hazır ✅", kTxmPool >> 20]];
+                     : [NSString stringWithFormat:@"TXM hazır ✅ %s", aoi_jit_txm_info()]];
 }
 
 - (UIButton *)button:(NSString *)t action:(SEL)a {
