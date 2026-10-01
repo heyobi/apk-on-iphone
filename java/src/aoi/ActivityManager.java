@@ -39,7 +39,17 @@ final class ActivityManager extends IActivityManager.Stub {
         t.bindApplication(app.packageName, app, null, null, false, ProviderInfoList.fromList(providers),
                 null, null, null, null, null, 0,
                 false, false, false, false, config, CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO,
-                new HashMap<String, Object>(), new Bundle(), "unknown", null, null, new long[0], null, 0, 0);
+                new HashMap<String, Object>(), coreSettings(), "unknown", null, null, new long[0], null, 0, 0);
+    }
+
+    /** Settings ViewConfiguration reads (AppGlobals.getIntCoreSetting). The interpreter is
+     *  slow: a tap's up arrives seconds after its down in the app's time, so the 400 ms
+     *  long-press timeout turned taps on Compose keys with a long-press action into long
+     *  presses. */
+    private static Bundle coreSettings() {
+        Bundle b = new Bundle();
+        b.putInt("long_press_timeout", 5000);
+        return b;
     }
 
     /** What the app is told about the device: the iPhone's portrait screen (393 x 852 dp

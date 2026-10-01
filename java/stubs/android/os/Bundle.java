@@ -4,4 +4,5 @@ public final class Bundle {
     public Bundle() {}
     public void putString(String key, String value) {}
     public String getString(String key) { return null; }
+    public void putInt(String key, int value) {}
 }
