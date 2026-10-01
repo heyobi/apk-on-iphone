@@ -392,6 +392,10 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**On the phone with v0.14.60:** a frame after a tap ~1.1 s (Choreographer skips ~68,
+was ~125); the first full draw ~5.8 s (348, was 513); the second launch reuses the
+compiled odex and /data (no dex2oat).
+
 **On the phone with v0.14.57:** dex2oat compiles Qalculate once in 167 s (12.7 G
 instructions, 196 MB peak); then a frame after a tap takes ~2 s (Choreographer skips
 ~125 frames; was ~360 = 6 s with 0.13.49). "112+113" = 225 and "112+1123" = 1235.
