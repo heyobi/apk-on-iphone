@@ -349,7 +349,13 @@ and mapper.aoi.so (brew lld). Checked on the host with `build/iostest`
 touches (`aoi_android_touch` -> `aoi_proc_touch`) into a host pipe the guest opens as
 /dev/aoi_input; `aoi.Input` (java/src) reads the records and sends MotionEvents with the
 framework's own InputEventSender on the server end of the window's input channel.
-`iostest` taps with `AOI_APP_TAPS="x,y;..."`.
+`iostest` taps with `AOI_APP_TAPS="x,y;..."` (`aoiproc` with `AOI_TAPS`). Buffers come
+back: when a new buffer replaces the one on screen, sf.c calls the app's
+ITransactionCompletedListener.onReleaseBuffer (code 2, one-way; ReleaseCallbackId is a
+nullable parcelable) through `aoi_binder_send`, the driver's first host-to-guest call
+(BR_TRANSACTION queued for a looper thread). BLASTBufferQueue then cycles two buffers;
+before that it stalled after three. A tap on Qalculate's ↵ adds a history entry.
+`AOI_SF_DUMP=frame%d.ppm` keeps every frame. IPA v0.13.39 (174 MB, root 373 MB).
 
 **Past layout, toward the first frame.** The window configuration now carries the
 screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);

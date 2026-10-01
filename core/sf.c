@@ -235,11 +235,14 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
 
 /* ---------- frames: the legacy ISurfaceComposer's setTransactionState ---------- */
 
-/* The newest frame as a PPM file at $AOI_SF_DUMP (host debugging). */
-static void dump(struct aoi_proc *p, const struct aoi_gbuf *b)
+/* The newest frame as a PPM file at $AOI_SF_DUMP (host debugging); a "%d" in it
+ * keeps every frame, numbered. */
+static void dump(struct aoi_proc *p, const struct aoi_gbuf *b, uint64_t n)
 {
     const char *path = getenv("AOI_SF_DUMP");
+    char numbered[1024];
     FILE *f;
+    if (path && strstr(path, "%d")) { snprintf(numbered, sizeof numbered, path, (int)n); path = numbered; }
     uint8_t *row;
     uint32_t y, x;
     if (!path || !*path || b->bpp != 4 || !(f = fopen(path, "wb"))) return;
@@ -289,7 +292,7 @@ static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id, uint64_t gb
     sf->frames++;
     if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u), frame number %llu\n", (unsigned long long)sf->frames,
                           id, b->width, b->height, (unsigned long long)number);
-    dump(p, b);
+    dump(p, b, sf->frames);
     if (p->frame && b->bpp == 4) {                             /* the host shows it: packed rows */
         uint8_t *px = malloc((size_t)b->width * b->height * 4);
         uint32_t y;
