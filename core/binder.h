@@ -1,8 +1,11 @@
-/* In-process binder driver for core/proc.c (see binder.c). */
+/* In-process binder driver for core/proc.c (see binder.c), and the native services
+ * that live behind its handles (core/sf.c). */
 #ifndef AOI_BINDER_H
 #define AOI_BINDER_H
 
 #include <stdint.h>
+
+#include "parcel.h"
 
 struct aoi_proc;
 
@@ -14,5 +17,20 @@ uint64_t aoi_binder_ioctl(struct aoi_proc *p, uint64_t cmd, uint64_t arg, int *b
 void aoi_binder_mapped(struct aoi_proc *p, uint64_t addr, uint64_t len);
 
 void aoi_binder_free(struct aoi_proc *p);
+
+/* A native object: called for each transaction `code` with the request after its
+ * interface token; it fills the reply (reply->status starts as UNKNOWN_TRANSACTION:
+ * set it to 0 for a normal reply). */
+typedef void (*aoi_native_fn)(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req,
+                              struct aoi_parcel *reply);
+
+/* Creates one; with a name it is also registered with servicemanager. Its handle,
+ * or 0 if the table is full. */
+uint32_t aoi_binder_native(struct aoi_proc *p, const char *name, const char *iface, aoi_native_fn fn, void *self);
+
+/* SurfaceFlinger (core/sf.c): registered when binder starts; tick() sends due vsync events. */
+void aoi_sf_init(struct aoi_proc *p);
+void aoi_sf_tick(struct aoi_proc *p);
+void aoi_sf_free(struct aoi_proc *p);
 
 #endif

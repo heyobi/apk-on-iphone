@@ -287,6 +287,13 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
     return -1;
 }
 
+int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind)
+{
+    int n = fd_new(p, host, path, 0);
+    if (n >= 0) p->fd[n].kind = kind;
+    return n;
+}
+
 static struct aoi_proc_fd *fd_get(struct aoi_proc *p, uint64_t fd)
 {
     return fd < AOI_PROC_FDS && p->fd[fd].used ? &p->fd[fd] : NULL;
@@ -879,6 +886,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         enum aoi_stop st;
         if (max_steps && end > max_steps) end = max_steps;
         if (!sig_pending(p)) return p->cpu.stop;
+        if (p->sf) aoi_sf_tick(p);                                 /* vsync events that are due */
         st = aoi_cpu_run(&p->cpu, end);
         if (st == AOI_STOP_FAULT && sig_fault(p)) continue;
         if (st == AOI_RUN && p->samples && p->nsamples < p->maxsamples)   /* time slices, not waits */
