@@ -37,6 +37,7 @@ jobs:
           sh tools/android-setup.sh "$RUNNER_TEMP/aroot" > /dev/null
           sh tools/mini-root.sh "$RUNNER_TEMP/aroot" "$PWD/aroot-mini" ios/android-files.txt
           python3 tests/mkdex.py "$PWD/aroot-mini/data/local/tmp/hello.dex"
+          python3 tests/mkdex.py "$PWD/aroot-mini/data/local/tmp/gc.dex" 0 20000
           du -sh aroot-mini
           rm -rf "$RUNNER_TEMP/aroot"
 

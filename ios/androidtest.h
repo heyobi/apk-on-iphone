@@ -17,4 +17,7 @@ int aoi_android_run_env(const char *root, const char *tmpdir, int argc, const ch
 /* ART: dalvikvm64 runs the bundled /data/local/tmp/hello.dex (prints a greeting). */
 int aoi_android_art_hello(const char *root, const char *tmpdir, aoi_log_fn log, void *ctx);
 
+/* ART: /data/local/tmp/gc.dex allocates 20 MB of garbage, then Runtime.gc(). */
+int aoi_android_art_gc(const char *root, const char *tmpdir, aoi_log_fn log, void *ctx);
+
 #endif
