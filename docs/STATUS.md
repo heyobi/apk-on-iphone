@@ -337,6 +337,16 @@ instructions (88 s on the host) from process start. Fixes on the way: allocate2'
 request has an `additionalOptions` array before `count`; fcntl record locks (F_GETLK,
 F_SETLK(W), OFD) are granted (one process), SQLite needs them.
 
+**On the iPhone (app 0.13, not yet run on the device):** an "Uygulama" button runs the
+picked APK the same way (`aoi_android_app`, ios/androidtest.c) and shows each frame full
+screen (`p->frame`, called by core/sf.c with packed RGBX rows). The bundle is read-only,
+so the guest's /data is a writable copy in Documents (`p->data`: core/proc.c maps guest
+/data/... there). The bundled root grows to ~385 MB: ios/android-files.txt now lists
+what Qalculate's process opens (tools/tracefiles.py over a trace; .apex packages that
+are only stat'ed with O_PATH become empty files). The workflow builds aoi.dex (setup-java)
+and mapper.aoi.so (brew lld). Checked on the host with `build/iostest`
+(AOI_ANDROID_ROOT + AOI_APP_DATA): same frame.
+
 **Past layout, toward the first frame.** The window configuration now carries the
 screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);
 the activity metrics are logged at resume. New, not yet seen working end to end:

@@ -90,9 +90,10 @@ android-test: build/aoiproc build/mapper.aoi.so
 
 # The gralloc mapper libui loads in the guest (core/gralloc.c names it): guest code,
 # installed into a root as /vendor/lib64/hw/mapper.aoi.so.
+GUEST_LD ?= -fuse-ld=lld
 build/mapper.aoi.so: guest/mapper.c core/gralloc.h | build
 	clang --target=aarch64-linux-android29 -shared -nostdlib -ffreestanding -fno-stack-protector -fPIC -O2 \
-	    -fvisibility=hidden -fuse-ld=lld -Wl,--hash-style=both -Wl,-soname,mapper.aoi.so -Wall -Wextra -o $@ guest/mapper.c
+	    -fvisibility=hidden $(GUEST_LD) -Wl,--hash-style=both -Wl,-soname,mapper.aoi.so -Wall -Wextra -o $@ guest/mapper.c
 
 # Signal delivery (SIGSEGV from a fault, sigreturn, tgkill, masks) through core/proc.c.
 build/signals.elf: tests/signals.c | build

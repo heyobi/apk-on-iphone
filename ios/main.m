@@ -16,9 +16,11 @@
 @property(nonatomic, strong) NSData *apk;
 @property(nonatomic, strong) NSMutableString *log;
 @property(nonatomic) dispatch_queue_t work;
+@property(nonatomic, strong) UIImageView *screen;    /* the Android app's frames */
 @end
 
 static void log_cb(void *ctx, const char *line);
+static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h);
 static int list_cb(const char *name, size_t len, void *ctx);
 
 @implementation VC
@@ -41,6 +43,7 @@ static int list_cb(const char *name, size_t len, void *ctx);
     UIStackView *row1 = [self row:@[ [self button:@"APK seç" action:@selector(pick)], self.nField ]];
     UIStackView *row2 = [self row:@[ [self button:@"Çalıştır" action:@selector(run)],
                                      [self button:@"Android" action:@selector(android)],
+                                     [self button:@"Uygulama" action:@selector(openApp)],
                                      [self button:@"Logu kopyala" action:@selector(copyLog)] ]];
 
     self.logView = [UITextView new];
@@ -100,7 +103,15 @@ static int list_cb(const char *name, size_t len, void *ctx);
 }
 
 - (void)copyLog {
-    UIPasteboard.generalPasteboard.string = self.log;
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *app = [NSString stringWithContentsOfFile:[docs stringByAppendingPathComponent:@"app.log"]
+                                              encoding:NSUTF8StringEncoding error:nil];
+    NSString *all = self.log;
+    if (app.length) {                                           /* plus the app's own log, its last 60 kB */
+        NSString *tail = app.length > 60000 ? [app substringFromIndex:app.length - 60000] : app;
+        all = [NSString stringWithFormat:@"%@\n--- app.log ---\n%@", self.log, tail];
+    }
+    UIPasteboard.generalPasteboard.string = all;
     [self append:@"(log panoya kopyalandı)"];
 }
 
@@ -155,6 +166,57 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     });
 }
 
+/* The whole APK: framework, our services and the app's own code, in the interpreter.
+ * Its frames are shown full screen (tap twice to see the log again). */
+- (void)openApp {
+    if (!self.apk) { [self append:@"Önce bir APK seçin."]; return; }
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"];
+    if (![fm fileExistsAtPath:[root stringByAppendingPathComponent:@"system/bin/app_process64"]]) {
+        [self append:@"Bu IPA'da uygulama dosyaları (framework) yok."];
+        return;
+    }
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *data = [docs stringByAppendingPathComponent:@"adata"];
+    NSString *logPath = [docs stringByAppendingPathComponent:@"app.log"];
+    [fm removeItemAtPath:data error:nil];                       /* a fresh /data each run (for now) */
+    NSError *e = nil;
+    if (![fm copyItemAtPath:[root stringByAppendingPathComponent:@"data"] toPath:data error:&e]) {
+        [self append:[NSString stringWithFormat:@"/data hazırlanamadı: %@", e.localizedDescription]];
+        return;
+    }
+    NSString *apkDir = [data stringByAppendingPathComponent:@"app/apk"];
+    [fm createDirectoryAtPath:apkDir withIntermediateDirectories:YES attributes:nil error:nil];
+    [self.apk writeToFile:[apkDir stringByAppendingPathComponent:@"base.apk"] atomically:NO];
+
+    if (!self.screen) {
+        self.screen = [[UIImageView alloc] initWithFrame:self.view.bounds];
+        self.screen.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        self.screen.contentMode = UIViewContentModeScaleAspectFit;
+        self.screen.backgroundColor = UIColor.blackColor;
+        self.screen.userInteractionEnabled = YES;
+        UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideScreen)];
+        t.numberOfTapsRequired = 2;
+        [self.screen addGestureRecognizer:t];
+    }
+    [self append:@"Uygulama başlıyor (ilk kare yorumlayıcıda ~1 dakika sürebilir) ..."];
+    dispatch_async(self.work, ^{
+        aoi_android_app(root.UTF8String, data.UTF8String, logPath.UTF8String, frame_cb, (__bridge void *)self,
+                        log_cb, (__bridge void *)self);
+        [self append:[NSString stringWithFormat:@"Uygulamanın logu: %@", logPath]];
+    });
+}
+
+- (void)hideScreen { [self.screen removeFromSuperview]; }
+
+- (void)showFrame:(UIImage *)img {
+    self.screen.image = img;
+    if (!self.screen.superview) {
+        self.screen.frame = self.view.bounds;
+        [self.view addSubview:self.screen];
+    }
+}
+
 - (void)run {
     if (!self.apk) { [self append:@"Önce bir APK seçin."]; return; }
     size_t sz = 0;
@@ -183,6 +245,19 @@ static int list_cb(const char *name, size_t len, void *ctx) {
 
 static void log_cb(void *ctx, const char *line) {
     [(__bridge VC *)ctx append:[NSString stringWithUTF8String:line]];
+}
+
+/* A frame from the guest's SurfaceFlinger (worker thread): RGBX rows -> UIImage. */
+static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h) {
+    CFDataRef d = CFDataCreate(NULL, px, (CFIndex)w * h * 4);
+    CGDataProviderRef prov = CGDataProviderCreateWithCFData(d);
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGImageRef cg = CGImageCreate(w, h, 8, 32, w * 4, cs, kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast,
+                                  prov, NULL, false, kCGRenderingIntentDefault);
+    UIImage *img = [UIImage imageWithCGImage:cg];
+    CGImageRelease(cg); CGColorSpaceRelease(cs); CGDataProviderRelease(prov); CFRelease(d);
+    VC *vc = (__bridge VC *)ctx;
+    dispatch_async(dispatch_get_main_queue(), ^{ [vc showFrame:img]; });
 }
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>

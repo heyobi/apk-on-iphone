@@ -68,6 +68,7 @@ struct aoi_proc {
     struct aoi_mem mem;
     struct aoi_cpu cpu;
     char root[AOI_PATH];            /* host directory that is the guest's "/" */
+    char data[AOI_PATH];            /* if set: host directory that is the guest's /data (root read-only) */
     char cwd[AOI_PATH];             /* guest path */
     char exe[AOI_PATH];             /* guest path of the program (/proc/self/exe) */
     char cmdline[AOI_PATH];         /* argv joined by NULs (/proc/self/cmdline) */
@@ -84,6 +85,10 @@ struct aoi_proc {
     struct aoi_binder *binder;      /* in-process binder driver state (core/binder.c), or NULL */
     struct aoi_sf *sf;              /* SurfaceFlinger state (core/sf.c), or NULL */
     struct aoi_gralloc *gralloc;    /* graphics buffers (core/gralloc.c), or NULL */
+    /* if set: called with each new frame SurfaceFlinger puts on screen, as tightly
+     * packed 4-byte pixels (R, G, B, X/A) */
+    void (*frame)(void *ctx, const uint8_t *pixels, uint32_t width, uint32_t height);
+    void *frame_ctx;
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

@@ -147,3 +147,85 @@ int aoi_android_run_env(const char *root, const char *tmpdir, int argc, const ch
     free(p);
     return rc;
 }
+
+/* "-e NAME=VALUE" pairs of the guest's /data/system/environ/classpath. */
+static int classpath_env(const char *datadir, char vals[3][4096], const char **env)
+{
+    char path[1024], line[4096], name[64];
+    int n = 0;
+    FILE *f;
+    snprintf(path, sizeof path, "%s/system/environ/classpath", datadir);
+    if (!(f = fopen(path, "r"))) return 0;
+    while (n < 3 && fgets(line, sizeof line, f)) {
+        char val[4000];
+        if (sscanf(line, "export %63s %3999s", name, val) != 2) continue;
+        if (strcmp(name, "BOOTCLASSPATH") && strcmp(name, "DEX2OATBOOTCLASSPATH") && strcmp(name, "SYSTEMSERVERCLASSPATH"))
+            continue;
+        snprintf(vals[n], sizeof vals[n], "%s=%s", name, val);
+        env[n] = vals[n];
+        n++;
+    }
+    fclose(f);
+    env[n] = NULL;
+    return n;
+}
+
+int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
+                    void *frame_ctx, aoi_log_fn log, void *ctx)
+{
+    static const char *const base[] = {
+        "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
+        "TMPDIR=/data/local/tmp", "ANDROID_ART_ROOT=/apex/com.android.art",
+        "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata",
+        "CLASSPATH=/data/local/tmp/aoi.dex", NULL };
+    static const char *const argv[] = { "/system/bin/app_process64", "/system/bin", "aoi.Main",
+                                        "/data/app/apk/base.apk", NULL };
+    static char vals[3][4096];
+    const char *cp[4], *envp[16];
+    struct aoi_proc *p = calloc(1, sizeof *p);
+    const char *err;
+    enum aoi_stop st;
+    struct timespec t0, t1;
+    double secs, now, peak;
+    int ne = 0, i, fd, rc = -1;
+
+    if (!p) { say(log, ctx, "app: out of memory"); return -1; }
+    if (!classpath_env(datadir, vals, cp)) { say(log, ctx, "app: no %s/system/environ/classpath", datadir); free(p); return -1; }
+    while (base[ne]) { envp[ne] = base[ne]; ne++; }
+    for (i = 0; cp[i]; i++) envp[ne++] = cp[i];
+    envp[ne] = NULL;
+    if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); free(p); return -1; }
+    if ((err = aoi_proc_exec(p, root, argv[0], 4, argv, envp))) {
+        say(log, ctx, "app: exec: %s", err);
+        aoi_proc_free(p); free(p); close(fd);
+        return -1;
+    }
+    snprintf(p->data, sizeof p->data, "%s", datadir);
+    p->uffd = 1;                        /* ART's CMC GC and the boot image */
+    p->frame = frame;
+    p->frame_ctx = frame_ctx;
+    p->fd[1].host = fd;
+    p->fd[2].host = fd;
+    p->log = fdopen(dup(fd), "w");
+    if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    st = aoi_proc_run(p, 0);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    if (st == AOI_STOP_EXIT) {
+        rc = p->cpu.exit_code;
+        say(log, ctx, "app: exit %d after %.1f s, %llu instructions", rc, secs, (unsigned long long)p->cpu.steps);
+    } else {
+        char w[256];
+        say(log, ctx, "app: stopped (%d) at pc=%#llx in %s, insn %#x after %.1f s, %llu instructions", (int)st,
+            (unsigned long long)p->cpu.pc, aoi_proc_where(p, p->cpu.pc, w, sizeof w), p->cpu.fault_insn, secs,
+            (unsigned long long)p->cpu.steps);
+    }
+    memory_mb(&now, &peak);
+    say(log, ctx, "app: memory %.0f MB now, %.0f MB peak", now, peak);
+    if (p->log) fclose(p->log);
+    close(fd);
+    aoi_proc_free(p);
+    free(p);
+    return rc;
+}

@@ -1,4 +1,5 @@
-/* iostest: run the iOS app's test sequence on the host. usage: iostest app.apk [n] */
+/* iostest: run the iOS app's test sequence on the host. usage: iostest app.apk [n]
+ * AOI_ANDROID_ROOT=root AOI_APP_DATA=dir: the app button instead (dir is the guest's /data). */
 #include "../core/apk.h"
 #include "../ios/gmptest.h"
 #include "../ios/vmprobe.h"
@@ -9,6 +10,18 @@
 #include <string.h>
 
 static void out(void *ctx, const char *line) { (void)ctx; printf("%s\n", line); }
+
+/* The app button's frames: the newest one as a PPM file (ctx: its path). */
+static void frame(void *ctx, const unsigned char *px, unsigned w, unsigned h)
+{
+    FILE *f = fopen(ctx, "wb");
+    size_t i;
+    if (!f) return;
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (i = 0; i < (size_t)w * h; i++) fwrite(px + 4 * i, 1, 3, f);
+    fclose(f);
+    printf("frame %ux%u -> %s\n", w, h, (const char *)ctx);
+}
 
 int main(int argc, char **argv)
 {
@@ -21,6 +34,11 @@ int main(int argc, char **argv)
     char *r;
     double t = 0;
 
+    if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
+        const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
+        return aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), "/tmp/aoi-app.log", frame,
+                               (void *)png, out, NULL) == 0 ? 0 : 1;
+    }
     aoi_vm_probe(out, NULL);
     if (getenv("AOI_ANDROID_ROOT")) {               /* the app's "Android" button */
         static const char *const echo[] = { "/system/bin/toybox", "echo", "merhaba, ben Android toybox" };

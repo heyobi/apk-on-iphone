@@ -5,7 +5,7 @@ name: iOS IPA
 
 on:
   push:
-    paths: [ "core/**", "ios/**", ".github/workflows/ios.yml" ]
+    paths: [ "core/**", "ios/**", "java/**", "guest/**", "tools/**", ".github/workflows/ios.yml" ]
   workflow_dispatch:
 
 permissions:
@@ -17,8 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Android's own linker64, bionic, toybox and mksh for the "Android" button
-      # (ios/android-files.txt), from the AOSP 14 GSI pinned in tools/fetch-android.sh.
+      # Android's own linker64, bionic, toybox and mksh for the "Android" button, and the
+      # framework an app's process needs for the "Uygulama" button (ios/android-files.txt),
+      # from the AOSP 14 GSI pinned in tools/fetch-android.sh.
       - name: Cache Android root
         id: aroot
         uses: actions/cache@v4
@@ -39,12 +40,23 @@ jobs:
           du -sh aroot-mini
           rm -rf "$RUNNER_TEMP/aroot"
 
-      # Outside the cached step: a restored root must get the current test dex files too.
-      - name: Test dex files
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Outside the cached step: a restored root must get the current test dex files,
+      # our framework services (aoi.dex, java/src) and the gralloc mapper (guest/mapper.c).
+      - name: Guest files we build
         run: |
-          mkdir -p aroot-mini/data/local/tmp
+          set -eu
+          mkdir -p aroot-mini/data/local/tmp aroot-mini/vendor/lib64/hw
           python3 tests/mkdex.py aroot-mini/data/local/tmp/hello.dex
           python3 tests/mkdex.py aroot-mini/data/local/tmp/gc.dex 0 20000
+          sh tools/javadex.sh "$PWD/aroot-mini/data/local/tmp/aoi.dex"
+          brew install lld
+          make build/mapper.aoi.so GUEST_LD="--ld-path=$(brew --prefix lld)/bin/ld.lld"
+          cp build/mapper.aoi.so aroot-mini/vendor/lib64/hw/mapper.aoi.so
 
       - name: Build app binary
         run: |
@@ -97,5 +109,6 @@ jobs:
           body: |
             Unsigned IPA of the iOS test app, built from ${{ github.sha }}.
             Install with SideStore, AltStore or Sideloadly (they sign it with your Apple ID),
-            then see docs/IOS.md. The app runs the real libgmp.so from an APK in the
-            interpreter: no JIT, no debugger.
+            then see docs/IOS.md. The app runs Android code from an APK in the interpreter
+            (no JIT, no debugger): libgmp.so ("Çalıştır"), Android programs and ART
+            ("Android"), and a whole app with its UI ("Uygulama").

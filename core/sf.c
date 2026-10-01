@@ -267,6 +267,15 @@ static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id)
     sf->frames++;
     if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u)\n", (unsigned long long)sf->frames, id, b->width, b->height);
     dump(p, b);
+    if (p->frame && b->bpp == 4) {                             /* the host shows it: packed rows */
+        uint8_t *px = malloc((size_t)b->width * b->height * 4);
+        uint32_t y;
+        for (y = 0; px && y < b->height; y++)
+            if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, px + (size_t)y * b->width * 4,
+                             (uint64_t)b->width * 4, 0)) break;
+        if (px && y == b->height) p->frame(p->frame_ctx, px, b->width, b->height);
+        free(px);
+    }
 }
 
 /* setTransactionState carries layer_state_t records whose layout changes with every

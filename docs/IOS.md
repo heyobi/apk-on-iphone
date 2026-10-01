@@ -23,8 +23,15 @@ no debugger, nothing beyond a normal sideloaded app.
    "mksh: 42", "7 harf" and a listing of /system/lib64, each with `exit 0`; then
    **ART**: `dalvikvm64` runs a hello-world dex ("Merhaba from ART", ~85 M
    instructions). The bundled root is ~73 MB (list in `ios/android-files.txt`).
-6. **Logu kopyala** to share the log; it is also in Files → On My iPhone → APK on iPhone →
-   `log.txt`.
+6. **Uygulama** (app 0.13; pick the Qalculate APK first) runs the whole app: our
+   framework services (`aoi.Main`) start Android's ActivityThread on the APK, the app's
+   own code runs, and every frame its window draws (software rendering, gralloc
+   buffers, our SurfaceFlinger) is shown full screen. Double-tap the picture to see
+   the log again. The first frame takes ~4 G guest instructions: about a minute at the
+   phone's ~85 M/s. Touch does not reach the app yet. The bundled root is ~390 MB now
+   (the framework, its boot image, fonts, the rendering libraries).
+7. **Logu kopyala** to share the log (with the end of the app's own `app.log`); both are
+   in Files → On My iPhone → APK on iPhone.
 
 First device result (iPhone 16 Pro, iOS 27.0.1): 20000! (77,338 digits, 28 M guest
 instructions) in 0.33 s, about 85 M instructions/s.

@@ -176,6 +176,10 @@ static int join(char *dst, size_t n, const char *a, const char *b)
 
 static void host_path(struct aoi_proc *p, const char *guest, char *out)
 {
+    if (p->data[0] && !strncmp(guest, "/data", 5) && (!guest[5] || guest[5] == '/')) {
+        if (!join(out, AOI_PATH, p->data, guest + 5)) out[0] = 0;
+        return;
+    }
     if (!join(out, AOI_PATH, p->root, guest)) out[0] = 0;
 }
 
