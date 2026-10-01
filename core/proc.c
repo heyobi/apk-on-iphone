@@ -1491,6 +1491,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         case 1: case 2: r = 0; break;                              /* F_GETFD / F_SETFD */
         case 3: r = 2 | (f->nonblock ? 04000 : 0); break;          /* F_GETFL: O_RDWR (+ O_NONBLOCK) */
         case 4: f->nonblock = (a2 & 04000) != 0; r = 0; break;     /* F_SETFL: O_NONBLOCK is what counts */
+        case 5: case 36: {                                         /* F_GETLK, F_OFD_GETLK: nothing in the way */
+            uint16_t unlck = 2;                                    /* (one process: POSIX locks never conflict) */
+            r = put(p, a2, &unlck, 2) ? 0 : err(L_EFAULT);
+            break;
+        }
+        case 6: case 7: case 37: case 38: r = 0; break;            /* F_SETLK(W), F_OFD_SETLK(W): granted (SQLite) */
         default: r = err(L_EINVAL); break;
         }
         break;

@@ -329,6 +329,14 @@ isacheck over the rendering libraries: **0 missing, 0 WRONG** of 497,719 distinc
 difftest WRONG 0 (new class `mrs/msr nzcv`, which harfbuzz uses). The app now runs
 through text layout (libhwui, minikin, harfbuzz) and asks for **gralloc** next.
 
+**The first frame (host).** Qalculate's real UI — top bar, the keypad, Material 3
+colours — drawn by the app in software (Skia), queued by BLASTBufferQueue into a
+gralloc buffer from core/gralloc.c, received by our SurfaceFlinger's setTransactionState
+and written out with `AOI_SF_DUMP`: 1179 x 2556, stride 1184, format RGBX_8888, ~4.2 G
+instructions (88 s on the host) from process start. Fixes on the way: allocate2's
+request has an `additionalOptions` array before `count`; fcntl record locks (F_GETLK,
+F_SETLK(W), OFD) are granted (one process), SQLite needs them.
+
 **Past layout, toward the first frame.** The window configuration now carries the
 screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);
 the activity metrics are logged at resume. New, not yet seen working end to end:
