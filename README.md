@@ -16,14 +16,16 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
 - **The pieces exist as open source:** AOSP's ART and bionic, and the Madeira/Wine
   playbook for doing all of this inside one iOS process.
 
-## Prior art (checked 2026-10-01)
+## Prior art (checked 2026-10-01; full feasibility study in `docs/RESEARCH.md`)
 
 - Cloud / remote: Redfinger, BrowserStack, Parsec to a PC emulator — streaming, not native.
 - UTM on iOS: full Android VM, needs JIT, very slow; guides like leiting2327/run-apk-on-ios.
 - Cycada (Columbia, 2010s): research compatibility layer for **iOS apps on Android** — the
   opposite direction, but the closest design reference.
 - ib-2-3-android: iOS apps (UE3) on Android — again the opposite direction.
-- No project found that runs APKs natively on an iPhone.
+- No project found that runs APKs natively on an iPhone. Closest: AIM (github.com/hahnlee/aim)
+  runs Android 16 ART on macOS on an in-process Linux syscall layer; Android Translation Layer
+  reimplements the framework on Linux.
 
 ## Status
 
