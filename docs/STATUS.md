@@ -264,11 +264,26 @@ framework classes in `java/stubs` (compile-only), then dx (dalvik-dx from Maven 
 pinned; d8 lives on the unreachable dl.google.com). `aoi.ServiceTest` in
 `make android-test`: "servicemanager: local binder ok".
 
+**A real APK's process starts** (Qalculate, `aoi.Main`): `app_process64 /system/bin
+aoi.Main /data/app/qalculate/base.apk` parses the APK with the framework's own
+PackageParser (package, launcher activity, targetSdk 35), registers our Java services,
+and runs ActivityThread.main. Our ActivityManager answers attachApplication with
+bindApplication (the guest framework's exact 27-argument signature, read from its dex
+by `tools/dexsig.py`), the app's **class loader, Application and onCreate run**
+(handleBindApplication to the end), and finishAttachApplication launches the launcher
+activity with a ClientTransaction (LaunchActivityItem + ResumeActivityItem, as the real
+realStartActivityLocked does): **performLaunchActivity starts on MainActivity**. Services
+so far (java/src/aoi): `activity` (attach/bind/launch, permissions, receivers,
+broadcasts, memory, crash report), `package` (the parsed APK: application, package and
+activity info, uid; nothing else installed), `permissionmgr` (all granted, no split
+permissions). Missing ones are reported by the AbstractMethodError they raise. Learned:
+AIDL stubs of permission-annotated interfaces need our own PermissionEnforcer (the
+default wants system_server's context); a Configuration must carry a locale.
+
 **Next, in order:**
-1. `aoi.Main`: register an ActivityManager (IActivityManager.Stub subclass, only the
-   calls apps make) and the other services an app asks for, then hand over to
-   ActivityThread.main; attachApplication → bindApplication with the APK's
-   ApplicationInfo → the app's Application and launcher Activity.
+1. `activity_task` (IActivityTaskManager + IActivityClientController) and `window`
+   (IWindowManager, IWindowSession): the activity gets its window; then the first frame
+   through a Surface we draw on the iPhone.
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.
