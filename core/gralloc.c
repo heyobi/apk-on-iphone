@@ -148,7 +148,16 @@ static void allocator(struct aoi_proc *p, void *self, uint32_t code, struct aoi_
         int32_t count, i;
         struct aoi_gbuf *bs[8];
         uint32_t start, size;
-        if (!read_desc(req, &d) || (count = (int32_t)aoi_r32(req)) <= 0 || count > 8) { service_error(rep, ERR_BAD_DESCRIPTOR); break; }
+        if (!read_desc(req, &d) || (count = (int32_t)aoi_r32(req)) <= 0 || count > 8) {
+            if (p->trace) {
+                uint32_t o;
+                fprintf(p->trace, "[gralloc] allocate2: bad request (%u bytes):", req->n);
+                for (o = 0; o + 4 <= req->n && o < 400; o += 4) fprintf(p->trace, " %x", *(const uint32_t *)(req->d + o));
+                fprintf(p->trace, "\n");
+            }
+            service_error(rep, ERR_BAD_DESCRIPTOR);
+            break;
+        }
         if (!supported(&d)) {
             if (p->trace) fprintf(p->trace, "[gralloc] %dx%d format %#x layers %d: unsupported\n", d.width, d.height, d.format, d.layers);
             service_error(rep, ERR_UNSUPPORTED);
