@@ -41,6 +41,10 @@ static void *taps(void *arg)
         s += n;
         if (*s == ';') s++;
     }
+    if (getenv("AOI_TAPS_THEN_STOP")) {                  /* let the last tap draw, then stop (profile report) */
+        sleep((unsigned)atoi(getenv("AOI_TAPS_THEN_STOP")));
+        ((struct aoi_proc *)arg)->stop_request = 1;
+    }
     return NULL;
 }
 

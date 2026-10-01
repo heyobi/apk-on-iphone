@@ -895,6 +895,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         enum aoi_stop st;
         if (max_steps && end > max_steps) end = max_steps;
         if (!sig_pending(p)) return p->cpu.stop;
+        if (p->stop_request) return AOI_RUN;
         if (p->sf) aoi_sf_tick(p);                                 /* vsync events that are due */
         st = aoi_cpu_run(&p->cpu, end);
         if (st == AOI_STOP_FAULT && sig_fault(p)) continue;

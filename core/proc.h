@@ -94,6 +94,7 @@ struct aoi_proc {
      * the host fd) on msync, munmap and exit; the guest's view is a copy */
     struct { uint64_t addr, len, off; int fd; } shm[32];
     int nshm;
+    volatile int stop_request;      /* set from another host thread: aoi_proc_run returns AOI_RUN */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;
