@@ -116,6 +116,11 @@ status, cmdline, meminfo, cpuinfo), membarrier, rt_sigtimedwait (sleeps until a
 tgkill delivers the awaited signal), set/getpriority; in the CPU: dmb/dsb/isb,
 clrex, dc/ic (dc zva zeroes), vector clz/cls.
 
+**ART runs on the iPhone** (app 0.9, iPhone 16 Pro, iOS 27.0.1, no JIT, no
+entitlement): `dalvikvm64` from AOSP 14 prints "Merhaba from ART" from a dex —
+**85.9 M guest instructions, 1.14 s (75 M/s), 150 MiB of host chunks**. The same
+log shows ART's own lines (CC GC, imageless start, nativeloader namespaces, ICU).
+
 **ART on the phone, trimmed (app 0.9).** For the device, two measured cuts: the six
 core boot jars are enough (`BOOTCLASSPATH`=core-oj, core-libart, okhttp,
 bouncycastle, apache-xml, core-icu4j, with `-Ximage:` given so ART does not ask for a
