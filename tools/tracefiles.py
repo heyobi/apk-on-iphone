@@ -5,7 +5,8 @@ listed too (mini-root.sh keeps them as links), with what they point to. Left out
 what the app or our build writes at run time (/data/app, /data/data, /data/user*,
 aoi.dex, mapper.aoi.so), /dev and /proc. A file only ever opened with O_PATH (looked
 at, never read: the .apex packages) is listed as "~path": mini-root.sh makes it empty. The program aoiproc execs (and its
-interpreter) is loaded without an open: add it by hand."""
+interpreter) is loaded without an open: add it by hand. Symlinks to listed files in
+their directories are listed too (the trace shows resolved paths)."""
 import os
 import re
 import sys
@@ -52,6 +53,19 @@ def main():
                     chain(root, pending, s2)
                     read |= s2
                 pending = None
+    # The trace shows resolved paths: links found by stat (the boot image's arm64/*.vdex
+    # -> ../*.vdex) are listed when they sit next to a listed file and point at one.
+    for d in sorted({os.path.dirname(g) for g in out}):
+        try:
+            names = os.listdir(root + d)
+        except OSError:
+            continue
+        for n in names:
+            g = d + "/" + n
+            if os.path.islink(root + g):
+                t = os.path.normpath(os.path.join(d, os.readlink(root + g)))
+                if t in out:
+                    out.add(g)
     for g in sorted(out):
         if not SKIP.search(g):
             print(g if g in read or os.path.islink(root + g) else "~" + g)
