@@ -41,6 +41,8 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
   of the future App-Store-safe path (the same interpreter compiled to Wasm). Coverage of the
   A64 base set grows as real code needs it; an unimplemented instruction stops visibly rather
   than running wrong.
+- **iPhone test app** (`ios/`, IPA from GitHub Actions): runs libgmp.so in the interpreter and natively
+  from JIT memory on the device — see `docs/IOS.md`.
 - **`apkscan`** (host tool, `make test`): reads the arm64-v8a `.so` files of an APK and counts
   the instructions that cannot run unmodified on iOS — Linux `svc #0` syscalls, `tpidr_el0`
   thread-pointer access, and x18 shadow-call-stack pushes/pops. These are exactly the sites
