@@ -36,7 +36,12 @@ static inline uint64_t rd(struct aoi_cpu *c, uint64_t a, int len)
         if (c->mem->vm && aoi_vm_read(c->mem->vm, AOI_TBI(a), tmp, (uint64_t)len, AOI_PROT_R)) p = tmp;
         else { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return 0; }
     }
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    (void)i;
+    memcpy(&v, p, (size_t)len);                     /* little-endian host: the guest's byte order */
+#else
     for (i = 0; i < len; i++) v |= (uint64_t)p[i] << (8 * i);
+#endif
     return v;
 }
 
@@ -61,7 +66,11 @@ static inline void wr(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
         }
         return;
     }
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    memcpy(p, &v, (size_t)len);
+#else
     for (i = 0; i < len; i++) p[i] = (uint8_t)(v >> (8 * i));
+#endif
 }
 
 static inline uint32_t fetch(struct aoi_cpu *c, uint64_t a)
