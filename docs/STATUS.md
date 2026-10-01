@@ -385,6 +385,10 @@ after a tap ~135 M (was ~400 M); libart falls to 2.6 % of a frame and libhwui (S
 software rasterizer) is 88.7 %. So the display is now 2x (786 x 1704 px at 320 dpi,
 393 x 852 dp as before): 2.25 times fewer pixels to rasterize.
 
+**On the phone with v0.14.57:** dex2oat compiles Qalculate once in 167 s (12.7 G
+instructions, 196 MB peak); then a frame after a tap takes ~2 s (Choreographer skips
+~125 frames; was ~360 = 6 s with 0.13.49). "112+113" = 225 and "112+1123" = 1235.
+
 **First run on the iPhone (v0.13.48, iPhone 16 Pro):** the app's process starts, binds
 the application and runs its content providers in 13 s (1.04 G instructions), 588 MB
 peak; then createDisplayEventConnection fails: Darwin has no SOCK_SEQPACKET. Message
