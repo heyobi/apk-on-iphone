@@ -7,18 +7,20 @@
 
 #include <string.h>
 
-/* Host pointer for a guest access needing `need` (AOI_PROT_*); NULL = fault.
- * The flat space's common case (inside one page) is inlined. */
+/* Host pointer for a guest access needing `need` (AOI_PROT_*); NULL = fault, or
+ * (sparse space only) an access that straddles two 2 MiB chunks, which rd/wr
+ * then do byte-wise. The common case (inside one page) is inlined. */
+#define AOI_TBI(a) ((a) & 0x00ffffffffffffffULL)
 static inline uint8_t *gptr(struct aoi_cpu *c, uint64_t a, int len, int need)
 {
     struct aoi_vm *vm = c->mem->vm;
     if (vm) {
         /* Top Byte Ignore: Linux runs EL0 with TBI0 on, so data accesses ignore
          * bits 56-63 (Android tags heap pointers there). */
-        if (need != AOI_PROT_X) a &= 0x00ffffffffffffffULL;
+        if (need != AOI_PROT_X) a = AOI_TBI(a);
         if (a + (uint64_t)len <= vm->size && (a ^ (a + (uint64_t)len - 1)) < AOI_VM_PAGE) {
             uint8_t f = vm->prot[a / AOI_VM_PAGE];
-            return f && (f & need) == need ? vm->host + a : NULL;
+            return f && (f & need) == need ? vm->chunk[a >> AOI_VM_CHUNK_SHIFT] + (a & (AOI_VM_CHUNK - 1)) : NULL;
         }
         return aoi_vm_ptr(vm, a, (uint64_t)len, need);
     }
@@ -27,20 +29,30 @@ static inline uint8_t *gptr(struct aoi_cpu *c, uint64_t a, int len, int need)
 
 static inline uint64_t rd(struct aoi_cpu *c, uint64_t a, int len)
 {
-    uint8_t *p = gptr(c, a, len, AOI_PROT_R);
+    uint8_t *p = gptr(c, a, len, AOI_PROT_R), tmp[8];
     uint64_t v = 0;
     int i;
-    if (!p) { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return 0; }
+    if (!p) {
+        if (c->mem->vm && aoi_vm_read(c->mem->vm, AOI_TBI(a), tmp, (uint64_t)len, AOI_PROT_R)) p = tmp;
+        else { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return 0; }
+    }
     for (i = 0; i < len; i++) v |= (uint64_t)p[i] << (8 * i);
     return v;
 }
 
 static inline void wr(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
 {
-    uint8_t *p = gptr(c, a, len, AOI_PROT_W);
+    uint8_t *p = gptr(c, a, len, AOI_PROT_W), tmp[8];
     int i;
-    if (!p) { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return; }
     if (c->trace && c->nwlog < 4) { c->wlog_addr[c->nwlog] = a; c->wlog_len[c->nwlog++] = len; }
+    if (!p) {
+        for (i = 0; i < len; i++) tmp[i] = (uint8_t)(v >> (8 * i));
+        if (!c->mem->vm || !aoi_vm_write(c->mem->vm, AOI_TBI(a), tmp, (uint64_t)len, AOI_PROT_W)) {
+            if (c->trace && c->nwlog) c->nwlog--;
+            c->stop = AOI_STOP_FAULT; c->fault_addr = a;
+        }
+        return;
+    }
     for (i = 0; i < len; i++) p[i] = (uint8_t)(v >> (8 * i));
 }
 

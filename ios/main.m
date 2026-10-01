@@ -65,7 +65,7 @@ static int list_cb(const char *name, size_t len, void *ctx);
     sysctlbyname("hw.machine", machine, &len, NULL, 0);
     [self append:[NSString stringWithFormat:@"Cihaz: %s, iOS %@", machine, UIDevice.currentDevice.systemVersion]];
     [self append:@"Qalculate APK'sını seçin, sonra 'Çalıştır'."];
-    [self append:@"Adres alanı testi (Android programları için gereken 64 GiB) ..."];
+    [self append:@"Adres alanı testi (Android programları için 64 GiB, seyrek) ..."];
     dispatch_async(self.work, ^{ aoi_vm_probe(log_cb, (__bridge void *)self); });
 }
 

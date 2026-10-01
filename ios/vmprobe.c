@@ -1,8 +1,9 @@
 /* Address-space probe: can this device give the guest the address space that
- * Android programs need? core/proc.c reserves 64 GiB of guest addresses (scudo
- * alone reserves 8+ GiB). iOS limits a process's virtual address space unless
- * the app has the extended-virtual-addressing entitlement, so we measure it on
- * the device instead of guessing. Shared by the iOS app and tools/iostest.c. */
+ * Android programs need? core/proc.c uses 64 GiB of guest addresses (scudo alone
+ * reserves 8+ GiB). iOS caps contiguous reservations (6 GiB on an iPhone 16 Pro,
+ * iOS 27, without the extended-virtual-addressing entitlement), which is why
+ * core/vm.c is sparse. This measures both on the device. Shared by the iOS app
+ * and tools/iostest.c. */
 #define _DARWIN_C_SOURCE
 #define _GNU_SOURCE
 #include "vmprobe.h"
@@ -61,7 +62,7 @@ int aoi_vm_probe(aoi_log_fn log, void *ctx)
 {
     static const unsigned sizes[] = { 64, 48, 32, 24, 16, 12, 8, 6, 4, 2 };
     unsigned i, best = 0;
-    int e = 0, ok_path;
+    int e = 0, ok_path = 0;
     struct aoi_vm vm;
     const char *verr;
 
@@ -84,27 +85,26 @@ int aoi_vm_probe(aoi_log_fn log, void *ctx)
     }
     say(log, ctx, "vm: largest usable reservation %u GiB", best);
 
-    /* the real path: core/vm.c with the 64 GiB guest space core/proc.c asks for */
+    /* the real path: core/vm.c's sparse 64 GiB guest space, as core/proc.c uses it */
     if ((verr = aoi_vm_init(&vm, 64 * GiB))) {
         say(log, ctx, "vm: aoi_vm_init(64 GiB): %s", verr);
         ok_path = 0;
     } else {
+        uint8_t one[4] = { 1, 2, 3, 4 }, back[4];
         uint64_t scudo = aoi_vm_map(&vm, 4 * GiB, 8 * GiB, 0, 0);    /* PROT_NONE, like scudo */
         uint64_t high = aoi_vm_map(&vm, 0, 1 << 20, AOI_PROT_R | AOI_PROT_W, 0);
         uint64_t low = aoi_vm_map(&vm, 0x70000000, 1 << 20, AOI_PROT_R | AOI_PROT_W, 1);
-        uint8_t *hp = high < vm.size ? aoi_vm_ptr(&vm, high, 1 << 20, AOI_PROT_W) : NULL;
-        uint8_t *lp = low < vm.size ? aoi_vm_ptr(&vm, low, 1 << 20, AOI_PROT_W) : NULL;
         int pr = scudo < vm.size && aoi_vm_protect(&vm, scudo + 7 * GiB, 1 << 20, AOI_PROT_R | AOI_PROT_W) == 0;
-        uint8_t *sp = pr ? aoi_vm_ptr(&vm, scudo + 7 * GiB, 1 << 20, AOI_PROT_W) : NULL;
-        if (hp) { hp[0] = 1; hp[(1 << 20) - 1] = 2; }
-        if (lp) { lp[0] = 3; }
-        if (sp) { sp[0] = 4; sp[(1 << 20) - 1] = 5; }
-        ok_path = hp && lp && sp && hp[0] == 1 && lp[0] == 3 && sp[(1 << 20) - 1] == 5;
-        say(log, ctx, "vm: 64 GiB guest space, 8 GiB scudo-style reservation, writes high/low/inside: %s",
-            ok_path ? "OK" : "FAILED");
+        ok_path = high < vm.size && low < vm.size && pr &&
+                  aoi_vm_write(&vm, high + (1 << 20) - 4, one, 4, AOI_PROT_W) &&
+                  aoi_vm_write(&vm, low, one, 4, AOI_PROT_W) &&
+                  aoi_vm_write(&vm, scudo + 7 * GiB + (1 << 20) - 4, one, 4, AOI_PROT_W) &&
+                  aoi_vm_read(&vm, scudo + 7 * GiB + (1 << 20) - 4, back, 4, AOI_PROT_R) && back[3] == 4;
+        say(log, ctx, "vm: sparse 64 GiB guest space, 8 GiB scudo-style reservation, writes high/low/inside: %s "
+            "(%llu host chunks of 2 MiB)", ok_path ? "OK" : "FAILED", (unsigned long long)vm.nchunks);
         aoi_vm_free(&vm);
     }
-    say(log, ctx, "vm: %s", best >= 64 && ok_path ? "Android's address-space needs fit on this device"
-                                                  : "address space is a blocker here: needs a smaller guest space or the entitlement");
+    say(log, ctx, "vm: %s", ok_path ? "Android's address-space needs fit on this device"
+                                    : "address space is a blocker here");
     return best;
 }

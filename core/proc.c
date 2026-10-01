@@ -85,11 +85,43 @@ static const char *gstr(struct aoi_proc *p, uint64_t a, char *buf, size_t n)
     return NULL;
 }
 
+/* Copies to / from guest memory; the space is sparse, so ranges may span chunks. */
 static int put(struct aoi_proc *p, uint64_t a, const void *src, uint64_t n)
 {
-    uint8_t *d = gp(p, a, n, AOI_PROT_W);
-    if (!d) return 0;
-    memcpy(d, src, n);
+    return !n || aoi_vm_write(&p->vm, a & 0x00ffffffffffffffULL, src, n, AOI_PROT_W);
+}
+
+static int get(struct aoi_proc *p, uint64_t a, void *dst, uint64_t n)
+{
+    return !n || aoi_vm_read(&p->vm, a & 0x00ffffffffffffffULL, dst, n, AOI_PROT_R);
+}
+
+/* Host read()/write() (pread/pwrite when off >= 0) straight into / out of guest
+ * memory, one chunk-contiguous span at a time. Bytes moved, or a Linux -errno. */
+static int64_t xfer(struct aoi_proc *p, int host, uint64_t a, uint64_t len, int to_guest, int64_t off)
+{
+    uint64_t done = 0, n;
+    a &= 0x00ffffffffffffffULL;
+    while (done < len) {
+        uint8_t *b = aoi_vm_span(&p->vm, a + done, len - done, to_guest ? AOI_PROT_W : AOI_PROT_R, &n);
+        ssize_t k;
+        if (!b) return done ? (int64_t)done : -L_EFAULT;
+        if (to_guest) k = off < 0 ? read(host, b, (size_t)n) : pread(host, b, (size_t)n, (off_t)(off + (int64_t)done));
+        else k = off < 0 ? write(host, b, (size_t)n) : pwrite(host, b, (size_t)n, (off_t)(off + (int64_t)done));
+        if (k < 0) return done ? (int64_t)done : -lx_errno(errno);
+        done += (uint64_t)k;
+        if ((uint64_t)k < n) break;
+    }
+    return (int64_t)done;
+}
+
+/* Every page of the range is mapped (any protection). */
+static int mapped(struct aoi_proc *p, uint64_t a, uint64_t len)
+{
+    uint64_t q;
+    if (a + len < a || a + len > p->vm.size) return 0;
+    for (q = a & ~(uint64_t)(PAGE - 1); q < a + len; q += PAGE)
+        if (!p->vm.prot[q / PAGE]) return 0;
     return 1;
 }
 
@@ -528,11 +560,15 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
             if (addr + i >= p->vm.size || p->vm.prot[(addr + i) / PAGE]) return err(L_EEXIST);
         fixed = 1;
     }
-    a = aoi_vm_map(&p->vm, fixed ? addr : (addr ? down(addr, PAGE) : 0), len, AOI_PROT_R | AOI_PROT_W, fixed);
+    /* anonymous memory gets its final protection at once (a PROT_NONE reservation
+     * must not back chunks); a file mapping is written first, then protected */
+    a = aoi_vm_map(&p->vm, fixed ? addr : (addr ? down(addr, PAGE) : 0), len,
+                   f ? AOI_PROT_R | AOI_PROT_W : prot & 7, fixed);
     if (IS_ERR(a)) return a;
+    if (!f) return a;
     if (f) {                                                       /* private copy of the file range */
-        ssize_t got = pread(f->host, p->vm.host + a, (size_t)len, (off_t)off);
-        if (got < 0) { aoi_vm_unmap(&p->vm, a, len); return herr(); }
+        int64_t got = xfer(p, f->host, a, len, 1, (int64_t)off);
+        if (got < 0) { aoi_vm_unmap(&p->vm, a, len); return (uint64_t)got; }
         note_map(p, a, len, off, f->path);
     }
     aoi_vm_protect(&p->vm, a, len, prot & 7);
@@ -581,24 +617,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
 
     switch (nr) {
     case NR_read: case NR_pread64: {
-        uint8_t *b;
-        ssize_t k;
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        if (!a2) { r = 0; break; }
-        if (!(b = gp(p, a1, a2, AOI_PROT_W))) { r = err(L_EFAULT); break; }
-        k = nr == NR_read ? read(f->host, b, (size_t)a2) : pread(f->host, b, (size_t)a2, (off_t)a3);
-        r = k < 0 ? herr() : (uint64_t)k;
+        r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 1, nr == NR_read ? -1 : (int64_t)a3) : 0;
         break;
     }
     case NR_write: case NR_pwrite64: {
-        uint8_t *b;
-        ssize_t k;
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        if (!a2) { r = 0; break; }
-        if (!(b = gp(p, a1, a2, AOI_PROT_R))) { r = err(L_EFAULT); break; }
         if (f->host <= 2) fflush(stdout);
-        k = nr == NR_write ? write(f->host, b, (size_t)a2) : pwrite(f->host, b, (size_t)a2, (off_t)a3);
-        r = k < 0 ? herr() : (uint64_t)k;
+        r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
         break;
     }
     case NR_readv: case NR_writev: {
@@ -606,15 +632,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         r = 0;
         for (i = 0; i < a2; i++) {
-            uint8_t *e = gp(p, a1 + i * 16, 16, AOI_PROT_R), *b;
+            uint8_t e[16];
             uint64_t base, len;
-            ssize_t k;
-            if (!e) { r = err(L_EFAULT); break; }
+            int64_t k;
+            if (!get(p, a1 + i * 16, e, 16)) { r = err(L_EFAULT); break; }
             base = u64(e); len = u64(e + 8);
             if (!len) continue;
-            if (!(b = gp(p, base, len, nr == NR_readv ? AOI_PROT_W : AOI_PROT_R))) { r = err(L_EFAULT); break; }
-            k = nr == NR_readv ? read(f->host, b, (size_t)len) : write(f->host, b, (size_t)len);
-            if (k < 0) { r = total ? total : herr(); break; }
+            k = xfer(p, f->host, base, len, nr == NR_readv, -1);
+            if (k < 0) { r = total ? total : (uint64_t)k; break; }
             total += (uint64_t)k;
             r = total;
             if ((uint64_t)k < len) break;
@@ -823,7 +848,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         uint64_t na, keep, prot0;
         int fixed = (a3 & 2) != 0;                                 /* MREMAP_FIXED: new address in x4 */
         if (a0 % PAGE || (fixed && (a4 % PAGE || !(a3 & 1)))) { r = err(L_EINVAL); break; }
-        if (!gp(p, a0, a1 ? a1 : 1, 0)) { r = err(L_EFAULT); break; }
+        if (!mapped(p, a0, a1 ? a1 : 1)) { r = err(L_EFAULT); break; }
         if (!fixed && a2 <= a1) {                                  /* shrink in place */
             if (up(a2, PAGE) < up(a1, PAGE)) aoi_vm_unmap(&p->vm, a0 + up(a2, PAGE), up(a1, PAGE) - up(a2, PAGE));
             r = a0;
@@ -835,7 +860,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         na = aoi_vm_map(&p->vm, fixed ? a4 : 0, a2, AOI_PROT_R | AOI_PROT_W, fixed);
         if (IS_ERR(na)) { r = na; break; }
         keep = a1 < a2 ? a1 : a2;
-        memcpy(p->vm.host + na, p->vm.host + a0, (size_t)keep);
+        {                                                          /* page by page: the source may be sparse */
+            uint64_t o;
+            for (o = 0; o < keep; o += PAGE) {
+                uint64_t n = keep - o < PAGE ? keep - o : PAGE;
+                uint8_t *src = aoi_vm_ptr(&p->vm, a0 + o, n, 0), *dst = aoi_vm_ptr(&p->vm, na + o, n, 0);
+                if (src && dst) memcpy(dst, src, (size_t)n);
+            }
+        }
         aoi_vm_protect(&p->vm, na, a2, (int)prot0);
         aoi_vm_unmap(&p->vm, a0, a1);
         r = na;
@@ -843,12 +875,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_madvise:
         if (a2 == 4) {                                             /* MADV_DONTNEED: reads back as zero */
-            uint8_t *b = gp(p, a0, a1, 0);
-            if (b) {
-                uint64_t i;
+            uint64_t i;
+            if (mapped(p, a0, a1))
                 for (i = 0; i < up(a1, PAGE); i += PAGE)
-                    if (p->vm.prot[(a0 + i) / PAGE] & AOI_PROT_W) memset(p->vm.host + a0 + i, 0, PAGE);
-            }
+                    if (p->vm.prot[(a0 + i) / PAGE] & AOI_PROT_W) aoi_vm_zero(&p->vm, a0 + i, PAGE);
         }
         r = 0;
         break;
@@ -870,8 +900,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_futex: {                                               /* one thread: never blocks */
         int op = (int)a1 & 127;
         if (op == 0 || op == 9) {                                  /* WAIT / WAIT_BITSET */
-            uint8_t *w = gp(p, a0, 4, AOI_PROT_R);
-            if (!w) { r = err(L_EFAULT); break; }
+            uint8_t w[4];
+            if (!get(p, a0, w, 4)) { r = err(L_EFAULT); break; }
             r = u32(w) != (uint32_t)a2 ? err(L_EAGAIN) : err(L_ETIMEDOUT);
         } else r = 0;                                              /* WAKE: nobody waits */
         break;
@@ -879,15 +909,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_rt_sigaction:
         if (a0 < 1 || a0 > 64) { r = err(L_EINVAL); break; }
         if (a2 && !put(p, a2, p->sigact[a0], 32)) { r = err(L_EFAULT); break; }
-        if (a1) { uint8_t *s = gp(p, a1, 32, AOI_PROT_R); if (!s) { r = err(L_EFAULT); break; } memcpy(p->sigact[a0], s, 32); }
+        if (a1 && !get(p, a1, p->sigact[a0], 32)) { r = err(L_EFAULT); break; }
         r = 0;
         break;
     case NR_rt_sigprocmask: {
         uint64_t old = p->sigmask, set;
         if (a1) {
-            uint8_t *s = gp(p, a1, 8, AOI_PROT_R);
-            if (!s) { r = err(L_EFAULT); break; }
-            set = u64(s);
+            uint8_t s8[8];
+            if (!get(p, a1, s8, 8)) { r = err(L_EFAULT); break; }
+            set = u64(s8);
             if (a0 == 0) p->sigmask |= set; else if (a0 == 1) p->sigmask &= ~set; else if (a0 == 2) p->sigmask = set;
             else { r = err(L_EINVAL); break; }
         }
@@ -896,7 +926,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_sigaltstack:
         if (a1 && !put(p, a1, p->altstack, 24)) { r = err(L_EFAULT); break; }
-        if (a0) { uint8_t *s = gp(p, a0, 24, AOI_PROT_R); if (!s) { r = err(L_EFAULT); break; } memcpy(p->altstack, s, 24); }
+        if (a0 && !get(p, a0, p->altstack, 24)) { r = err(L_EFAULT); break; }
         r = 0;
         break;
     case NR_kill: case NR_tkill: case NR_tgkill: {
@@ -938,9 +968,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_nanosleep: case NR_clock_nanosleep: {
-        uint8_t *s = gp(p, nr == NR_nanosleep ? a0 : a2, 16, AOI_PROT_R);
+        uint8_t s[16];
         struct timespec ts;
-        if (!s) { r = err(L_EFAULT); break; }
+        if (!get(p, nr == NR_nanosleep ? a0 : a2, s, 16)) { r = err(L_EFAULT); break; }
         ts.tv_sec = (time_t)u64(s); ts.tv_nsec = (long)u64(s + 8);
         if (nr == NR_clock_nanosleep && (a1 & 1)) { r = 0; break; } /* TIMER_ABSTIME: not slept */
         nanosleep(&ts, NULL);
@@ -988,12 +1018,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_getrandom: {
-        uint8_t *b = gp(p, a0, a1, AOI_PROT_W);
-        FILE *u;
-        if (!b) { r = err(L_EFAULT); break; }
-        u = fopen("/dev/urandom", "rb");
-        r = u && fread(b, 1, (size_t)a1, u) == a1 ? a1 : err(L_EIO);
-        if (u) fclose(u);
+        int u = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        int64_t k = u < 0 ? -L_EIO : xfer(p, u, a0, a1, 1, -1);
+        if (u >= 0) close(u);
+        r = (uint64_t)k;
         break;
     }
     default:

@@ -46,7 +46,8 @@ int main(int argc, char **argv)
     secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
     switch (st) {
     case AOI_STOP_EXIT:
-        fprintf(stderr, "[aoiproc] exit %d, %" PRIu64 " instructions, %.2f s\n", proc.cpu.exit_code, proc.cpu.steps, secs);
+        fprintf(stderr, "[aoiproc] exit %d, %" PRIu64 " instructions, %.2f s, %llu MiB of host chunks\n",
+                proc.cpu.exit_code, proc.cpu.steps, secs, (unsigned long long)(proc.vm.nchunks * (AOI_VM_CHUNK >> 20)));
         return proc.cpu.exit_code;
     case AOI_STOP_UNDEF:
         fprintf(stderr, "[aoiproc] undefined instruction %#010x at pc=%#" PRIx64 " after %" PRIu64 " instructions\n",

@@ -52,9 +52,16 @@ host call instead of one per page (scudo's reservation was 500k mmaps, 0.9 s).
 3. Processes and threads (`clone`, `pipe2`, `wait4`, signals): mksh pipelines and
    ART's own threads need them (roadmap step 2).
 
-**Open risk, checked first:** iOS limits a process's virtual address space. Whether a
-64 GiB reservation works on the iPhone is measured by app 0.6's launch probe
-(docs/IOS.md); until that reads OK, core/proc.c is proven on Linux hosts only.
+**Address space on the iPhone (risk found and handled first).** App 0.6's probe on an
+iPhone 16 Pro, iOS 27.0.1: the kernel reports a 450 GiB user range but grants at most
+**6 GiB of contiguous reservation** (8 GiB and up: ENOMEM), without the
+extended-virtual-addressing entitlement. A flat 64 GiB guest space was therefore
+impossible there. `core/vm.c` is now **sparse**: per-4 KB guest protections as before,
+host memory in 2 MiB chunks that exist only while a page in them is accessible. A
+PROT_NONE reservation costs nothing; toybox/mksh/linkerconfig run with 60-76 MiB of
+chunks (was 10.5 GiB: sys_mmap mapped every anonymous request RW before applying its
+protection, which backed all of scudo's 8 GiB reservation). Cost: ~5 % (toybox echo
+0.19 → 0.20 s). App 0.7's probe re-checks it on the device.
 
 Known simplifications: one thread, `futex` never blocks; signals are recorded but
 never delivered; `socket` is ENOSYS (logd is absent, so logs go nowhere); file
@@ -122,6 +129,7 @@ none occur in Qalculate; other apps will tell (isacheck).
 - `core/bionic.c` — host implementations of the libc functions .so files import
   (malloc/memcpy/strlen/localeconv/stdio pointers, …). Grown as needed.
 - `core/linux.c` — minimal syscalls for `aoirun` (write/writev/exit).
+- `core/vm.c` — sparse guest address space (2 MiB host chunks on demand, per-page R/W/X).
 - `core/proc.c` — a Linux process: execve-style loader (PT_INTERP, auxv) and the
   syscall layer for unmodified Android programs (`tools/aoiproc.c`).
 - `tools/fetch-android.sh`, `tools/android-root.sh` — the AOSP 14 guest root.

@@ -12,10 +12,10 @@ no debugger, nothing beyond a normal sideloaded app.
    "Çalıştır" runs three rounds and reports the best (the phone throttles when warm:
    the same build measured 81 then 75 M/s on consecutive runs).
 4. At launch the app also runs an **address-space probe** (`ios/vmprobe.c`, no APK
-   needed): the largest PROT_NONE reservation iOS grants, whether its far end is
-   usable, and core/vm.c's real 64 GiB guest space with an 8 GiB scudo-style
-   reservation. Android programs (core/proc.c) need that; a "blocker" line means the
-   guest space must shrink or the app needs the extended-virtual-addressing entitlement.
+   needed): the largest contiguous reservation iOS grants (6 GiB on an iPhone 16 Pro,
+   iOS 27), and core/vm.c's sparse 64 GiB guest space with an 8 GiB scudo-style
+   reservation, which Android programs (core/proc.c) need. The last line must read
+   "fit on this device".
 5. **Logu kopyala** to share the log; it is also in Files → On My iPhone → APK on iPhone →
    `log.txt`.
 
