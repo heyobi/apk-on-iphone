@@ -44,6 +44,10 @@ extern void (*aoi_vm_chunk_hook)(struct aoi_vm *vm, uint64_t guest, uint8_t *hos
 const char *aoi_vm_init(struct aoi_vm *vm, uint64_t size);
 void aoi_vm_free(struct aoi_vm *vm);
 
+/* Host memory for chunk ci (guest addresses ci << AOI_VM_CHUNK_SHIFT ...), zeroed if
+ * new; a snapshot being restored (core/snap.c). 1, or 0 if the host is out of memory. */
+int aoi_vm_chunk_alloc(struct aoi_vm *vm, uint64_t ci);
+
 /* mmap: with fixed, exactly at addr (replacing what is there); otherwise the
  * first free range at or after addr (or the hint). Memory comes back zeroed.
  * Returns the guest address, or (uint64_t)-errno. */

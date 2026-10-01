@@ -287,10 +287,19 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
         if (!p->fd[i].used) {
             p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
             p->fd[i].nonblock = 0; p->fd[i].count = 0; p->fd[i].sem = 0; p->fd[i].ep = NULL;
+            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = 0;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
     return -1;
+}
+
+int aoi_proc_pair(struct aoi_proc *p, int a, int b, int ptype)
+{
+    int id = ++p->next_pair;
+    if (a >= 0) { p->fd[a].pair = id; p->fd[a].end = 0; p->fd[a].ptype = ptype; }
+    if (b >= 0) { p->fd[b].pair = id; p->fd[b].end = 1; p->fd[b].ptype = ptype; }
+    return id;
 }
 
 int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind)
@@ -1449,6 +1458,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if ((fdn = fd_new(p, pv[0], g, 0)) < 0) { close(pv[0]); close(pv[1]); r = err(L_EMFILE); break; }
             p->fd[fdn].kind = AOI_FD_PIPE;
             p->input_w = pv[1];
+            p->input_pair = aoi_proc_pair(p, fdn, -1, 0);
             r = (uint64_t)fdn;
             break;
         } else if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder")) {
@@ -1558,6 +1568,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (d < 0) { r = herr(); break; }
             if ((n = fd_new(p, d, f->path, (int)a2)) < 0) { close(d); r = err(L_EMFILE); break; }
             p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
+            p->fd[n].pair = f->pair; p->fd[n].end = f->end; p->fd[n].ptype = f->ptype;
             if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
             break;
@@ -1588,12 +1599,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (a1 <= 2) { dup2(d, (int)a1); close(d); d = (int)a1; }
             if (t->used && t->kind == AOI_FD_EPOLL) epoll_unref(t->ep);
             t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
+            t->pair = f->pair; t->end = f->end; t->ptype = f->ptype;
             if ((t->ep = f->ep)) f->ep->refs++;
             join(t->path, AOI_PATH, "", f->path);
             r = a1;
         } else {
             if ((n = fd_new(p, d, f->path, 0)) < 0) { close(d); r = err(L_EMFILE); break; }
             p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
+            p->fd[n].pair = f->pair; p->fd[n].end = f->end; p->fd[n].ptype = f->ptype;
             if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
         }
@@ -1640,6 +1653,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((n1 = fd_new(p, hp[1], "pipe:[0]", 0)) < 0) { p->fd[n0].used = 0; close(hp[0]); close(hp[1]); r = err(L_EMFILE); break; }
         p->fd[n0].kind = p->fd[n1].kind = AOI_FD_PIPE;
         p->fd[n0].nonblock = p->fd[n1].nonblock = (a1 & 04000) != 0;
+        aoi_proc_pair(p, n0, n1, 0);
         gfd[0] = n0; gfd[1] = n1;
         r = put(p, a0, gfd, 8) ? 0 : err(L_EFAULT);
         break;
@@ -1657,6 +1671,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((n1 = fd_new(p, hv[1], "socket:[pair]", 0)) < 0) { p->fd[n0].used = 0; close(hv[0]); close(hv[1]); r = err(L_EMFILE); break; }
         p->fd[n0].kind = p->fd[n1].kind = AOI_FD_PIPE;
         p->fd[n0].nonblock = p->fd[n1].nonblock = (a1 & 04000) != 0;   /* SOCK_NONBLOCK */
+        aoi_proc_pair(p, n0, n1, t);
         gfd[0] = n0; gfd[1] = n1;
         r = put(p, a3, gfd, 8) ? 0 : err(L_EFAULT);
         break;

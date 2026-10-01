@@ -29,6 +29,8 @@ struct aoi_proc_fd {
     uint64_t count;                 /* AOI_FD_EVENTFD: the counter */
     int sem;                        /* AOI_FD_EVENTFD: EFD_SEMAPHORE (reads take 1, not all) */
     struct aoi_epoll *ep;           /* AOI_FD_EPOLL: the interest list (shared by dups) */
+    int pair, end, ptype;           /* AOI_FD_PIPE: one end (0/1) of host pair `pair` (0: none);
+                                     * ptype 0 pipe, else a socket type: a snapshot rebuilds it */
 };
 
 enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,
@@ -90,6 +92,8 @@ struct aoi_proc {
     void (*frame)(void *ctx, const uint8_t *pixels, uint32_t width, uint32_t height);
     void *frame_ctx;
     int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
+    int input_pair;                 /* its pair id (the guest holds end 0) */
+    int next_pair;                  /* pair ids of host pipes and socket pairs */
     /* writable MAP_SHARED file mappings: their pages go back to the file (a dup of
      * the host fd) on msync, munmap and exit; the guest's view is a copy */
     struct { uint64_t addr, len, off; int fd; } shm[32];
@@ -133,6 +137,10 @@ void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y);
 /* A host AF_UNIX pair that keeps message boundaries: SOCK_SEQPACKET, or where the
  * host has none (Darwin) SOCK_DGRAM with room for many messages. 0 or -1. */
 int aoi_host_msgpair(int sv[2]);
+
+/* Gives guest fds a and b (ends 0 and 1 of one host pair of type ptype) a new pair id,
+ * so a snapshot can rebuild the pair. Returns the id. */
+int aoi_proc_pair(struct aoi_proc *p, int a, int b, int ptype);
 
 uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name);
 void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len);

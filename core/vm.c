@@ -59,6 +59,11 @@ static int chunk_get(struct aoi_vm *vm, uint64_t ci)
     return 1;
 }
 
+int aoi_vm_chunk_alloc(struct aoi_vm *vm, uint64_t ci)
+{
+    return ci < CI(vm->size) && chunk_get(vm, ci);
+}
+
 /* Fresh zero bytes for [addr, addr+len) inside one existing chunk: whole host
  * pages are replaced by new anonymous memory (which also returns them to the
  * system), the ragged edges are cleared. */

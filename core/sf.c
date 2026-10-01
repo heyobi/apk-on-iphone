@@ -30,6 +30,7 @@
 struct conn {
     int used;
     int send, recv;                             /* host socketpair: we write send, the app reads recv */
+    int pair;                                   /* its pair id (core/proc.h): the guest holds both ends */
     int rate;                                   /* setVsyncRate: every rate-th vsync (0: off) */
     int oneshot;                                /* requestNextVsync pending */
     int64_t next;                               /* when the next vsync is due */
@@ -105,6 +106,7 @@ static void connection(struct aoi_proc *p, void *self, uint32_t code, struct aoi
         }
         if (fr < 0 || fs < 0) { if (hs >= 0 && fs < 0) close(hs); rep->status = -12; return; }   /* NO_MEMORY */
         c->recv = -1;
+        c->pair = aoi_proc_pair(p, fr, fs, 5);                 /* recv end 0, send end 1 */
         ok(rep);
         aoi_p32(rep, 1);                                       /* a non-null parcelable */
         aoi_pfd(rep, fr);
