@@ -177,6 +177,12 @@ Now runs of pages are released as whole host pages (`chunk_clear`). GC dex, host
 | CC (default) | 4.2 s, 722 MB RSS | **2.0 s, 155 MB** |
 | CMC + boot image | 18.5 s, 1.5 GB RSS | **4.0 s, 198 MB** |
 
+File mappings are no longer copies: where the guest address and the file offset agree
+modulo the host page (16 KB covers iOS and Linux), whole host pages inside the file are
+the file, mapped MAP_PRIVATE into the chunk (demand-paged, copy-on-write); edges and
+anything past EOF are still read (a host mapping past EOF would SIGBUS the emulator).
+CC GC dex: 155 → 120 MB RSS.
+
 Where the 222 M go (`aoiproc -p`): 30 % liblz4 (decompressing the images), 29 % libart,
 20 % libartbase, 10 % linker64. Storing the images uncompressed in the root would remove
 the LZ4 third. The image only pays off with the full BCP (framework classes for real
@@ -187,9 +193,8 @@ jars (no boot image to gain), and CMC on the device is untested.
 sigaction a guest installs.
 
 **Next, in order:**
-1. Uncompressed boot images in the root (LZ4 is 30 % of the image start), file
-   mappings backed by the host's own mmap instead of copies (RSS), then decide whether
-   the phone gets the full BCP + boot image + CMC.
+1. Uncompressed boot images in the root (LZ4 is 30 % of the image start), then decide
+   whether the phone gets the full BCP + boot image + CMC (bundle size, device test).
 2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);

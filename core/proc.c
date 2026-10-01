@@ -1023,9 +1023,10 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
                    f ? AOI_PROT_R | AOI_PROT_W : prot & 7, fixed);
     if (IS_ERR(a)) return a;
     if (!f) return a;
-    if (f) {                                                       /* private copy of the file range */
-        int64_t got = xfer(p, f->host, a, len, 1, (int64_t)off);
-        if (got < 0) { aoi_vm_unmap(&p->vm, a, len); return (uint64_t)got; }
+    if (f) {                                                       /* private, copy-on-write view of the file */
+        struct stat st;
+        int e = fstat(f->host, &st) ? -errno : aoi_vm_map_file(&p->vm, a, len, f->host, off, (uint64_t)st.st_size);
+        if (e < 0) { aoi_vm_unmap(&p->vm, a, len); errno = -e; return herr(); }
         note_map(p, a, len, off, f->path);
     }
     aoi_vm_protect(&p->vm, a, len, prot & 7);

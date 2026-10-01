@@ -1,9 +1,12 @@
+#define _GNU_SOURCE                 /* pread, MAP_ANONYMOUS */
+#define _DARWIN_C_SOURCE
 #include "vm.h"
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #ifndef MAP_ANON
 #define MAP_ANON MAP_ANONYMOUS
@@ -218,6 +221,45 @@ int aoi_vm_write(struct aoi_vm *vm, uint64_t addr, const void *src, uint64_t len
         s += n; addr += n; len -= n;
     }
     return 1;
+}
+
+int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize)
+{
+    uint64_t o = 0;
+    int direct = (addr - off) % HOST_PAGE == 0;
+    if (!range_ok(vm, addr, len)) return -EINVAL;
+    while (o < len) {
+        uint64_t a = addr + o, fo = off + o, n = AOI_VM_CHUNK - (a & (AOI_VM_CHUNK - 1)), hp;
+        uint8_t *h;
+        if (n > len - o) n = len - o;
+        if (!vm->chunk[CI(a)]) { o += n; continue; }
+        h = vm->chunk[CI(a)] + (a & (AOI_VM_CHUNK - 1));
+        /* host pages wholly inside both this piece and the file: map them */
+        if (direct && (hp = up(fo, HOST_PAGE)) < fsize) {
+            uint64_t he = down(fo + n < fsize ? fo + n : fsize, HOST_PAGE);
+            if (he > hp && mmap(h + (hp - fo), he - hp, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd,
+                                (off_t)hp) != MAP_FAILED) {
+                uint64_t head = hp - fo, tail = fo + n - he;
+                ssize_t g;
+                if (head && (g = pread(fd, h, (size_t)head, (off_t)fo)) < 0) return -errno;
+                if (tail && fo + n - tail < fsize && (g = pread(fd, h + (he - fo), (size_t)tail, (off_t)he)) < 0)
+                    return -errno;
+                o += n;
+                continue;
+            }
+        }
+        {                                                           /* copy */
+            uint64_t k = 0;
+            while (k < n && fo + k < fsize) {
+                ssize_t g = pread(fd, h + k, (size_t)(n - k), (off_t)(fo + k));
+                if (g < 0) { if (errno == EINTR) continue; return -errno; }
+                if (g == 0) break;
+                k += (uint64_t)g;
+            }
+        }
+        o += n;
+    }
+    return 0;
 }
 
 void aoi_vm_set_missing(struct aoi_vm *vm, uint64_t addr, uint64_t len, int on)

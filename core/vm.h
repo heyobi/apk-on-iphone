@@ -66,6 +66,12 @@ int aoi_vm_write(struct aoi_vm *vm, uint64_t addr, const void *src, uint64_t len
 /* Zeroes the mapped pages of a range (madvise DONTNEED). */
 void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len);
 
+/* Fills the mapped range [addr, addr+len) with the bytes of host file `fd` from
+ * `off` (zeros past `fsize`). Where guest address and file offset agree modulo the
+ * host page, whole host pages inside the file are the file itself, mapped
+ * privately (demand-paged, copy-on-write), not a copy. 0, or -errno of pread. */
+int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize);
+
 /* Marks the mapped pages of a range missing (on: their bytes become zero) or present. */
 void aoi_vm_set_missing(struct aoi_vm *vm, uint64_t addr, uint64_t len, int on);
 
