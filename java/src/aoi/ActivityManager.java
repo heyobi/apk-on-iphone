@@ -42,13 +42,13 @@ final class ActivityManager extends IActivityManager.Stub {
                 new HashMap<String, Object>(), new Bundle(), "unknown", null, null, new long[0], null, 0, 0);
     }
 
-    /** What the app is told about the device: a phone-sized portrait screen (iPhone-like
-     *  density), English, normal UI mode, touch, no keyboard. */
+    /** What the app is told about the device: the iPhone's portrait screen (393 x 852 dp
+     *  at 3x, DisplayManager), English, normal UI mode, touch, no keyboard. */
     static Configuration phone() {
         Configuration c = new Configuration();
         c.setToDefaults();
         c.setLocale(java.util.Locale.US);
-        c.densityDpi = 460;
+        c.densityDpi = DisplayManager.DPI;
         c.screenWidthDp = 393; c.screenHeightDp = 852; c.smallestScreenWidthDp = 393;
         c.orientation = 1;                                         /* ORIENTATION_PORTRAIT */
         c.uiMode = 0x11;                                           /* TYPE_NORMAL | NIGHT_NO */
@@ -146,7 +146,6 @@ final class ActivityManager extends IActivityManager.Stub {
             SettingsProvider sp = new SettingsProvider();
             sp.attachInfo(android.app.ActivityThread.currentApplication(), pi);
             settings = new android.app.ContentProviderHolder(pi);
-            settings.info = pi;
             settings.provider = sp.getIContentProvider();
             settings.noReleaseNeeded = true;
         }

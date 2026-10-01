@@ -43,6 +43,12 @@ public final class Main {
         ServiceManager.addService("activity", new ActivityManager(app));
         ServiceManager.addService("activity_task", new ActivityTaskManager(app));
         ServiceManager.addService("user", new UserManager());
+        ServiceManager.addService("display", new DisplayManager());
+        /* No GPU in the guest yet (a GSI has no vendor GLES driver; its ANGLE needs Vulkan):
+         * windows draw in software, with Skia on the CPU, into buffers we can show. */
+        java.lang.reflect.Field hw = Class.forName("android.view.ThreadedRenderer").getDeclaredField("sRendererEnabled");
+        hw.setAccessible(true);
+        hw.setBoolean(null, false);
         ActivityThread.main(new String[0]);
     }
 }

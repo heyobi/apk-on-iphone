@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""dexsig.py FILE.{dex,jar,apk} CLASS...: the methods dex code refers to on each
-CLASS (e.g. android.app.IApplicationThread), with full parameter types, from every
+"""dexsig.py FILE.{dex,jar,apk} CLASS...: the methods and fields dex code refers to
+on each CLASS (e.g. android.app.IApplicationThread), with full types, from every
 classes*.dex inside. Used to write java/stubs against the exact framework of the
 guest root (hidden API signatures change between Android versions)."""
 import struct
@@ -22,6 +22,7 @@ def methods(dex, want):
     n_str, o_str = u32(0x38), u32(0x3C)
     n_typ, o_typ = u32(0x40), u32(0x44)
     o_pro = u32(0x4C)
+    n_fld, o_fld = u32(0x50), u32(0x54)
     n_met, o_met = u32(0x58), u32(0x5C)
 
     def string(i):
@@ -39,6 +40,11 @@ def methods(dex, want):
                 "J": "long", "F": "float", "D": "double"}.get(t, t[1:-1].replace("/", ".") if t.startswith("L") else t)
         return base + "[]" * dims
 
+    for k in range(n_fld):
+        cls, ft, name = struct.unpack_from("<HHI", dex, o_fld + 8 * k)
+        c = pretty(typ(cls))
+        if c in want:
+            yield c, "field %s %s" % (pretty(typ(ft)), string(name))
     for k in range(n_met):
         cls, pro, name = struct.unpack_from("<HHI", dex, o_met + 8 * k)
         c = pretty(typ(cls))

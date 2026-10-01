@@ -295,12 +295,25 @@ it). Where it stands: inside `Activity.attach`/the initializers, native code wai
 event connection. framework.jar has no Java binding of android.gui.ISurfaceComposer, so
 our SurfaceFlinger must be native.
 
+**SurfaceFlinger, natively** (`core/sf.c`, behind an in-process binder handle; the binder
+driver now has native objects whose transactions call C functions, replies with
+handles, fds or a status): `SurfaceFlingerAIDL` answers bootFinished,
+getPhysicalDisplayIds and createDisplayEventConnection; the connection hands out a host
+SEQPACKET socketpair (`stealReceiveChannel`: BitTube travels as two fds in this build)
+and writes 216-byte DisplayEventReceiver::Event records at 60 Hz on requestNextVsync /
+setVsyncRate (`aoi_sf_tick`, run by the scheduler). C++ AIDL codes follow the .aidl
+order of the build: `tools/aidlcodes.py` reads them from the guest's libgui.
+`display` (Java): one display, 1179 x 2556 px at 480 dpi (393 x 852 dp, the iPhone's
+points at 3x), 60 Hz. Rendering: a GSI has no vendor GLES driver and its ANGLE needs
+Vulkan, so aoi.Main turns ThreadedRenderer off: windows draw **in software** (Skia on
+the CPU) — the buffer path they need (layers, gralloc buffers SurfaceFlinger can read)
+is the same one a later GL-forwarding driver will use. **Qalculate's
+`MainActivity.onCreate` runs** (the app's own code) and stops at `window`.
+
 **Next, in order:**
-1. **SurfaceFlinger in core/** behind a real binder handle (C, the C++ AIDL parcel
-   format): ISurfaceComposer.createDisplayEventConnection + IDisplayEventConnection
-   (a socketpair carried as a binder fd object; vsync events written at 60 Hz when
-   requested), display info calls; then `window` (IWindowManager/IWindowSession in Java)
-   and buffers: the first frame drawn on the iPhone.
+1. `window` (IWindowManager + IWindowSession in Java: addToDisplay, relayout with a
+   SurfaceControl from our SurfaceFlinger), then layers and gralloc buffers in core/sf.c,
+   then the first frame copied to the iPhone's screen.
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.
