@@ -61,7 +61,13 @@ host memory in 2 MiB chunks that exist only while a page in them is accessible. 
 PROT_NONE reservation costs nothing; toybox/mksh/linkerconfig run with 60-76 MiB of
 chunks (was 10.5 GiB: sys_mmap mapped every anonymous request RW before applying its
 protection, which backed all of scudo's 8 GiB reservation). Cost: ~5 % (toybox echo
-0.19 → 0.20 s). App 0.7's probe re-checks it on the device.
+0.19 → 0.20 s). **Confirmed on the device** (app 0.7): the sparse 64 GiB space with an
+8 GiB scudo reservation runs with 3 chunks — "fits on this device".
+
+Next risk being checked: core/proc.c on iOS itself (Darwin's stat/dirent/errno/open
+flags, the app sandbox). App 0.8 bundles a 9 MB guest root (toybox + mksh and their
+libraries, `ios/android-files.txt`, built by the workflow with `tools/mini-root.sh`)
+and its **Android** button runs them on the phone.
 
 Known simplifications: one thread, `futex` never blocks; signals are recorded but
 never delivered; `socket` is ENOSYS (logd is absent, so logs go nowhere); file
