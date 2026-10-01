@@ -4,7 +4,7 @@ PYTHON  ?= python3
 CFLAGS  ?= -O2 -g -Wall -Wextra -std=c11
 AARCH64 := clang --target=aarch64-linux-gnu -nostdlib -static -fuse-ld=lld
 
-CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c
+CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c
 
 all: build/apkscan
 
@@ -17,13 +17,14 @@ build/test_scan: tests/test_scan.c $(CORE) core/*.h | build
 build/fixture.elf: tests/fixture.S | build
 	$(AARCH64) -o $@ $<
 
-test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun
+test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc
 	./build/test_vm
 	./build/test_scan build/fixture.elf
 	./build/apkscan build/fixture.elf
 	sh tests/run_guest.sh
 	$(MAKE) build/libstep1.so
 	$(PYTHON) tests/difftest.py 300
+	sh tests/run_android.sh
 
 build:
 	mkdir -p build
@@ -31,7 +32,7 @@ build:
 clean:
 	rm -rf build
 
-.PHONY: all test clean difftest
+.PHONY: all test clean difftest android-test
 
 build/aoirun: tools/aoirun.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/aoirun.c $(CORE) -lm
@@ -70,3 +71,10 @@ build/libstep1.so: tests/step1.c $(CORE) core/*.h | build
 
 difftest: build/libstep1.so
 	$(PYTHON) tests/difftest.py 5000
+
+# Android programs with Android's own linker64 (needs a root from tools/android-root.sh).
+build/aoiproc: tools/aoiproc.c $(CORE) core/*.h | build
+	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) -lm
+
+android-test: build/aoiproc
+	sh tests/run_android.sh

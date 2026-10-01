@@ -1,6 +1,8 @@
+#define _POSIX_C_SOURCE 200809L
 #include "cpu_impl.h"
 
 #include <string.h>
+#include <time.h>
 
 uint8_t *aoi_mem_ptr(struct aoi_mem *mem, uint64_t addr, uint64_t len)
 {
@@ -107,6 +109,16 @@ static uint64_t addflags(struct aoi_cpu *c, uint64_t a, uint64_t b, int carry_in
     }
 }
 
+/* The generic timer as user space sees it: a 24 MHz counter (Apple's and most
+ * Android phones' frequency) driven by the host's monotonic clock. */
+#define AOI_CNTFRQ 24000000u
+static uint64_t aoi_cntvct(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * AOI_CNTFRQ + (uint64_t)ts.tv_nsec * 3 / 125;
+}
+
 enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
 {
     c->stop = AOI_RUN;
@@ -154,10 +166,22 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if ((((v >> b) & 1) != 0) == (nz != 0)) next = c->pc + (sextn((insn >> 5) & 0x3fff, 14) << 2);
         /* ---- system ---- */
         } else if (insn == 0xd4000001u) {                          /* svc #0 */
-            uint64_t r = aoi_linux_syscall(c);
+            uint64_t r = c->syscall ? c->syscall(c) : aoi_linux_syscall(c);
             if (c->stop == AOI_RUN) c->x[0] = r;
         } else if ((insn & 0xffffffe0u) == 0xd53bd040u) {          /* mrs xN, tpidr_el0 */
             setX(c, insn & 31, c->tpidr);
+        } else if ((insn & 0xffffffe0u) == 0xd53b00e0u) {          /* mrs xN, dczid_el0 */
+            setX(c, insn & 31, 0x10);                              /* DZP: dc zva prohibited */
+        } else if ((insn & 0xffffffe0u) == 0xd53b0020u) {          /* mrs xN, ctr_el0 */
+            setX(c, insn & 31, 0x8444c004u);                       /* 64-byte I/D lines, like a Cortex-A */
+        } else if ((insn & 0xffffffe0u) == 0xd53be000u) {          /* mrs xN, cntfrq_el0 */
+            setX(c, insn & 31, AOI_CNTFRQ);
+        } else if ((insn & 0xffffffe0u) == 0xd53be040u || (insn & 0xffffffe0u) == 0xd53be020u) { /* cntvct/cntpct */
+            setX(c, insn & 31, aoi_cntvct());
+        } else if ((insn & 0xffdfffe0u) == 0xd51b4400u) {          /* mrs/msr fpcr */
+            if (insn & 0x200000u) setX(c, insn & 31, c->fpcr); else c->fpcr = (uint32_t)X(c, insn & 31);
+        } else if ((insn & 0xffdfffe0u) == 0xd51b4420u) {          /* mrs/msr fpsr */
+            if (insn & 0x200000u) setX(c, insn & 31, c->fpsr); else c->fpsr = (uint32_t)X(c, insn & 31);
         } else if ((insn & 0xffffffe0u) == 0xd51bd040u) {          /* msr tpidr_el0, xN */
             c->tpidr = X(c, insn & 31);
         } else if (insn == 0xd503201fu || (insn & 0xfffff01fu) == 0xd503201fu) {
@@ -424,6 +448,18 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             case 11: sh = b & (is64 ? 63 : 31);
                      r = is64 ? (a >> sh) | (sh ? a << (64 - sh) : 0)
                               : ((uint32_t)a >> sh) | (sh ? (uint32_t)a << (32 - sh) : 0); break; /* rorv */
+            case 16: case 17: case 18: case 19: case 20: case 21: case 22: case 23: { /* crc32[c]{b,h,w,x} */
+                int sz = op & 3, k;
+                uint32_t crc = (uint32_t)a, poly = op & 4 ? 0x82f63b78u : 0xedb88320u;
+                if ((sz == 3) != is64) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto done; }
+                for (k = 0; k < (8 << sz); k++) {
+                    crc ^= (uint32_t)(b >> k) & 1;
+                    crc = crc & 1 ? (crc >> 1) ^ poly : crc >> 1;
+                }
+                r = crc;
+                is64 = 0;
+                break;
+            }
             default: c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto done;
             }
             if (!is64) r &= 0xffffffffu;
@@ -531,7 +567,12 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                     if (c->stop == AOI_RUN) setX(c, rs, old);
                 }
             } else { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
-        } else if ((insn & 0x3f208c00u) == 0x38200000u && !(insn >> 26 & 1)) {
+        } else if ((insn & 0x3f20fc00u) == 0x3820c000u && ((insn >> 16) & 31) == 31 && !(insn >> 26 & 1)) {
+            /* ldapr / ldaprb / ldaprh (RCpc load-acquire): a plain load here */
+            int bytes = 1 << (insn >> 30), rn = insn >> 5 & 31;
+            uint64_t v = rd(c, rn == 31 ? c->sp : c->x[rn], bytes);
+            if (c->stop == AOI_RUN) setX(c, insn & 31, v);
+        } else if ((insn & 0x3f200c00u) == 0x38200000u && !(insn >> 26 & 1)) {
             /* LSE: ldadd/ldclr/ldeor/ldset/ld[su]max/ld[su]min, swp (single-threaded: plain RMW) */
             int size = insn >> 30, o3 = insn >> 15 & 1, opc = insn >> 12 & 7;
             int rs = insn >> 16 & 31, rn = insn >> 5 & 31, rt = insn & 31, bytes = 1 << size;

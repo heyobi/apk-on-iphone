@@ -39,11 +39,20 @@ void aoi_vm_free(struct aoi_vm *vm)
     memset(vm, 0, sizeof *vm);
 }
 
-/* Host side: a host page is accessible while any guest page inside it is mapped. */
+/* Host side: a host page is accessible while any guest page inside it is mapped.
+ * Host pages lying wholly inside [addr, addr+len) share no guest page with a
+ * neighbour, so they are handled with one call; only the two edge pages need
+ * the per-page check. (Per-page calls made scudo's 8 GiB reservation cost half
+ * a million mmaps.) */
 static void host_sync(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fresh)
 {
     uint64_t a = down(addr, HOST_PAGE), e = up(addr + len, HOST_PAGE), g;
+    uint64_t ia = up(addr, HOST_PAGE), ie = down(addr + len, HOST_PAGE);
+    if (ie > ia && !fresh) {
+        mmap(vm->host + ia, ie - ia, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0);
+    }
     for (; a < e; a += HOST_PAGE) {
+        if (ie > ia && a >= ia && a < ie && !fresh) { a = ie - HOST_PAGE; continue; }
         int any = 0;
         for (g = a; g < a + HOST_PAGE; g += AOI_VM_PAGE) any |= vm->prot[PG(g)];
         if (!any)
@@ -85,9 +94,13 @@ uint64_t aoi_vm_map(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot, in
     /* fresh zero pages: give the host range new anonymous memory, then mark */
     {
         uint64_t ha = down(addr, HOST_PAGE), he = up(addr + len, HOST_PAGE);
+        uint64_t ia = up(addr, HOST_PAGE), ie = down(addr + len, HOST_PAGE);
+        if (ie > ia)                                  /* interior: one call */
+            mmap(vm->host + ia, ie - ia, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0);
         for (p = ha; p < he; p += HOST_PAGE) {
             int keep = 0;
             uint64_t g;
+            if (ie > ia && p >= ia && p < ie) { p = ie - HOST_PAGE; continue; }
             for (g = p; g < p + HOST_PAGE; g += AOI_VM_PAGE)
                 if ((g < addr || g >= addr + len) && vm->prot[PG(g)]) keep = 1;
             if (keep) {                       /* host page shared with a neighbour: zero our part */
@@ -99,17 +112,16 @@ uint64_t aoi_vm_map(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot, in
             }
         }
     }
-    for (p = addr; p < addr + len; p += AOI_VM_PAGE) vm->prot[PG(p)] = (uint8_t)(prot | 0x80);
+    memset(vm->prot + PG(addr), prot | 0x80, PG(len));
     return addr;
 }
 
 int aoi_vm_unmap(struct aoi_vm *vm, uint64_t addr, uint64_t len)
 {
-    uint64_t p;
     if (addr % AOI_VM_PAGE || !len) return -EINVAL;
     len = up(len, AOI_VM_PAGE);
     if (!range_ok(vm, addr, len)) return -EINVAL;
-    for (p = addr; p < addr + len; p += AOI_VM_PAGE) vm->prot[PG(p)] = 0;
+    memset(vm->prot + PG(addr), 0, PG(len));
     host_sync(vm, addr, len, 0);
     return 0;
 }

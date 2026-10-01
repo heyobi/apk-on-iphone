@@ -55,6 +55,10 @@ struct aoi_cpu {
     void *host_ctx;
     const char *stop_name;      /* import name for AOI_STOP_IMPORT */
 
+    /* svc #0 handler; NULL means core/linux.c's minimal one. A Linux process
+     * (core/proc.c) installs its full syscall layer here. */
+    uint64_t (*syscall)(struct aoi_cpu *cpu);
+
     /* Optional per-instruction hook (the reference-CPU oracle, core/oracle.c):
      * called with after=0 before and after=1 after each guest instruction.
      * While it is set, wr() logs the stores of the current instruction. */

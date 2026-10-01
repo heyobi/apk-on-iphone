@@ -286,12 +286,24 @@ static int three_same(struct aoi_cpu *c, uint32_t insn)
             else if (u) z = -sh >= bits ? 0 : x >> -sh;
             else z = (uint64_t)(-sh >= bits ? (sxv < 0 ? -1 : 0) : sxv >> -sh);
             break; }
-        case 0x17: {                                                                 /* addp */
+        case 0x17: case 0x14: case 0x15: {                                           /* addp / [su]maxp / [su]minp */
             const uint64_t *src = i < ne / 2 ? a : b;
             int j = (i % (ne / 2)) * 2;
-            if (u) return 0;
-            z = lane(src, j, esz) + lane(src, j + 1, esz);
+            uint64_t p0 = lane(src, j, esz), p1 = lane(src, j + 1, esz);
+            int64_t s0 = sx(p0, esz), s1 = sx(p1, esz);
+            if (op == 0x17) { if (u) return 0; z = p0 + p1; break; }
+            if (size == 3) return 0;
+            if (op == 0x14) z = u ? (p0 > p1 ? p0 : p1) : (uint64_t)(s0 > s1 ? s0 : s1);
+            else z = u ? (p0 < p1 ? p0 : p1) : (uint64_t)(s0 < s1 ? s0 : s1);
             break; }
+        case 0x04:                                                                   /* [su]hsub */
+            if (size == 3) return 0;
+            z = u ? (x - y) >> 1 : (uint64_t)((sxv - syv) >> 1); break;
+        case 0x0e: case 0x0f:                                                        /* [su]abd / [su]aba */
+            if (size == 3) return 0;
+            z = u ? (x > y ? x - y : y - x) : (uint64_t)(sxv > syv ? sxv - syv : syv - sxv);
+            if (op == 0x0f) z += lane(c->vreg[d], i, esz);
+            break;
         default: return 0;
         }
         setlane(r, i, esz, z & emask(esz));
@@ -480,6 +492,23 @@ static int three_diff(struct aoi_cpu *c, uint32_t insn)
     int q = insn >> 30 & 1, u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0xf;
     int m = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, i, half = q ? 8 / esz : 0;
     vec r = {0, 0};
+    if (op == 0xe && !u && (size == 0 || size == 3)) {   /* pmull{2}: carry-less multiply */
+        if (size == 0) {
+            for (i = 0; i < 8; i++) {
+                uint64_t x = lane(c->vreg[n], i + (q ? 8 : 0), 1), y = lane(c->vreg[m], i + (q ? 8 : 0), 1), z = 0;
+                int k;
+                for (k = 0; k < 8; k++) if (y >> k & 1) z ^= x << k;
+                setlane(r, i, 2, z);
+            }
+        } else {                                       /* 1d x 1d -> 1q */
+            uint64_t x = c->vreg[n][q], y = c->vreg[m][q];
+            int k;
+            for (k = 0; k < 64; k++)
+                if (y >> k & 1) { r[0] ^= x << k; if (k) r[1] ^= x >> (64 - k); }
+        }
+        setv(c, d, r, 1);
+        return 1;
+    }
     if (size == 3) return 0;
     if (op == 0x4 || op == 0x6) {                      /* [r]addhn{2} / [r]subhn{2}: high half, narrowed */
         int bits = 8 * esz;
@@ -503,6 +532,10 @@ static int three_diff(struct aoi_cpu *c, uint32_t insn)
         case 0xc: z = x * y; break;                    /* [su]mull */
         case 0x8: z = acc + x * y; break;              /* [su]mlal */
         case 0xa: z = acc - x * y; break;              /* [su]mlsl */
+        case 0x5: case 0x7:                            /* [su]abal / [su]abdl */
+            z = u ? (x > y ? x - y : y - x) : (uint64_t)((int64_t)x > (int64_t)y ? x - y : y - x);
+            if (op == 5) z += acc;
+            break;
         default: return 0;
         }
         setlane(r, i, 2 * esz, z & emask(2 * esz));

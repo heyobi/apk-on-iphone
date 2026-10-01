@@ -13,6 +13,9 @@ static inline uint8_t *gptr(struct aoi_cpu *c, uint64_t a, int len, int need)
 {
     struct aoi_vm *vm = c->mem->vm;
     if (vm) {
+        /* Top Byte Ignore: Linux runs EL0 with TBI0 on, so data accesses ignore
+         * bits 56-63 (Android tags heap pointers there). */
+        if (need != AOI_PROT_X) a &= 0x00ffffffffffffffULL;
         if (a + (uint64_t)len <= vm->size && (a ^ (a + (uint64_t)len - 1)) < AOI_VM_PAGE) {
             uint8_t f = vm->prot[a / AOI_VM_PAGE];
             return f && (f & need) == need ? vm->host + a : NULL;

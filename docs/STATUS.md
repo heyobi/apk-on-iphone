@@ -1,4 +1,4 @@
-# Status and handoff (2026-10-01, updated)
+# Status and handoff (2026-10-01, evening)
 
 ## What runs today
 
@@ -13,6 +13,48 @@ them, and runs their code on any host — no iPhone, no JIT.
 - `./build/isacheck words.txt` — **all 284,953 distinct instruction words in Qalculate's
   9 libraries: 0 missing, 0 wrong** against Unicorn (system/hint/exception encodings and
   words that fault on every random state are skipped).
+
+## Step 1 (in progress): unmodified Android programs with Android's own linker64
+
+`build/aoiproc ROOT PROGRAM [args]` does what execve does for an Android binary:
+maps it and its PT_INTERP (`/system/bin/linker64` → the runtime APEX) into the guest
+address space, builds argv/envp/auxv, and serves the Linux syscalls on the host
+(`core/proc.c`). Guest paths are confined to ROOT; absolute symlinks resolve inside it.
+
+Running today, from the AOSP 14 GSI, unmodified (`make android-test`, 5 checks):
+
+- `toybox echo/ls -l/cat/uname` — linker64 links libc, libcrypto, libz, liblog… then
+  toybox runs: 13.7 M instructions, 0.18 s.
+- `/system/bin/sh` (mksh) runs scripts: `echo $((6*7))` → 42 (2.1 M instructions, 0.05 s).
+- `linkerconfig` runs to completion and writes `/linkerconfig/ld.config.txt` — but in
+  **legacy** form (see next steps).
+
+Get a root in a fresh session: `tools/fetch-android.sh ~/aroot` (≈800 MB download,
+sha256-pinned), then `AOI_ANDROID_ROOT=~/aroot make android-test`. `aoiproc -t` logs
+every syscall; on a stop it names the library and offset of pc and lr.
+
+What it took beyond the loader and syscalls: user-readable system registers
+(CTR_EL0, DCZID_EL0, CNTVCT/CNTFRQ, FPCR/FPSR), CRC32/CRC32C, `pmull`, `uminp`
+& co., `ldapr`, a fix to LSE `swp` (it was unreachable), Top Byte Ignore for data
+accesses (Android tags heap pointers), `MREMAP_FIXED` (the linker builds its CFI
+shadow with it — without it every cross-library indirect call hit a CFI trap), and
+a 64 GiB guest space: scudo reserves 8+ GiB at start. Mappings without a hint go
+above 4 GiB, leaving the low 4 GiB to ART's heap. vm.c now maps a range with one
+host call instead of one per page (scudo's reservation was 500k mmaps, 0.9 s).
+
+**Next, in order:**
+1. **System properties.** bionic reads them from `/dev/__properties__` (built by init
+   from `build.prop` + `property_contexts`). Without them linkerconfig picks the
+   legacy layout, so APEX namespaces (`libnativehelper.so` for dalvikvm64) are not
+   visible. Write the property area (bionic's `prop_area` trie + `property_info`)
+   from the root's build.prop files, plus `/apex/apex-info-list.xml`.
+2. Then `dalvikvm64 -showversion`, then a hello-world dex.
+3. Processes and threads (`clone`, `pipe2`, `wait4`, signals): mksh pipelines and
+   ART's own threads need them (roadmap step 2).
+
+Known simplifications: one thread, `futex` never blocks; signals are recorded but
+never delivered; `socket` is ENOSYS (logd is absent, so logs go nowhere); file
+mappings are private copies; uid 0.
 
 ## The reference-CPU oracle (use it for every new instruction)
 
@@ -75,7 +117,10 @@ none occur in Qalculate; other apps will tell (isacheck).
   imports to loaded libs / host shim / a named-stop slot.
 - `core/bionic.c` — host implementations of the libc functions .so files import
   (malloc/memcpy/strlen/localeconv/stdio pointers, …). Grown as needed.
-- `core/linux.c` — Linux syscall layer (write/writev/exit so far).
+- `core/linux.c` — minimal syscalls for `aoirun` (write/writev/exit).
+- `core/proc.c` — a Linux process: execve-style loader (PT_INTERP, auxv) and the
+  syscall layer for unmodified Android programs (`tools/aoiproc.c`).
+- `tools/fetch-android.sh`, `tools/android-root.sh` — the AOSP 14 guest root.
 - `core/load.c` — static-ELF loader + initial stack (for the `aoirun` path).
 - `tools/gmpdemo.c` — the end-to-end demo: APK library → linked → GMP computes.
 

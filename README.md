@@ -29,6 +29,9 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
 
 ## Status
 
+- **`aoiproc`** (`make build/aoiproc`): runs **unmodified Android programs with Android's own
+  `linker64`** (AOSP 14): `toybox`, the `mksh` shell and `linkerconfig` work. This is the
+  start of step 1 below; see `docs/STATUS.md`.
 - **`gmpdemo`** (`make build/gmpdemo`): loads the **real `libgmp.so` from the Qalculate APK**,
   links it (32 libc imports bound to a small host shim in `core/bionic.c`), and computes
   `100000!` correctly with GMP's own code (327 M instructions, 6.8 s). All 284,953 distinct
