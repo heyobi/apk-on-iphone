@@ -9,6 +9,7 @@
  *
  * Debug-only: built into the *-check binaries, never into the iOS app. */
 #include "oracle.h"
+#include "vm.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -27,7 +28,7 @@ struct oracle {
     uint64_t waddr[MAXW];
     int wlen[MAXW];
     uint8_t wold[MAXW][16], wnew[MAXW][16];
-    uint64_t checked;
+    uint64_t checked, skipped;
     int failed, quiet;
     char what[16];
 };
@@ -65,9 +66,11 @@ static void before(struct aoi_cpu *c)
 {
     uint64_t v;
     int i;
+    uint8_t *ip = aoi_mem_ptr(c->mem, c->pc, 4);
     O.pc = c->pc;
     O.nw = 0;
-    memcpy(&O.insn, aoi_mem_ptr(c->mem, c->pc, 4), 4);
+    if (!ip) { O.uc_ok = 0; O.insn = 0; return; }   /* our fetch faults: nothing to compare */
+    memcpy(&O.insn, ip, 4);
     for (i = 0; i < 31; i++) uc_reg_write(O.uc, xreg[i], &c->x[i]);
     uc_reg_write(O.uc, UC_ARM64_REG_SP, &c->sp);
     v = nzcv_of(c);
@@ -107,8 +110,12 @@ static void after(struct aoi_cpu *c)
     char name[8];
     int i, k;
     if (c->stop == AOI_STOP_SYSCALL || O.insn == 0xd4000001u) return;   /* svc: host side-effects */
+    if (c->stop == AOI_STOP_FAULT) return;     /* our fault becomes a guest signal; Unicorn maps all */
+    if ((O.insn & 0x3b200c00u) == 0x38200000u && !(O.insn >> 15 & 1) && ((O.insn >> 12 & 7) == 4 ||
+        (O.insn >> 12 & 7) == 5) && O.insn >> 30 != 3) return;   /* Unicorn: ldsmax/ldsmin < 64 bit compare unsigned */
+    if ((O.insn & 0xfff00000u) == 0xd5300000u && (O.insn & 0xffffffe0u) != 0xd53bd040u) return; /* mrs: system values differ (tpidr is ours) */
     O.checked++;
-    if (!O.uc_ok) return;           /* Unicorn could not run it either: nothing to compare */
+    if (!O.uc_ok) { O.skipped++; return; }   /* Unicorn could not run it: nothing to compare */
     for (i = 0; i < 31; i++)
         if (c->x[i] != O.x[i]) { snprintf(name, sizeof name, "x%d", i); fail(c, name, c->x[i], O.x[i]); }
     for (i = 0; i < 32; i++)
@@ -133,6 +140,9 @@ static void after(struct aoi_cpu *c)
     }
     for (k = 0; k < c->nwlog; k++) {
         int seen = 0;
+        uint64_t wa = c->wlog_addr[k] & 0x00ffffffffffffffULL;
+        if ((wa >> AOI_VM_CHUNK_SHIFT) != ((wa + (uint64_t)c->wlog_len[k] - 1) >> AOI_VM_CHUNK_SHIFT))
+            continue;               /* across two chunks: Unicorn sees two mappings and reports no write */
         for (i = 0; i < O.nw; i++)
             if (c->wlog_addr[k] >= O.waddr[i] && c->wlog_addr[k] < O.waddr[i] + (uint64_t)O.wlen[i]) seen = 1;
         if (!seen) fail(c, "store", c->wlog_addr[k], 0);
@@ -145,12 +155,30 @@ static void hook(struct aoi_cpu *c, int is_after)
     if (is_after) after(c); else before(c);
 }
 
+/* Sparse guest memory (core/vm.c): Unicorn sees the same host chunks, mapped
+ * and unmapped as the guest space changes. */
+static void on_chunk(struct aoi_vm *vm, uint64_t guest, uint8_t *host, int added)
+{
+    (void)vm;
+    if (!O.uc) return;
+    if (added) uc_mem_map_ptr(O.uc, guest, AOI_VM_CHUNK, UC_PROT_ALL, host);
+    else uc_mem_unmap(O.uc, guest, AOI_VM_CHUNK);
+}
+
 const char *aoi_oracle_attach(struct aoi_cpu *c)
 {
     uc_hook h;
     int i;
     memset(&O, 0, sizeof O);
     if (uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &O.uc) != UC_ERR_OK) return "uc_open failed";
+    uc_ctl_set_cpu_model(O.uc, UC_CPU_ARM64_MAX);   /* LSE atomics, ldapr, crc32: as Android code uses them */
+    if (c->mem->vm) {
+        struct aoi_vm *vm = c->mem->vm;
+        uint64_t k;
+        for (k = 0; k < vm->size >> AOI_VM_CHUNK_SHIFT; k++)
+            if (vm->chunk[k]) on_chunk(vm, k << AOI_VM_CHUNK_SHIFT, vm->chunk[k], 1);
+        aoi_vm_chunk_hook = on_chunk;
+    }
     for (i = 0; i < c->mem->n; i++) {
         struct aoi_region *r = &c->mem->r[i];
         if (uc_mem_map_ptr(O.uc, r->base, (r->size + 0x3fff) & ~(uint64_t)0x3fff, UC_PROT_ALL, r->host) != UC_ERR_OK)
@@ -166,8 +194,8 @@ void aoi_oracle_report(struct aoi_cpu *c, enum aoi_stop st)
     if (st == AOI_STOP_UNDEF && !O.failed)
         fprintf(stderr, "[oracle] our CPU lacks insn 0x%08x at pc=0x%" PRIx64 "; Unicorn %s it\n",
                 c->fault_insn, c->pc, O.uc_ok ? "runs" : "also rejects");
-    fprintf(stderr, "[oracle] %" PRIu64 " instructions cross-checked%s\n", O.checked,
-            O.failed ? ", first mismatch above" : ", all identical");
+    fprintf(stderr, "[oracle] %" PRIu64 " instructions cross-checked (%" PRIu64 " Unicorn could not run)%s\n",
+            O.checked, O.skipped, O.failed ? ", first mismatch above" : ", all identical");
 }
 
 void aoi_oracle_reset(int quiet) { O.failed = 0; O.quiet = quiet; O.uc_ok = 0; }

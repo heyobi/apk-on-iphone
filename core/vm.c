@@ -14,6 +14,8 @@
 #define CI(a) ((a) >> AOI_VM_CHUNK_SHIFT)
 #define PAGES_PER_CHUNK (AOI_VM_CHUNK / AOI_VM_PAGE)
 
+void (*aoi_vm_chunk_hook)(struct aoi_vm *vm, uint64_t guest, uint8_t *host, int added);
+
 static uint64_t down(uint64_t v, uint64_t a) { return v & ~(a - 1); }
 static uint64_t up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
@@ -33,7 +35,10 @@ void aoi_vm_free(struct aoi_vm *vm)
     uint64_t i;
     if (vm->chunk)
         for (i = 0; i < CI(vm->size); i++)
-            if (vm->chunk[i]) munmap(vm->chunk[i], AOI_VM_CHUNK);
+            if (vm->chunk[i]) {
+                if (aoi_vm_chunk_hook) aoi_vm_chunk_hook(vm, i << AOI_VM_CHUNK_SHIFT, vm->chunk[i], 0);
+                munmap(vm->chunk[i], AOI_VM_CHUNK);
+            }
     free(vm->chunk);
     free(vm->prot);
     memset(vm, 0, sizeof *vm);
@@ -47,6 +52,7 @@ static int chunk_get(struct aoi_vm *vm, uint64_t ci)
     if (p == MAP_FAILED) return 0;
     vm->chunk[ci] = p;
     vm->nchunks++;
+    if (aoi_vm_chunk_hook) aoi_vm_chunk_hook(vm, ci << AOI_VM_CHUNK_SHIFT, p, 1);
     return 1;
 }
 
@@ -73,6 +79,7 @@ static void chunk_release(struct aoi_vm *vm, uint64_t ci)
     if (!vm->chunk[ci]) return;
     for (i = 0; i < PAGES_PER_CHUNK; i++)
         if (vm->prot[p0 + i]) return;
+    if (aoi_vm_chunk_hook) aoi_vm_chunk_hook(vm, ci << AOI_VM_CHUNK_SHIFT, vm->chunk[ci], 0);
     munmap(vm->chunk[ci], AOI_VM_CHUNK);
     vm->chunk[ci] = NULL;
     vm->nchunks--;
@@ -101,8 +108,12 @@ uint64_t aoi_vm_map(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot, in
     if (fixed) {
         if (addr % AOI_VM_PAGE || !range_ok(vm, addr, len)) return (uint64_t)-EINVAL;
     } else {
-        /* first fit from the hint, wrapping once */
-        uint64_t start = up(addr && range_ok(vm, addr, len) ? addr : vm->hint, AOI_VM_PAGE);
+        /* first fit from the address asked for, else from the hint, wrapping once.
+         * Only unhinted requests move the hint: like a kernel, we must not drift
+         * into the region a hinted request chose (ART places its low-4 GiB maps by
+         * hand and later maps over their neighbourhood with MAP_FIXED). */
+        int hinted = addr && range_ok(vm, addr, len);
+        uint64_t start = up(hinted ? addr : vm->hint, AOI_VM_PAGE);
         int wrapped = 0;
         a = start;
         for (;;) {
@@ -116,7 +127,7 @@ uint64_t aoi_vm_map(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot, in
             a += n + AOI_VM_PAGE;
         }
         addr = a;
-        vm->hint = addr + len;
+        if (!hinted) vm->hint = addr + len;
     }
     if (!back(vm, addr, len, prot)) return (uint64_t)-ENOMEM;
     /* zero whatever host memory already sits under the range */

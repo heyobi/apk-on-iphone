@@ -55,6 +55,9 @@ ORACLE  := -DAOI_ORACLE -I$(UNICORN)/include core/oracle.c $(UNICORN)/lib/libuni
 build/gmpdemo-check: tools/gmpdemo.c $(CORE) core/oracle.c core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/gmpdemo.c $(CORE) $(ORACLE)
 
+build/aoiproc-check: tools/aoiproc.c $(CORE) core/oracle.c core/*.h | build
+	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) $(ORACLE)
+
 build/isacheck: tools/isacheck.c $(CORE) core/oracle.c core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/isacheck.c $(CORE) $(ORACLE)
 

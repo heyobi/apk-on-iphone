@@ -27,7 +27,7 @@ struct aoi_proc_fd {
     int kind;                       /* AOI_FD_* */
 };
 
-enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD };
+enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD };
 
 /* A file mapping, kept to name code addresses in diagnostics. */
 struct aoi_proc_map { uint64_t start, len, off; char path[160]; };
@@ -68,6 +68,7 @@ struct aoi_proc {
     uint64_t stack_start;           /* initial sp (/proc/self/stat startstack) */
     FILE *trace;                    /* strace-style log, or NULL */
     FILE *log;                      /* where guest liblog lines go (logd emulation), or NULL */
+    int uffd;                       /* offer userfaultfd (ART then picks the CMC GC and its boot image); off: ENOSYS */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

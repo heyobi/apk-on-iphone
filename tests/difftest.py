@@ -20,7 +20,7 @@ import ctypes, os, random, struct, sys
 
 try:
     from unicorn import (Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_ERR_INSN_INVALID, UC_ERR_EXCEPTION,
-                         UC_ERR_FETCH_UNMAPPED)
+                         UC_ERR_FETCH_UNMAPPED, UC_ERR_FETCH_PROT, UC_PROT_READ, UC_PROT_WRITE)
     from unicorn import arm64_const as A
 except ImportError:
     print("SKIP difftest: unicorn not installed (pip install unicorn)")
@@ -70,6 +70,8 @@ CLASSES = [
     ("simd ld/st regoff",0x3c200800, 0x3f200c00),
     ("simd ld literal", 0x1c000000, 0x3f000000),
     ("simd ld/st pair", 0x2c000000, 0x3e000000),
+    ("ld/st excl/acq/cas",0x08000000, 0x3f000000),
+    ("LSE atomics",     0x38200000, 0x3b200c00),
     ("simd ld/st multi",0x0c000000, 0xbf000000),
     ("simd ld/st single",0x0d000000, 0xbf000000),
     ("simd mod imm",    0x0f000400, 0x9ff80400),
@@ -94,6 +96,13 @@ CLASSES = [
     ("fp csel",         0x1e200c00, 0xff200c00),
     ("fp 3-source",     0x1f000000, 0xff000000),
 ]
+
+
+def unicorn_wrong(insn):
+    """Encodings Unicorn 2.1 (QEMU 5) gets wrong, checked by hand against the Arm ARM:
+    LSE ldsmax/ldsmin below 64 bits compare unsigned there (signed is right)."""
+    return (insn & 0x3b200c00 == 0x38200000 and not insn >> 15 & 1 and (insn >> 12 & 7) in (4, 5)
+            and insn >> 30 != 3)
 
 
 def unpredictable(insn):
@@ -147,7 +156,8 @@ UC_X = [getattr(A, "UC_ARM64_REG_X%d" % i) for i in range(29)] + [A.UC_ARM64_REG
 
 def run_unicorn(insn, st, mem):
     uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
-    uc.mem_map(MEM, MEMSZ)
+    uc.ctl_set_cpu_model(A.UC_CPU_ARM64_MAX)       # ARMv8.x+: LSE atomics, ldapr, crc32 are real instructions
+    uc.mem_map(MEM, MEMSZ, UC_PROT_READ | UC_PROT_WRITE)   # data, never translated as code
     uc.mem_write(MEM, bytes(mem))
     uc.mem_map(CODE, 0x1000)
     uc.mem_write(st[32], insn.to_bytes(4, "little"))
@@ -166,7 +176,7 @@ def run_unicorn(insn, st, mem):
             return "undef", None, None
         # A branch out of the code page: the instruction itself completed, only
         # Unicorn's look-ahead fetch of the target failed.
-        if e.errno != UC_ERR_FETCH_UNMAPPED or uc.reg_read(A.UC_ARM64_REG_PC) == st[32]:
+        if e.errno not in (UC_ERR_FETCH_UNMAPPED, UC_ERR_FETCH_PROT) or uc.reg_read(A.UC_ARM64_REG_PC) == st[32]:
             return "fault", None, None
     out = [uc.reg_read(r) for r in UC_X] + [uc.reg_read(A.UC_ARM64_REG_SP), uc.reg_read(A.UC_ARM64_REG_PC),
                                             uc.reg_read(A.UC_ARM64_REG_NZCV) & 0xf0000000,
@@ -219,7 +229,7 @@ def main():
         shown = 0
         for _ in range(rounds):
             insn = val | (rng.getrandbits(32) & ~mask)
-            if unpredictable(insn):
+            if unpredictable(insn) or unicorn_wrong(insn):
                 continue
             st = rand_state(rng)
             mem = bytearray(rng.getrandbits(8) for _ in range(64)) * (MEMSZ // 64)
@@ -235,6 +245,9 @@ def main():
             if o[0] == "fault" and u[0] == "fault":
                 n_ok += 1
                 continue
+            if (o[0] == "ok" and u[0] == "fault" and insn & 0x3fc00000 == 0x08000000):
+                n_ok += 1                  # a failing stxr to a bad address may or may not abort:
+                continue                   # IMPLEMENTATION DEFINED (we fail it without touching memory)
             if o[0] == u[0] and o[1] == u[1] and o[2] == u[2]:
                 n_ok += 1
                 continue

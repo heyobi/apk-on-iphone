@@ -33,6 +33,10 @@ struct aoi_vm {
     uint64_t nchunks;               /* chunks currently allocated (diagnostics) */
 };
 
+/* Debug hook (the Unicorn oracle): called when a chunk gets host memory
+ * (added = 1) and just before it loses it (added = 0). */
+extern void (*aoi_vm_chunk_hook)(struct aoi_vm *vm, uint64_t guest, uint8_t *host, int added);
+
 const char *aoi_vm_init(struct aoi_vm *vm, uint64_t size);
 void aoi_vm_free(struct aoi_vm *vm);
 

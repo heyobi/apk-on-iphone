@@ -659,6 +659,26 @@ static int sig_fault(struct aoi_proc *p)
     put32(info, 8, mapped_page ? 2 : 1);                           /* SEGV_ACCERR / SEGV_MAPERR */
     put64(info, 16, p->cpu.fault_addr);
     p->th[p->cur].sigmask &= ~SIGBIT(11);                          /* a synchronous fault is never blocked */
+    if (p->trace) {
+        char w[256], w2[256];
+        int k;
+        uint8_t obj[64];
+        fprintf(p->trace, "[sig] SIGSEGV at %#llx: pc %s, lr %s\n", (unsigned long long)p->cpu.fault_addr,
+                aoi_proc_where(p, p->cpu.pc, w, sizeof w), aoi_proc_where(p, p->cpu.x[30], w2, sizeof w2));
+        for (k = 0; k < 31; k++)
+            fprintf(p->trace, "[sig]   x%-2d %#018llx%s", k, (unsigned long long)p->cpu.x[k], k % 4 == 3 ? "\n" : "");
+        fprintf(p->trace, "\n[sig]   sp  %#llx\n", (unsigned long long)p->cpu.sp);
+        if (aoi_vm_read(&p->vm, p->cpu.x[0] & 0x00ffffffffffffffULL, obj, 64, 0)) {
+            fprintf(p->trace, "[sig]   [x0]:");
+            for (k = 0; k < 64; k += 4) fprintf(p->trace, " %08x", (unsigned)u32(obj + k));
+            fprintf(p->trace, "\n");
+        }
+        {                                                          /* frame-pointer backtrace */
+            uint64_t fp = p->cpu.x[29], fr[2];
+            for (k = 0; k < 24 && fp && aoi_vm_read(&p->vm, fp, fr, 16, AOI_PROT_R); k++, fp = fr[0])
+                fprintf(p->trace, "[sig]   #%-2d %s\n", k, aoi_proc_where(p, fr[1], w, sizeof w));
+        }
+    }
     if (!sig_deliver(p, 11, info, p->cpu.fault_addr)) return 0;
     p->cpu.stop = AOI_RUN;
     return 1;
@@ -783,7 +803,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_getcwd = 17, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -1257,7 +1277,30 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_utimensat:                                             /* timestamps: accepted, not applied */
         r = 0;
         break;
+    case NR_userfaultfd: {                                         /* see uffd_ioctl */
+        int n, d;
+        if (!p->uffd) { r = err(L_ENOSYS); break; }               /* see docs/STATUS.md: boot image under CMC */
+        if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+        if ((n = fd_new(p, d, "anon_inode:[userfaultfd]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
+        p->fd[n].kind = AOI_FD_UFFD;
+        r = (uint64_t)n;
+        break;
+    }
     case NR_ioctl:
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_UFFD) {
+            if (a1 == 0xc018aa3f) {                                /* UFFDIO_API {api, features, ioctls} */
+                uint64_t api[3];
+                if (!get(p, a2, api, 24)) { r = err(L_EFAULT); break; }
+                if (api[0] != 0xaa) { r = err(L_EINVAL); break; }
+                api[1] = 1u << 7 | 1u << 5 | 1u << 10;             /* SIGBUS, MISSING_SHMEM, MINOR_SHMEM */
+                api[2] = 1ULL << 0x3f | 1ULL << 0 | 1ULL << 1;     /* API, REGISTER, UNREGISTER */
+                r = put(p, a2, api, 24) ? 0 : err(L_EFAULT);
+            } else {
+                if (p->trace) fprintf(p->trace, "[uffd] ioctl %#llx not implemented\n", (unsigned long long)a1);
+                r = err(L_EINVAL);
+            }
+            break;
+        }
         r = err(L_ENOTTY);
         break;
     case NR_mmap:
@@ -1553,6 +1596,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_sched_yield: c->stop = AOI_STOP_YIELD; r = 0; break;
+    case NR_flock:                                                  /* one process: locks always succeed */
+        r = fd_get(p, a0) ? 0 : err(L_EBADF);
+        break;
     case NR_setpriority: r = 0; break;                              /* accepted; one scheduler for all */
     case NR_getpriority: r = 20; break;                             /* nice 0, in the kernel's 20-nice form */
     case NR_sched_getscheduler: r = 0; break;                       /* SCHED_OTHER */

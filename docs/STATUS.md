@@ -138,8 +138,28 @@ delivers tgkill/kill to any thread (a sleeping or futex-waiting target returns
 EINTR), and applies default actions. `tests/signals.c` (in `make test`) checks the
 fault → handler → edited context → sigreturn path, self-tgkill and masking.
 
+**Boot image under CMC (open bug, off by default).** `AOI_UFFD=1 aoiproc …` makes
+userfaultfd(2) succeed and answer the UFFDIO_API handshake (SIGBUS, MISSING_SHMEM,
+MINOR_SHMEM); nothing else of userfaultfd is implemented yet. ART then picks the CMC GC
+and loads the full boot image (15 components at 0x70000000, oat files exactly at the
+addresses the image headers name, LZ4 blocks decompressed correctly, no relocation
+with `-Xnorelocate`). CMC *without* the image works (hello, 1.66 s host). **With** the
+image ART dies early in class initialisation (right after `android.system.OsConstants`):
+`Class::FindInterfaceMethod` / `Class::FindClassMethod` get a `java.lang.String` from
+the boot-framework image where a `Class` belongs, i.e. a type lookup through a DexCache
+returns a string. Same with `-Xint`, so it is not the AOT code. Ruled out: CPU
+semantics (the Unicorn oracle, MAX model with LSE, ran 131 M instructions of this exact
+run with no difference), mapping layout (a replay of every mmap/munmap/mprotect finds no
+MAP_FIXED over a live page except vdex over its own placeholder), relocation, madvise,
+threads. Next suspects: the DexCache native arrays and ART's linear-alloc arena pool
+under CMC (`GcVisitedArenaPool`), and any syscall whose result ART trusts for the
+image's lazily allocated arrays. Until that is found, userfaultfd stays ENOSYS by
+default, so ART keeps the CC GC, runs imageless and `make android-test` passes.
+`aoiproc -t` now prints a frame-pointer backtrace on each guest SIGSEGV.
+
 **Next, in order:**
-1. userfaultfd (SIGBUS mode) + MREMAP_DONTUNMAP → CMC GC → boot image → measure.
+1. Find the boot-image type-confusion bug above, then the rest of userfaultfd
+   (REGISTER/COPY/ZEROPAGE/CONTINUE) + MREMAP_DONTUNMAP for CMC compaction, then measure.
 2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);
@@ -176,9 +196,17 @@ contain, now fixed: `ret x0` returned to x30, `sdiv INT_MIN, -1` killed the host
 with SIGFPE, and `fmsub`/`fnmadd`/`fnmsub`/`fmls` returned a NaN with the wrong sign
 (Arm negates before NaN propagation; inf*0 with a quiet-NaN addend is the default NaN).
 
+It now runs Unicorn's MAX CPU model, so exclusives, acquire/release, cas/casp,
+ldxp/stxp and LSE atomics are fuzzed too (classes `ld/st excl/acq/cas`, `LSE atomics`).
+Two Unicorn bugs are excluded by hand (`unicorn_wrong`: sub-64-bit ldsmax/ldsmin compare
+unsigned there), a failing stxr to a bad address may fault or not (implementation
+defined), and the random data page is mapped non-executable: a branch into it once made
+QEMU translate random FP16 words and abort the process.
+
 Known gaps it reports without failing: FPSR's cumulative exception bits are not
 modelled (column `fpsr`), and in several integer and SIMD classes we still execute
-unallocated encodings instead of stopping (`accepts-undefined`). Neither affects
+unallocated encodings instead of stopping (`accepts-undefined`; for the exclusive and
+atomic classes these are misaligned addresses, which real hardware faults and we allow). Neither affects
 compiler-generated code, but both are cheap to close later.
 
 ## Instruction coverage
@@ -189,7 +217,8 @@ runs each once on our CPU and once on Unicorn from 4 random register states and 
 per mnemonic what is missing or wrong. For a new APK: run those two, fix the table.
 
 - `core/cpu.c` — integer base set, all integer and SIMD&FP load/store forms, atomics
-  (ldar/stlr, ldxr/stxr with a monitor, cas, LSE ldadd/ldclr/ldeor/ldset/max/min/swp).
+  (ldar/stlr, ldxr/stxr and ldxp/stxp with a monitor, cas/casp, LSE
+  ldadd/ldclr/ldeor/ldset/max/min/swp), FP16 `fmov` vector immediate.
 - `core/simd.c` — NEON integer (three-same, two-reg misc, across-lanes, shifts, widen/
   narrow, copy/dup/ins/umov, zip/uzp/trn, ext, tbl, ld1 lane/ld1r) and floating point
   (scalar arithmetic/fma/compare/convert/round, vector fadd…fdiv/fmla/compares/converts,

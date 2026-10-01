@@ -4,8 +4,14 @@
  * ROOT is a guest root made by tools/android-root.sh; PROGRAM is a guest path
  * such as /system/bin/toybox. -t logs every syscall to stderr; -e adds to the
  * guest environment; -p prints where the guest spent its instructions
- * (one sample per 100k-instruction time slice, grouped by library). */
+ * (one sample per 100k-instruction time slice, grouped by library).
+ * Debug environment: AOI_UFFD=1 offers userfaultfd (ART: CMC GC + boot image),
+ * AOI_STOP_AT=N stops after N instructions, AOI_DUMP=addr,len,file saves guest
+ * memory at the end. */
 #include "../core/proc.h"
+#ifdef AOI_ORACLE
+#include "../core/oracle.h"
+#endif
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -44,12 +50,33 @@ int main(int argc, char **argv)
         return 1;
     }
     if (trace) proc.trace = stderr;
+    proc.uffd = getenv("AOI_UFFD") && *getenv("AOI_UFFD") == '1';
+#ifdef AOI_ORACLE
+    if ((err = aoi_oracle_attach(&proc.cpu))) { fprintf(stderr, "oracle: %s\n", err); return 1; }
+#endif
     if (profile && (proc.samples = calloc(1 << 20, sizeof *proc.samples))) proc.maxsamples = 1 << 20;
     proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    st = aoi_proc_run(&proc, 0);
+    st = aoi_proc_run(&proc, getenv("AOI_STOP_AT") ? strtoull(getenv("AOI_STOP_AT"), NULL, 0) : 0);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     fflush(stdout);
+#ifdef AOI_ORACLE
+    aoi_oracle_report(&proc.cpu, st);
+#endif
+    if (getenv("AOI_DUMP")) {                        /* AOI_DUMP=addr,len,file: guest memory at the end */
+        unsigned long long da = 0, dl = 0;
+        char path[512];
+        FILE *df;
+        if (sscanf(getenv("AOI_DUMP"), "%llx,%llx,%511s", &da, &dl, path) == 3 && (df = fopen(path, "wb"))) {
+            unsigned long long o;
+            for (o = 0; o < dl; o += 4096) {
+                static uint8_t pg[4096];
+                if (!aoi_vm_read(&proc.vm, da + o, pg, 4096, 0)) memset(pg, 0xee, 4096);
+                fwrite(pg, 1, 4096, df);
+            }
+            fclose(df);
+        }
+    }
     {
         char w1[256], w2[256];
         if (st != AOI_STOP_EXIT)
@@ -92,7 +119,11 @@ int main(int argc, char **argv)
                 proc.cpu.fault_addr, proc.cpu.pc, proc.cpu.x[30], proc.cpu.steps);
         return 5;
     default:
-        fprintf(stderr, "[aoiproc] stopped (%d) at pc=%#" PRIx64 "\n", (int)st, proc.cpu.pc);
+        {
+            char w[256];
+            fprintf(stderr, "[aoiproc] stopped (%d) at pc=%#" PRIx64 " in %s, x7=%#" PRIx64 "\n", (int)st, proc.cpu.pc,
+                    aoi_proc_where(&proc, proc.cpu.pc, w, sizeof w), proc.cpu.x[7]);
+        }
         return 6;
     }
 }
