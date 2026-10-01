@@ -39,6 +39,8 @@
 @property(nonatomic, strong) NSMutableString *log;
 @property(nonatomic) dispatch_queue_t work;
 @property(nonatomic, strong) AoiScreen *screen;      /* the Android app's frames */
+@property(atomic) BOOL appRunning;                   /* its process is alive (on self.appQueue) */
+@property(nonatomic) dispatch_queue_t appQueue;      /* the app's process: apart from the tests */
 @end
 
 static void log_cb(void *ctx, const char *line);
@@ -52,6 +54,7 @@ static int list_cb(const char *name, size_t len, void *ctx);
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.log = [NSMutableString string];
     self.work = dispatch_queue_create("aoi.work", DISPATCH_QUEUE_SERIAL);
+    self.appQueue = dispatch_queue_create("aoi.app", DISPATCH_QUEUE_SERIAL);
 
     UILabel *title = [UILabel new];
     title.text = @"apk-on-iphone";
@@ -191,6 +194,11 @@ static int list_cb(const char *name, size_t len, void *ctx) {
 /* The whole APK: framework, our services and the app's own code, in the interpreter.
  * Its frames are shown full screen (tap twice to see the log again). */
 - (void)openApp {
+    if (self.appRunning) {                                       /* still running: just show it again */
+        if (self.screen.image) [self showFrame:self.screen.image];
+        else [self append:@"Uygulama hâlâ açılıyor, ilk kareyi bekleyin."];
+        return;
+    }
     if (!self.apk) { [self append:@"Önce bir APK seçin."]; return; }
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"];
@@ -235,9 +243,11 @@ static int list_cb(const char *name, size_t len, void *ctx) {
         [self.screen addGestureRecognizer:t];
     }
     [self append:@"Uygulama başlıyor (ilk kare yorumlayıcıda ~1 dakika sürebilir). İki parmakla dokunmak loga döner."];
-    dispatch_async(self.work, ^{
+    self.appRunning = YES;
+    dispatch_async(self.appQueue, ^{
         aoi_android_app(root.UTF8String, data.UTF8String, logPath.UTF8String, frame_cb, (__bridge void *)self,
                         log_cb, (__bridge void *)self);
+        self.appRunning = NO;
         [self append:[NSString stringWithFormat:@"Uygulamanın logu: %@", logPath]];
     });
 }

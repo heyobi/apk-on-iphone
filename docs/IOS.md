@@ -27,7 +27,8 @@ no debugger, nothing beyond a normal sideloaded app.
    framework services (`aoi.Main`) start Android's ActivityThread on the APK, the app's
    own code runs, and every frame its window draws (software rendering, gralloc
    buffers, our SurfaceFlinger) is shown full screen. One-finger touches go to the app
-   (aoi.Input, java/src); a two-finger tap shows the log again. The first frame takes
+   (aoi.Input, java/src); a two-finger tap shows the log again, and **Uygulama** brings the
+   running app back at once (it keeps running behind the log). The first frame takes
    ~4 G guest instructions: about a minute at the phone's ~85 M/s. The bundled root is ~390 MB now
    (the framework, its boot image, fonts, the rendering libraries).
 7. **Logu kopyala** to share the log (with the end of the app's own `app.log`); both are
