@@ -66,6 +66,7 @@ static int read_desc(struct aoi_reader *r, struct desc *d)
     d->width = (int32_t)aoi_r32(r); d->height = (int32_t)aoi_r32(r);
     d->layers = (int32_t)aoi_r32(r); d->format = (int32_t)aoi_r32(r);
     d->usage = aoi_r64(r); d->reserved = aoi_r64(r);
+    if (aoi_r32(r) != 0) return 0;                  /* additionalOptions: none supported */
     return r->pos <= r->n;
 }
 

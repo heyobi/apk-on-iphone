@@ -18,6 +18,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/resource.h>
+
+/* Resident memory at its peak: what a phone would have to hold (chunks also count
+ * file mappings that were never touched). */
+static long peak_rss_mib(void)
+{
+    struct rusage ru;
+    getrusage(RUSAGE_SELF, &ru);
+#ifdef __APPLE__
+    return (long)(ru.ru_maxrss >> 20);
+#else
+    return ru.ru_maxrss >> 10;
+#endif
+}
 
 static struct aoi_proc proc;
 
@@ -125,8 +139,9 @@ int main(int argc, char **argv)
     }
     switch (st) {
     case AOI_STOP_EXIT:
-        fprintf(stderr, "[aoiproc] exit %d, %" PRIu64 " instructions, %.2f s, %llu MiB of host chunks\n",
-                proc.cpu.exit_code, proc.cpu.steps, secs, (unsigned long long)(proc.vm.nchunks * (AOI_VM_CHUNK >> 20)));
+        fprintf(stderr, "[aoiproc] exit %d, %" PRIu64 " instructions, %.2f s, %llu MiB of host chunks, peak RSS %ld MiB\n",
+                proc.cpu.exit_code, proc.cpu.steps, secs, (unsigned long long)(proc.vm.nchunks * (AOI_VM_CHUNK >> 20)),
+                peak_rss_mib());
         return proc.cpu.exit_code;
     case AOI_STOP_UNDEF:
         fprintf(stderr, "[aoiproc] undefined instruction %#010x at pc=%#" PRIx64 " after %" PRIu64 " instructions\n",
