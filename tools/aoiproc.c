@@ -50,6 +50,7 @@ static void first_frame(void *ctx, const uint8_t *px, uint32_t w, uint32_t h)
     pthread_t t;
     (void)px; (void)w; (void)h;
     if (started++) return;
+    if (getenv("AOI_PROFILE_FROM_FRAME")) ((struct aoi_proc *)ctx)->nsamples = 0;   /* profile the taps only */
     pthread_create(&t, NULL, taps, ctx);
     pthread_detach(t);
 }
