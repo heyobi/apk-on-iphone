@@ -201,8 +201,10 @@ sigaction a guest installs.
 **On the phone, app 0.10** (iPhone 16 Pro, iOS 27.0.1): toybox, mksh, `ls`, and ART
 hello in **1.07 s** (85 M instructions, 80 M/s; 1.14 s on 0.9). App 0.11 adds an ART GC
 step (`gc.dex`: 20 MB of garbage, `Runtime.gc()`, CC GC) and logs the process's
-phys_footprint now and at its peak after every Android run, to see the madvise fix
-on the device (host: hello 100 MB, GC 100 MB peak RSS).
+phys_footprint now and at its peak after every Android run. **On the phone (0.11):**
+toybox/mksh 27-29 MB, ART hello 1.06 s with a **121 MB peak** (limit 3540 MB). The GC
+step did not run: the workflow generated the dex files inside its cached root step, so a
+restored root lacked gc.dex; 0.12 generates them on every build.
 
 **Toward the app process: `app_process64` (frameworks/base/cmds/app_process).** It is
 how Android runs framework-using Java commands (`am`, `pm`): AndroidRuntime starts ART

@@ -24,7 +24,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aroot-mini
-          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'tools/android-setup.sh', 'tools/mkprops.py', 'tools/uncompress-art.py', 'tests/mkdex.py', 'ios/android-files.txt') }}
+          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'tools/android-setup.sh', 'tools/mkprops.py', 'tools/uncompress-art.py', 'ios/android-files.txt') }}
 
       - name: Fetch Android root
         if: steps.aroot.outputs.cache-hit != 'true'
@@ -36,10 +36,15 @@ jobs:
           make build/aoiproc
           sh tools/android-setup.sh "$RUNNER_TEMP/aroot" > /dev/null
           sh tools/mini-root.sh "$RUNNER_TEMP/aroot" "$PWD/aroot-mini" ios/android-files.txt
-          python3 tests/mkdex.py "$PWD/aroot-mini/data/local/tmp/hello.dex"
-          python3 tests/mkdex.py "$PWD/aroot-mini/data/local/tmp/gc.dex" 0 20000
           du -sh aroot-mini
           rm -rf "$RUNNER_TEMP/aroot"
+
+      # Outside the cached step: a restored root must get the current test dex files too.
+      - name: Test dex files
+        run: |
+          mkdir -p aroot-mini/data/local/tmp
+          python3 tests/mkdex.py aroot-mini/data/local/tmp/hello.dex
+          python3 tests/mkdex.py aroot-mini/data/local/tmp/gc.dex 0 20000
 
       - name: Build app binary
         run: |
