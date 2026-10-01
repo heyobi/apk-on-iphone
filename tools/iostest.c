@@ -2,6 +2,7 @@
 #include "../core/apk.h"
 #include "../ios/gmptest.h"
 #include "../ios/vmprobe.h"
+#include "../ios/androidtest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,12 @@ int main(int argc, char **argv)
     double t = 0;
 
     aoi_vm_probe(out, NULL);
+    if (getenv("AOI_ANDROID_ROOT")) {               /* the app's "Android" button */
+        static const char *const echo[] = { "/system/bin/toybox", "echo", "merhaba, ben Android toybox" };
+        static const char *const sh[] = { "/system/bin/sh", "-c", "echo mksh: $((6*7)); x=Android; echo ${#x} harf" };
+        aoi_android_run(getenv("AOI_ANDROID_ROOT"), "/tmp", 3, echo, out, NULL);
+        aoi_android_run(getenv("AOI_ANDROID_ROOT"), "/tmp", 3, sh, out, NULL);
+    }
     if (argc < 2) { fprintf(stderr, "usage: %s app.apk [n]\n", argv[0]); return 2; }
     if (!(f = fopen(argv[1], "rb")) || fseek(f, 0, SEEK_END) || (n = ftell(f)) <= 0 || fseek(f, 0, SEEK_SET) ||
         !(apk = malloc((size_t)n)) || fread(apk, 1, (size_t)n, f) != (size_t)n) { perror(argv[1]); return 1; }

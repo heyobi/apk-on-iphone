@@ -17,6 +17,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Android's own linker64, bionic, toybox and mksh for the "Android" button
+      # (ios/android-files.txt), from the AOSP 14 GSI pinned in tools/fetch-android.sh.
+      - name: Cache Android root
+        id: aroot
+        uses: actions/cache@v4
+        with:
+          path: aroot-mini
+          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'ios/android-files.txt') }}
+
+      - name: Fetch Android root
+        if: steps.aroot.outputs.cache-hit != 'true'
+        run: |
+          brew install e2fsprogs xz
+          export PATH="$(brew --prefix e2fsprogs)/sbin:$PATH"
+          sh tools/fetch-android.sh "$RUNNER_TEMP/aroot"
+          sh tools/mini-root.sh "$RUNNER_TEMP/aroot" "$PWD/aroot-mini" ios/android-files.txt
+          rm -rf "$RUNNER_TEMP/aroot"
+
       - name: Build app binary
         run: |
           set -eu
@@ -26,11 +44,14 @@ jobs:
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
             -O2 -g0 -Wall -fobjc-arc -std=gnu11 \
             -o "$APP/ApkOnIphone" \
-            ios/main.m ios/gmptest.c ios/vmprobe.c \
+            ios/main.m ios/gmptest.c ios/vmprobe.c ios/androidtest.c \
             core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
-            core/linux.c core/load.c core/dl.c core/bionic.c \
+            core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -lz
           cp ios/Info.plist "$APP/Info.plist"
+          cp -RP aroot-mini "$APP/aroot"
+          find "$APP/aroot" -type f -exec chmod a-x {} +   # ELF data for the interpreter, not code to sign
+          du -sh "$APP/aroot"
           plutil -lint "$APP/Info.plist"
           codesign --force --sign - --timestamp=none "$APP"
           file "$APP/ApkOnIphone"

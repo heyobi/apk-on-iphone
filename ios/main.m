@@ -8,6 +8,7 @@
 #include "../core/apk.h"
 #include "gmptest.h"
 #include "vmprobe.h"
+#include "androidtest.h"
 
 @interface VC : UIViewController <UIDocumentPickerDelegate>
 @property(nonatomic, strong) UITextView *logView;
@@ -39,6 +40,7 @@ static int list_cb(const char *name, size_t len, void *ctx);
 
     UIStackView *row1 = [self row:@[ [self button:@"APK seç" action:@selector(pick)], self.nField ]];
     UIStackView *row2 = [self row:@[ [self button:@"Çalıştır" action:@selector(run)],
+                                     [self button:@"Android" action:@selector(android)],
                                      [self button:@"Logu kopyala" action:@selector(copyLog)] ]];
 
     self.logView = [UITextView new];
@@ -125,6 +127,28 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     if ([s hasPrefix:@"lib/arm64-v8a/"] && [s hasSuffix:@".so"])
         [(__bridge NSMutableString *)ctx appendFormat:@"    %@\n", [s substringFromIndex:14]];
     return 0;
+}
+
+// Step 1 on the device: Android's own linker64 runs toybox and mksh from the
+// guest files bundled in aroot/ (ios/android-files.txt), in the interpreter.
+- (void)android {
+    NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"system/bin/toybox"]]) {
+        [self append:@"Bu IPA'da Android dosyaları (aroot) yok."];
+        return;
+    }
+    NSString *tmp = NSTemporaryDirectory();
+    dispatch_async(self.work, ^{
+        static const char *const echo[] = { "/system/bin/toybox", "echo", "merhaba, ben Android toybox" };
+        static const char *const sh[] = { "/system/bin/sh", "-c", "echo mksh: $((6*7)); x=Android; echo ${#x} harf" };
+        static const char *const ls[] = { "/system/bin/toybox", "ls", "/system/lib64" };
+        [self append:@"Android linker64 + toybox echo ..."];
+        aoi_android_run(root.UTF8String, tmp.UTF8String, 3, echo, log_cb, (__bridge void *)self);
+        [self append:@"Android mksh ..."];
+        aoi_android_run(root.UTF8String, tmp.UTF8String, 3, sh, log_cb, (__bridge void *)self);
+        [self append:@"Android toybox ls /system/lib64 ..."];
+        aoi_android_run(root.UTF8String, tmp.UTF8String, 3, ls, log_cb, (__bridge void *)self);
+    });
 }
 
 - (void)run {

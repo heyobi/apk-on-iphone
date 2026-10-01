@@ -1,6 +1,7 @@
 #!/bin/sh
 # fetch-android.sh OUT: download the AOSP Android 14 arm64 GSI this project uses,
-# verify it and build the guest root OUT (tools/android-root.sh). About 800 MB
+# verify it and build the guest root OUT (tools/android-root.sh). Linux or macOS
+# (needs debugfs: e2fsprogs; on macOS `brew install e2fsprogs`, keg-only, so put its sbin on PATH). About 800 MB
 # download, 2.3 GB image; the image is deleted afterwards. Never commit OUT.
 #
 # Source: ponces/treble_aosp v2024.08.16, "vanilla" (pure AOSP, no Google apps),
@@ -15,7 +16,8 @@ mkdir -p "$OUT"
 TMP="$OUT.download"
 mkdir -p "$TMP"
 curl -fL --retry 3 -o "$TMP/gsi.img.xz" "$URL"
-echo "$SHA  $TMP/gsi.img.xz" | sha256sum -c -
+if command -v sha256sum >/dev/null; then echo "$SHA  $TMP/gsi.img.xz" | sha256sum -c -
+else echo "$SHA  $TMP/gsi.img.xz" | shasum -a 256 -c -; fi
 xz -dT0 "$TMP/gsi.img.xz"
 sh "$(dirname "$0")/android-root.sh" "$TMP/gsi.img" "$OUT"
 rm -rf "$TMP"

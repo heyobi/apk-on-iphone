@@ -16,7 +16,12 @@ no debugger, nothing beyond a normal sideloaded app.
    iOS 27), and core/vm.c's sparse 64 GiB guest space with an 8 GiB scudo-style
    reservation, which Android programs (core/proc.c) need. The last line must read
    "fit on this device".
-5. **Logu kopyala** to share the log; it is also in Files → On My iPhone → APK on iPhone →
+5. **Android** (no APK needed) runs step 1 on the phone: Android's own `linker64`
+   loads `toybox` and `mksh` from the AOSP 14 files bundled in the app (`aroot/`,
+   9 MB, list in `ios/android-files.txt`, put there by the workflow) and they run in
+   the interpreter through `core/proc.c`. Expected: "merhaba, ben Android toybox",
+   "mksh: 42", "7 harf" and a listing of /system/lib64, each with `exit 0`.
+6. **Logu kopyala** to share the log; it is also in Files → On My iPhone → APK on iPhone →
    `log.txt`.
 
 First device result (iPhone 16 Pro, iOS 27.0.1): 20000! (77,338 digits, 28 M guest

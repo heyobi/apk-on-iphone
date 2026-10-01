@@ -1,0 +1,24 @@
+# Guest files bundled into the iOS app (toybox + mksh and what they link).
+# One guest path per line; symlinks are kept (made relative). Made from the
+# AOSP 14 GSI pinned in tools/fetch-android.sh; regenerate when that changes.
+/apex/com.android.runtime/bin/linker64
+/apex/com.android.runtime/lib64/bionic/libc.so
+/apex/com.android.runtime/lib64/bionic/libdl.so
+/apex/com.android.runtime/lib64/bionic/libm.so
+/system/bin/linker64
+/system/bin/sh
+/system/bin/toybox
+/system/lib64/ld-android.so
+/system/lib64/libbase.so
+/system/lib64/libc++.so
+/system/lib64/libcgrouprc.so
+/system/lib64/libcrypto.so
+/system/lib64/liblog.so
+/system/lib64/libpackagelistparser.so
+/system/lib64/libpcre2.so
+/system/lib64/libprocessgroup.so
+/system/lib64/libselinux.so
+/system/lib64/libz.so
+/system/lib64/libc.so
+/system/lib64/libdl.so
+/system/lib64/libm.so
