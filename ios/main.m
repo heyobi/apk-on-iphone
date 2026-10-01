@@ -11,7 +11,7 @@
 #include "androidtest.h"
 
 /* The Android app's screen: its frames, aspect-fit; one-finger touches go to the app
- * in its pixels (aoi_android_touch). */
+ * in its pixels (aoi_android_touch). A swipe from the left edge is Android's back. */
 @interface AoiScreen : UIImageView
 @end
 
@@ -29,7 +29,7 @@
 - (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { if (e.allTouches.count == 1) [self send:0 touches:t]; }
 - (void)touchesMoved:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { if (e.allTouches.count == 1) [self send:2 touches:t]; }
 - (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { [self send:1 touches:t]; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { [self send:1 touches:t]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { [self send:4 touches:t]; }
 @end
 
 @interface VC : UIViewController <UIDocumentPickerDelegate>
@@ -94,9 +94,20 @@ static int list_cb(const char *name, size_t len, void *ctx);
     size_t len = sizeof machine;
     sysctlbyname("hw.machine", machine, &len, NULL, 0);
     [self append:[NSString stringWithFormat:@"Cihaz: %s, iOS %@", machine, UIDevice.currentDevice.systemVersion]];
-    [self append:@"Qalculate APK'sını seçin, sonra 'Çalıştır'."];
+    if ([NSFileManager.defaultManager fileExistsAtPath:[self installedApk]]) {   /* the app from last time */
+        [self append:@"Yüklü uygulama açılıyor ..."];
+        dispatch_async(dispatch_get_main_queue(), ^{ [self openApp]; });
+        return;
+    }
+    [self append:@"Bir APK seçin (APK seç); uygulama açılır. Sonraki açılışlarda kendiliğinden başlar."];
     [self append:@"Adres alanı testi (Android programları için 64 GiB, seyrek) ..."];
     dispatch_async(self.work, ^{ aoi_vm_probe(log_cb, (__bridge void *)self); });
+}
+
+/* Where the installed APK lives: the guest's /data/app/apk/base.apk. */
+- (NSString *)installedApk {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    return [docs stringByAppendingPathComponent:@"adata/app/apk/base.apk"];
 }
 
 - (UIButton *)button:(NSString *)t action:(SEL)a {
@@ -156,6 +167,8 @@ static int list_cb(const char *name, size_t len, void *ctx);
     aoi_apk_list(d.bytes, d.length, list_cb, (__bridge void *)libs);
     [self append:[NSString stringWithFormat:@"APK: %@ (%.1f MB)\n  arm64-v8a kütüphaneleri:\n%@",
                   u.lastPathComponent, d.length / 1e6, libs.length ? libs : @"    yok\n"]];
+    if (!self.appRunning) [self openApp];                       /* install it and start */
+    else [self append:@"Önceki uygulama hâlâ çalışıyor; yenisi iPhone uygulaması yeniden açılınca başlar."];
 }
 
 static int list_cb(const char *name, size_t len, void *ctx) {
@@ -199,8 +212,8 @@ static int list_cb(const char *name, size_t len, void *ctx) {
         else [self append:@"Uygulama hâlâ açılıyor, ilk kareyi bekleyin."];
         return;
     }
-    if (!self.apk) { [self append:@"Önce bir APK seçin."]; return; }
     NSFileManager *fm = NSFileManager.defaultManager;
+    if (!self.apk && ![fm fileExistsAtPath:[self installedApk]]) { [self append:@"Önce bir APK seçin."]; return; }
     NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"];
     if (![fm fileExistsAtPath:[root stringByAppendingPathComponent:@"system/bin/app_process64"]]) {
         [self append:@"Bu IPA'da uygulama dosyaları (framework) yok."];
@@ -228,7 +241,7 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     NSString *apkDir = [data stringByAppendingPathComponent:@"app/apk"];
     [fm createDirectoryAtPath:apkDir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *apkPath = [apkDir stringByAppendingPathComponent:@"base.apk"];
-    if (![[NSData dataWithContentsOfFile:apkPath] isEqualToData:self.apk])    /* a new APK: compiled again */
+    if (self.apk && ![[NSData dataWithContentsOfFile:apkPath] isEqualToData:self.apk])   /* a new APK: compiled again */
         [self.apk writeToFile:apkPath atomically:NO];
 
     if (!self.screen) {
@@ -241,8 +254,12 @@ static int list_cb(const char *name, size_t len, void *ctx) {
         t.numberOfTouchesRequired = 2;                          /* two fingers: back to the log */
         t.cancelsTouchesInView = NO;
         [self.screen addGestureRecognizer:t];
+        UIScreenEdgePanGestureRecognizer *e = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self
+                                                                                               action:@selector(edgeSwipe:)];
+        e.edges = UIRectEdgeLeft;                               /* from the left edge: Android's back */
+        [self.screen addGestureRecognizer:e];
     }
-    [self append:@"Uygulama başlıyor: ilk açılış ~1 dakika, sonrakiler kayıttan (snapshot) birkaç saniye. İki parmakla dokunmak loga döner."];
+    [self append:@"Uygulama başlıyor: ilk açılış ~1 dakika, sonrakiler kayıttan (snapshot) birkaç saniye. Soldan kaydırmak: geri. İki parmakla dokunmak: bu ekran."];
     self.appRunning = YES;
     dispatch_async(self.appQueue, ^{
         aoi_android_app(root.UTF8String, data.UTF8String, logPath.UTF8String, frame_cb, (__bridge void *)self,
@@ -250,6 +267,10 @@ static int list_cb(const char *name, size_t len, void *ctx) {
         self.appRunning = NO;
         [self append:[NSString stringWithFormat:@"Uygulamanın logu: %@", logPath]];
     });
+}
+
+- (void)edgeSwipe:(UIScreenEdgePanGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateEnded && [g translationInView:g.view].x > 40) aoi_android_back();
 }
 
 - (void)hideScreen {

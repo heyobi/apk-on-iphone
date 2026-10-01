@@ -194,6 +194,12 @@ void aoi_android_touch(int action, float x, float y)
     if (p) aoi_proc_touch(p, action, x, y);
 }
 
+void aoi_android_back(void)
+{
+    struct aoi_proc *p = running;
+    if (p) aoi_proc_touch(p, 3, 0, 0);                  /* aoi.Input: the activity's onBackPressed */
+}
+
 /* One guest process with the app environment: /data in datadir, output to fd. Its
  * exit code, or -1 (logged). frame: SurfaceFlinger's frames (the app), or NULL. */
 /* The launch a snapshot was taken for: the APK and its compiled code. A snapshot is

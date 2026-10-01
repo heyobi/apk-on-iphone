@@ -27,13 +27,23 @@
 /* Resident memory at its peak: what a phone would have to hold (chunks also count
  * file mappings that were never touched). */
 /* AOI_TAPS="x,y;x,y;...": after the first frame, taps in screen pixels 4 s apart
- * (aoi_proc_touch from another thread, as the iOS view sends them). */
+ * (aoi_proc_touch from another thread, as the iOS view sends them); "back" presses
+ * the back key. */
 static void *taps(void *arg)
 {
     const char *s = getenv("AOI_TAPS");
     float x, y;
     int n;
-    while (sscanf(s, "%f,%f%n", &x, &y, &n) == 2) {
+    for (;;) {
+        if (!strncmp(s, "back", 4)) {                     /* "back": the back key */
+            sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
+            fprintf(stderr, "[aoiproc] back\n");
+            aoi_proc_touch(arg, 3, 0, 0);
+            s += 4;
+            if (*s == ';') s++;
+            continue;
+        }
+        if (sscanf(s, "%f,%f%n", &x, &y, &n) != 2) break;
         sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
         { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
           fprintf(stderr, "[aoiproc] tap %.0f,%.0f at %.3f s, %llu instructions\n", x, y,

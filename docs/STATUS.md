@@ -392,6 +392,16 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Usable app (0.17):** the iOS app starts the installed APK by itself (from its
+snapshot: about a second); picking an APK installs and starts it. A swipe from the
+left edge is Android's back: `aoi_android_back` -> record 3 on /dev/aoi_input ->
+aoi.Input calls the resumed activity's onBackPressed on the main thread (found through
+ActivityThread.mActivities). Not a KEYCODE_BACK event: key events need window focus,
+and focus makes text cursors blink, a full repaint twice a second. A touch the host
+takes back (iOS cancels it for a gesture) is ACTION_CANCEL (record 4). Host check:
+Qalculate menu -> Settings, then `AOI_TAPS=...;back` returns to the calculator. On the
+phone v0.16 gives ~0.5 s per frame after a tap (Choreographer skips ~31, was ~70).
+
 **Interpreter 1.6x faster while drawing (app 0.16).** Measured from a Qalculate
 snapshot with taps (`AOI_SNAPSHOT_LOAD` + `AOI_TAPS`; callgrind over 60 M guest
 instructions): 327 -> 199 host instructions per guest instruction; 24 -> 37 M guest

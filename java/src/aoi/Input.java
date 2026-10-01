@@ -12,7 +12,10 @@ import java.io.FileInputStream;
 /** Touches from the host: /dev/aoi_input (core/proc.c, aoi_proc_touch) gives 16-byte
  *  records (action 0 down / 1 up / 2 move, x, y in screen pixels, little-endian); each
  *  becomes a MotionEvent sent on the server end of the newest window's input channel,
- *  as InputDispatcher would. */
+ *  as InputDispatcher would. Action 4 cancels the gesture (the host took it), and
+ *  action 3 is "back": the resumed activity's onBackPressed
+ *  on the main thread (a KEYCODE_BACK event would need window focus, and focus makes
+ *  text cursors blink: a full repaint twice a second). */
 final class Input {
     private static final int SOURCE_TOUCHSCREEN = 0x1002;
 
@@ -60,7 +63,35 @@ final class Input {
         }
     }
 
+    /** The resumed activity (ActivityThread's records) presses back, on the main thread. */
+    private static void back() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object thread = at.getMethod("currentActivityThread").invoke(null);
+            java.lang.reflect.Field f = at.getDeclaredField("mActivities");
+            f.setAccessible(true);
+            for (Object rec : ((java.util.Map<?, ?>) f.get(thread)).values()) {
+                java.lang.reflect.Field pf = rec.getClass().getDeclaredField("paused");
+                java.lang.reflect.Field af = rec.getClass().getDeclaredField("activity");
+                pf.setAccessible(true);
+                af.setAccessible(true);
+                final Object a = af.get(rec);
+                if (a == null || pf.getBoolean(rec)) continue;
+                final java.lang.reflect.Method m = a.getClass().getMethod("onBackPressed");
+                new Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+                    @Override public void run() {
+                        try { m.invoke(a); } catch (Exception e) { System.out.println("aoi: back: " + e); }
+                    }
+                });
+                return;
+            }
+        } catch (Exception e) {
+            System.out.println("aoi: back: " + e);
+        }
+    }
+
     private void send(int action, float x, float y) {
+        if (action == 3) { back(); return; }
         InputChannel c = session.input;
         if (c == null) return;
         if (c != channel) {                                        /* a new window: a new sender */
@@ -69,6 +100,7 @@ final class Input {
         }
         long now = SystemClock.uptimeMillis();
         if (action == 0) downTime = now;
+        if (action == 4) action = 3;                               /* MotionEvent.ACTION_CANCEL */
         MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
         pp.id = 0;
         pp.toolType = 1;                                           /* TOOL_TYPE_FINGER: Compose's Touch */
