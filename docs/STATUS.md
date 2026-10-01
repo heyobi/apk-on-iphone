@@ -356,6 +356,12 @@ nullable parcelable) through `aoi_binder_send`, the driver's first host-to-guest
 (BR_TRANSACTION queued for a looper thread). BLASTBufferQueue then cycles two buffers;
 before that it stalled after three. A tap on Qalculate's ↵ adds a history entry.
 `AOI_SF_DUMP=frame%d.ppm` keeps every frame. IPA v0.13.39 (174 MB, root 373 MB).
+On the phone v0.13.39 said "no framework": app_process64 is exec'd, not opened, so the
+trace-made list missed it. Now checked before a release: a root made by mini-root.sh
+from ios/android-files.txt runs the app on the host (frames, peak RSS 426 MiB). That
+also found the boot image's arm64/*.vdex links (stat'ed, so the trace only shows their
+targets; tracefiles.py now adds links next to listed files) and a missing `content`
+service (aoi.ContentService: registerContentObserver and friends, no sync).
 
 **Past layout, toward the first frame.** The window configuration now carries the
 screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);
