@@ -385,6 +385,13 @@ after a tap ~135 M (was ~400 M); libart falls to 2.6 % of a frame and libhwui (S
 software rasterizer) is 88.7 %. So the display is now 2x (786 x 1704 px at 320 dpi,
 393 x 852 dp as before): 2.25 times fewer pixels to rasterize.
 
+**Interpreter speed while drawing** (host, `framebench`: guest instructions per second
+over the frames after taps; Skia's raster pipeline is NEON float code): 24.1 M/s before,
+33.4 M/s with SIMD&FP data processing dispatched straight to simd.c (it sat at the end
+of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats when no
+NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
++54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
+
 **On the phone with v0.14.57:** dex2oat compiles Qalculate once in 167 s (12.7 G
 instructions, 196 MB peak); then a frame after a tap takes ~2 s (Choreographer skips
 ~125 frames; was ~360 = 6 s with 0.13.49). "112+113" = 225 and "112+1123" = 1235.
