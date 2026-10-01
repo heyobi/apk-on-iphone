@@ -27,7 +27,9 @@ uint8_t *aoi_dl_map(struct aoi_dl *dl, uint64_t base, uint64_t size)
     struct aoi_region *r;
     uint8_t *host;
     if (dl->mem.n == AOI_MAX_REGIONS) return NULL;
-    if (!(host = calloc(1, size))) return NULL;
+    /* page-aligned so the same host memory can back a reference CPU (core/oracle.c) */
+    if (!(host = aligned_alloc(PAGE, roundup(size, PAGE)))) return NULL;
+    memset(host, 0, size);
     r = &dl->mem.r[dl->mem.n++];
     r->base = base; r->size = size; r->host = host;
     dl->blocks[dl->nblocks++] = host;

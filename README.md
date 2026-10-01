@@ -3,8 +3,7 @@
 **Run Android apps natively on a non-jailbroken iPhone.** Not streaming, not a VM: the APK's own
 ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux.
 
-> Status: early. A real Android native library (GMP from an APK) runs correctly in our
-> no-JIT interpreter on any host. No app UI yet.
+> Status: idea. Nothing here runs yet.
 
 ## Why it might be possible now
 
@@ -17,24 +16,24 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
 - **The pieces exist as open source:** AOSP's ART and bionic, and the Madeira/Wine
   playbook for doing all of this inside one iOS process.
 
-## Prior art (checked 2026-10-01)
+## Prior art (checked 2026-10-01; full feasibility study in `docs/RESEARCH.md`)
 
 - Cloud / remote: Redfinger, BrowserStack, Parsec to a PC emulator — streaming, not native.
 - UTM on iOS: full Android VM, needs JIT, very slow; guides like leiting2327/run-apk-on-ios.
 - Cycada (Columbia, 2010s): research compatibility layer for **iOS apps on Android** — the
   opposite direction, but the closest design reference.
 - ib-2-3-android: iOS apps (UE3) on Android — again the opposite direction.
-- No project found that runs APKs natively on an iPhone.
+- No project found that runs APKs natively on an iPhone. Closest: AIM (github.com/hahnlee/aim)
+  runs Android 16 ART on macOS on an in-process Linux syscall layer; Android Translation Layer
+  reimplements the framework on Linux.
 
 ## Status
 
 - **`gmpdemo`** (`make build/gmpdemo`): loads the **real `libgmp.so` from the Qalculate APK**,
-  links it (its libc imports bound to a small host shim in `core/bionic.c`), and computes
-  N! with GMP's own code, NEON paths included. Results match Python up to 30000!
-  (121,288 digits, 53 million interpreted instructions).
-- **`difftest`** (`make test` / `make difftest`): checks the interpreter instruction by
-  instruction against Unicorn (QEMU's A64 core) with random encodings and state: every
-  integer, NEON and scalar-FP class the interpreter runs, about 50 classes.
+  links it (32 libc imports bound to a small host shim in `core/bionic.c`), and computes
+  `100000!` correctly with GMP's own code (327 M instructions, 6.8 s). All 284,953 distinct
+  instruction encodings in Qalculate's libraries match Unicorn (`build/isacheck`). `make build/gmpdemo-check` cross-checks every
+  instruction against Unicorn; see `docs/STATUS.md`.
 - **`aoirun`** (host tool, `make test`): a no-JIT AArch64 interpreter + a small Linux/aarch64
   syscall layer + an ELF loader. It runs a real static `aarch64-linux` ELF and produces correct
   output and exit code, at both `-O0` (loops and branches actually execute) and `-O1`. This is
@@ -42,6 +41,8 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
   of the future App-Store-safe path (the same interpreter compiled to Wasm). Coverage of the
   A64 base set grows as real code needs it; an unimplemented instruction stops visibly rather
   than running wrong.
+- **iPhone test app** (`ios/`, IPA from GitHub Actions): runs the APK's libgmp.so in the interpreter
+  on the phone, no JIT needed — 20000! in 0.33 s on an iPhone 16 Pro (`docs/IOS.md`).
 - **`apkscan`** (host tool, `make test`): reads the arm64-v8a `.so` files of an APK and counts
   the instructions that cannot run unmodified on iOS — Linux `svc #0` syscalls, `tpidr_el0`
   thread-pointer access, and x18 shadow-call-stack pushes/pops. These are exactly the sites
