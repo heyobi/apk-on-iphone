@@ -322,9 +322,15 @@ harfbuzz, freetype, codecs, libgui/libui; 498 k distinct words) list 4,501 encod
 ~60 mnemonics we do not execute yet — saturating/rounding/narrowing NEON, FP16
 conversions, reciprocal estimates, by-element multiplies, ld/st2-4 lanes.
 
+**Those NEON encodings now run** (core/simd.c): saturating/rounding/narrowing shifts,
+by-element integer multiplies, FP16 conversions, reciprocal/rsqrt estimates and steps,
+frint*, fmaxnm/fminnm (vector, pairwise, across lanes), ld/st2-4 single lanes and ld2r-4r;
+isacheck over the rendering libraries: **0 missing, 0 WRONG** of 497,719 distinct words,
+difftest WRONG 0 (new class `mrs/msr nzcv`, which harfbuzz uses). The app now runs
+through text layout (libhwui, minikin, harfbuzz) and asks for **gralloc** next.
+
 **Next, in order:**
-1. Those NEON encodings (isacheck to 0 missing, Unicorn-checked).
-2. gralloc: a native allocator service (`android.hardware.graphics.allocator.IAllocator/
+1. gralloc: a native allocator service (`android.hardware.graphics.allocator.IAllocator/
    default`) and a guest mapper library (`mapper.aoi.so`, stable-C AIMapper v5) over
    host-shared memory; SurfaceFlinger's transactions; the first frame on the iPhone.
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the

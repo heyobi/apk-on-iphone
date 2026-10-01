@@ -45,6 +45,7 @@ CLASSES = [
     ("cbz/cbnz",        0x34000000, 0x7e000000),
     ("tbz/tbnz",        0x36000000, 0x7e000000),
     ("mrs/msr tpidr",   0xd51bd040, 0xffdfffe0),
+    ("mrs/msr nzcv",    0xd51b4200, 0xffdfffe0),
     ("movn/movz/movk",  0x12800000, 0x1f800000),
     ("add/sub imm",     0x11000000, 0x1f800000),
     ("logical imm",     0x12000000, 0x1f800000),

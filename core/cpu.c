@@ -196,6 +196,13 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             setX(c, insn & 31, AOI_CNTFRQ);
         } else if ((insn & 0xffffffe0u) == 0xd53be040u || (insn & 0xffffffe0u) == 0xd53be020u) { /* cntvct/cntpct */
             setX(c, insn & 31, aoi_cntvct());
+        } else if ((insn & 0xffdfffe0u) == 0xd51b4200u) {          /* mrs/msr nzcv */
+            if (insn & 0x200000u)
+                setX(c, insn & 31, (uint64_t)(c->n << 31 | c->z << 30 | c->c << 29 | c->v << 28) & 0xf0000000u);
+            else {
+                uint64_t v = X(c, insn & 31);
+                c->n = v >> 31 & 1; c->z = v >> 30 & 1; c->c = v >> 29 & 1; c->v = v >> 28 & 1;
+            }
         } else if ((insn & 0xffdfffe0u) == 0xd51b4400u) {          /* mrs/msr fpcr */
             if (insn & 0x200000u) setX(c, insn & 31, c->fpcr); else c->fpcr = (uint32_t)X(c, insn & 31);
         } else if ((insn & 0xffdfffe0u) == 0xd51b4420u) {          /* mrs/msr fpsr */
