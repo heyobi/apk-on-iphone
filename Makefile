@@ -92,6 +92,6 @@ android-test: build/aoiproc
 build/signals.elf: tests/signals.c | build
 	clang --target=aarch64-linux-gnu -nostdlib -static -ffreestanding -fno-stack-protector -fuse-ld=lld -O1 -o $@ $<
 
-# pipe2: a blocking read across green threads, O_NONBLOCK.
+# pipe2 (a blocking read across green threads, O_NONBLOCK), eventfd, epoll.
 build/pipes.elf: tests/pipes.c | build
 	clang --target=aarch64-linux-gnu -nostdlib -static -ffreestanding -fno-stack-protector -fuse-ld=lld -O1 -o $@ $<

@@ -238,10 +238,21 @@ Any other handle is a dead object. This hello asks for no service yet.
 Also: the profiler counts only expired time slices (a thread waiting on a pipe no
 longer shows up as `read`), and the code-name table forgets unmapped ranges when full.
 
+**ActivityThread.main() starts** (`app_process64 /system/bin android.app.ActivityThread`,
+every app process's real entry): its main Looper runs on emulated **eventfd** and
+**epoll** (+ `ppoll`): core/proc.c keeps the counter and the interest lists itself
+(Darwin has neither); readiness is level-triggered, from the eventfd counter or the
+host's poll(2) with no wait for pipes and files, and a wait with nothing ready sleeps
+≤ 2 ms and re-runs until its own deadline, so another thread's eventfd write wakes it
+(`tests/pipes.c` checks it). ActivityThread.attach then asks servicemanager for
+**"activity"**, gets null, and dies in `IActivityManager.attachApplication` — the expected
+wall. (Fixed on the way: binder replies were written with the guest's protection, but the
+receive buffer is read-only to the guest, so every non-empty reply became DEAD_REPLY.)
+
 **Next, in order:**
-1. A real app's process: start an APK's code through the framework (ActivityThread /
-   an Instrumentation-like entry), see which services it asks servicemanager for, and
-   implement those natively behind real binder handles (AIM ADR 0013).
+1. An in-process **ActivityManager** (and then package, window, …) behind a real binder
+   handle: attachApplication → bindApplication with the APK's ApplicationInfo →
+   the app's Application and launcher Activity (AIM ADR 0013 style native services).
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.

@@ -194,7 +194,8 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
                 if (b->next + rep.n + 8 > b->buflen) b->next = 0;
                 at = b->buf + b->next;
                 b->next += (rep.n + 15) & ~7u;
-                if (!gwrite(p, at, rep.d, rep.n)) { push32(t, BR_DEAD_REPLY); continue; }
+                /* the receive buffer is read-only to the guest; the driver writes it anyway */
+                if (!aoi_vm_write(&p->vm, at, rep.d, rep.n, 0)) { push32(t, BR_DEAD_REPLY); continue; }
                 memset(tr, 0, sizeof tr);                      /* binder_transaction_data */
                 tr[4] = rep.n;                                 /* data_size; offsets_size 0 */
                 tr[6] = at; tr[7] = at + ((rep.n + 7) & ~7u);  /* buffer, offsets */
@@ -219,6 +220,12 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
         {
             uint32_t k = bwr[3] - bwr[4] < t->n ? (uint32_t)(bwr[3] - bwr[4]) & ~3u : t->n;
             if (!gwrite(p, bwr[5] + bwr[4], t->q, k)) return (uint64_t)-EFAULT_;
+            if (p->trace) {
+                uint32_t o, w;
+                fprintf(p->trace, "[binder] tid %d reads %u bytes:", t->tid, k);
+                for (o = 0; o + 4 <= k; o += 4) { memcpy(&w, t->q + o, 4); fprintf(p->trace, " %x", w); }
+                fprintf(p->trace, "\n");
+            }
             memmove(t->q, t->q + k, t->n - k);
             t->n -= k;
             bwr[4] += k;

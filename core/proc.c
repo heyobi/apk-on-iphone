@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -279,7 +280,7 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
     for (i = min; i < AOI_PROC_FDS; i++)
         if (!p->fd[i].used) {
             p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
-            p->fd[i].nonblock = 0;
+            p->fd[i].nonblock = 0; p->fd[i].count = 0; p->fd[i].sem = 0; p->fd[i].ep = NULL;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
@@ -903,7 +904,8 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_pipe2 = 59, NR_mincore = 232, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_getcwd = 17, NR_pipe2 = 59, NR_eventfd2 = 19, NR_epoll_create1 = 20, NR_epoll_ctl = 21,
+    NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -1066,6 +1068,152 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
     return a;
 }
 
+/* ---------- eventfd, epoll, ppoll ----------
+ * Emulated, not the host's (Darwin has neither eventfd nor epoll). Readiness is
+ * level-triggered: eventfd from its counter, host-backed fds from poll(2) with no
+ * wait. A wait with nothing ready sleeps a little and runs again until its own
+ * deadline (t->poll_deadline), so a write by another green thread wakes it. */
+#define EP_IN 0x001u
+#define EP_OUT 0x004u
+#define EP_ERR 0x008u
+#define EP_HUP 0x010u
+
+static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
+{
+    struct aoi_proc_fd *f = fd_get(p, (uint64_t)fd);
+    uint32_t r = 0;
+    if (!f) return 0;
+    switch (f->kind) {
+    case AOI_FD_EVENTFD:
+        if (f->count) r |= EP_IN;
+        if (f->count < 0xfffffffffffffffeULL) r |= EP_OUT;
+        break;
+    case AOI_FD_FILE: case AOI_FD_PIPE: {
+        struct pollfd pf;
+        pf.fd = f->host; pf.events = (short)((want & EP_IN ? POLLIN : 0) | (want & EP_OUT ? POLLOUT : 0)); pf.revents = 0;
+        if (poll(&pf, 1, 0) > 0) {
+            if (pf.revents & POLLIN) r |= EP_IN;
+            if (pf.revents & POLLOUT) r |= EP_OUT;
+            if (pf.revents & POLLERR) r |= EP_ERR;
+            if (pf.revents & POLLHUP) r |= EP_HUP;
+        }
+        break;
+    }
+    case AOI_FD_LOGD: r |= EP_OUT; break;
+    default: break;                                                /* sockets, binder, epoll, uffd: never */
+    }
+    return r & (want | EP_ERR | EP_HUP);
+}
+
+/* Start or continue a wait; 1 = timed out now, 0 = the thread was put to sleep. */
+static int poll_wait(struct aoi_proc *p, int64_t timeout_ns)
+{
+    struct aoi_thread *t = &p->th[p->cur];
+    int64_t now = now_ns(), left;
+    if (!t->poll_deadline) t->poll_deadline = timeout_ns < 0 ? INT64_MAX : now + timeout_ns;
+    left = t->poll_deadline - now;
+    if (left <= 0) { t->poll_deadline = 0; return 1; }
+    block_and_retry(p, left < 2000000 ? left : 2000000);
+    return 0;
+}
+
+static void epoll_unref(struct aoi_epoll *ep)
+{
+    if (ep && --ep->refs <= 0) { free(ep->e); free(ep); }
+}
+
+/* A closed fd leaves every epoll set (its last reference in the kernel's terms). */
+static void epoll_forget(struct aoi_proc *p, int fd)
+{
+    int i, k;
+    for (i = 0; i < AOI_PROC_FDS; i++)
+        if (p->fd[i].used && p->fd[i].kind == AOI_FD_EPOLL && p->fd[i].ep) {
+            struct aoi_epoll *ep = p->fd[i].ep;
+            for (k = 0; k < ep->n; k++)
+                if (ep->e[k].fd == fd) { ep->e[k] = ep->e[--ep->n]; k--; }
+        }
+}
+
+static uint64_t sys_epoll_ctl(struct aoi_proc *p, struct aoi_proc_fd *f, int op, int fd, uint64_t evp)
+{
+    struct aoi_epoll *ep = f->ep;
+    uint8_t ev[16];
+    int k;
+    if (!fd_get(p, (uint64_t)fd)) return err(L_EBADF);
+    for (k = 0; k < ep->n && ep->e[k].fd != fd; k++) {}
+    if (op != 2 && !get(p, evp, ev, 16)) return err(L_EFAULT);   /* {u32 events; u64 data}, not packed on arm64 */
+    switch (op) {
+    case 1:                                                        /* EPOLL_CTL_ADD */
+        if (k < ep->n) return err(L_EEXIST);
+        if (ep->n == ep->cap) {
+            int nc = ep->cap ? 2 * ep->cap : 16;
+            void *ne = realloc(ep->e, (size_t)nc * sizeof *ep->e);
+            if (!ne) return err(L_ENOMEM);
+            ep->e = ne; ep->cap = nc;
+        }
+        ep->e[ep->n].fd = fd; ep->e[ep->n].events = u32(ev); ep->e[ep->n].data = u64(ev + 8);
+        ep->n++;
+        return 0;
+    case 2:                                                        /* EPOLL_CTL_DEL */
+        if (k == ep->n) return err(L_ENOENT);
+        ep->e[k] = ep->e[--ep->n];
+        return 0;
+    case 3:                                                        /* EPOLL_CTL_MOD */
+        if (k == ep->n) return err(L_ENOENT);
+        ep->e[k].events = u32(ev); ep->e[k].data = u64(ev + 8);
+        return 0;
+    default: return err(L_EINVAL);
+    }
+}
+
+static uint64_t sys_epoll_pwait(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t evp, int max, int timeout_ms)
+{
+    struct aoi_epoll *ep = f->ep;
+    int k, n = 0;
+    if (max <= 0) return err(L_EINVAL);
+    for (k = 0; k < ep->n && n < max; k++) {
+        uint32_t r = fd_ready(p, ep->e[k].fd, ep->e[k].events);
+        if (r) {
+            uint8_t ev[16];
+            memset(ev, 0, sizeof ev);
+            memcpy(ev, &r, 4); memcpy(ev + 8, &ep->e[k].data, 8);
+            if (!put(p, evp + 16 * (uint64_t)n, ev, 16)) return err(L_EFAULT);
+            n++;
+            if (ep->e[k].events & 0x40000000u) ep->e[k].events = 0;   /* EPOLLONESHOT: disarmed */
+        }
+    }
+    if (n || timeout_ms == 0) { p->th[p->cur].poll_deadline = 0; return (uint64_t)n; }
+    return poll_wait(p, timeout_ms < 0 ? -1 : (int64_t)timeout_ms * 1000000) ? 0 : 0;
+}
+
+static uint64_t sys_ppoll(struct aoi_proc *p, uint64_t fds, uint64_t nfds, uint64_t tsp)
+{
+    uint64_t i, n = 0;
+    int64_t timeout = -1;
+    if (nfds > 4096) return err(L_EINVAL);
+    if (tsp) {
+        uint8_t ts[16];
+        if (!get(p, tsp, ts, 16)) return err(L_EFAULT);
+        timeout = (int64_t)u64(ts) * 1000000000 + (int64_t)u64(ts + 8);
+    }
+    for (i = 0; i < nfds; i++) {
+        uint8_t pf[8];
+        int32_t fd;
+        uint16_t want, rev;
+        if (!get(p, fds + 8 * i, pf, 8)) return err(L_EFAULT);
+        memcpy(&fd, pf, 4); want = u16(pf + 4);
+        if (fd < 0) rev = 0;
+        else if (!fd_get(p, (uint64_t)fd)) rev = 0x20;             /* POLLNVAL */
+        else rev = (uint16_t)fd_ready(p, fd, want);
+        memcpy(pf + 6, &rev, 2);
+        if (!put(p, fds + 8 * i + 6, pf + 6, 2)) return err(L_EFAULT);
+        if (rev) n++;
+    }
+    if (n || timeout == 0) { p->th[p->cur].poll_deadline = 0; return n; }
+    poll_wait(p, timeout);
+    return 0;
+}
+
 static uint64_t sys_getdents64(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t n)
 {
     uint64_t used = 0;
@@ -1127,12 +1275,33 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     switch (nr) {
     case NR_read: case NR_pread64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_EVENTFD) {                           /* the counter (or 1), then less */
+            uint64_t v;
+            if (a2 < 8) { r = err(L_EINVAL); break; }
+            if (!f->count) { r = f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 1000000); break; }
+            v = f->sem ? 1 : f->count;
+            f->count -= v;
+            r = put(p, a1, &v, 8) ? 8 : err(L_EFAULT);
+            break;
+        }
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 1, nr == NR_read ? -1 : (int64_t)a3) : 0;
         if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p, 1000000);
         break;
     }
     case NR_write: case NR_pwrite64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_EVENTFD) {                           /* add to the counter */
+            uint64_t v;
+            if (a2 < 8 || !get(p, a1, &v, 8)) { r = err(a2 < 8 ? L_EINVAL : L_EFAULT); break; }
+            if (v == ~0ULL) { r = err(L_EINVAL); break; }
+            if (f->count + v < f->count || f->count + v == ~0ULL) {
+                r = f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 1000000);
+                break;
+            }
+            f->count += v;
+            r = 8;
+            break;
+        }
         if (f->kind == AOI_FD_LOGD) {
             uint8_t pkt[4096];
             uint64_t n = a2 < sizeof pkt ? a2 : sizeof pkt;
@@ -1205,7 +1374,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_close:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (a0 > 2) { if (f->dir) closedir(f->dir); else close(f->host); }
-        f->used = 0; f->dir = NULL;
+        if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
+        f->used = 0; f->dir = NULL; f->ep = NULL;
+        epoll_forget(p, (int)a0);
         r = 0;
         break;
     case NR_lseek: {
@@ -1290,6 +1461,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (d < 0) { r = herr(); break; }
             if ((n = fd_new(p, d, f->path, (int)a2)) < 0) { close(d); r = err(L_EMFILE); break; }
             p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
+            if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
             break;
         }
@@ -1311,16 +1483,49 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             struct aoi_proc_fd *t = &p->fd[a1];
             if (t->used && a1 > 2) { if (t->dir) closedir(t->dir); else close(t->host); }
             if (a1 <= 2) { dup2(d, (int)a1); close(d); d = (int)a1; }
+            if (t->used && t->kind == AOI_FD_EPOLL) epoll_unref(t->ep);
             t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
+            if ((t->ep = f->ep)) f->ep->refs++;
             join(t->path, AOI_PATH, "", f->path);
             r = a1;
         } else {
             if ((n = fd_new(p, d, f->path, 0)) < 0) { close(d); r = err(L_EMFILE); break; }
             p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
+            if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
         }
         break;
     }
+    case NR_eventfd2: case NR_epoll_create1: {
+        int d, n;
+        if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+        if ((n = fd_new(p, d, nr == NR_eventfd2 ? "anon_inode:[eventfd]" : "anon_inode:[eventpoll]", 0)) < 0) {
+            close(d); r = err(L_EMFILE); break;
+        }
+        if (nr == NR_eventfd2) {                                   /* initval, EFD_SEMAPHORE|NONBLOCK|CLOEXEC */
+            p->fd[n].kind = AOI_FD_EVENTFD;
+            p->fd[n].count = (uint32_t)a0;
+            p->fd[n].sem = (a1 & 1) != 0;
+            p->fd[n].nonblock = (a1 & 04000) != 0;
+        } else {
+            if (!(p->fd[n].ep = calloc(1, sizeof *p->fd[n].ep))) { p->fd[n].used = 0; close(d); r = err(L_ENOMEM); break; }
+            p->fd[n].ep->refs = 1;
+            p->fd[n].kind = AOI_FD_EPOLL;
+        }
+        r = (uint64_t)n;
+        break;
+    }
+    case NR_epoll_ctl:
+        if (!(f = fd_get(p, a0)) || f->kind != AOI_FD_EPOLL) { r = err(f ? L_EINVAL : L_EBADF); break; }
+        r = sys_epoll_ctl(p, f, (int)a1, (int)a2, a3);
+        break;
+    case NR_epoll_pwait:
+        if (!(f = fd_get(p, a0)) || f->kind != AOI_FD_EPOLL) { r = err(f ? L_EINVAL : L_EBADF); break; }
+        r = sys_epoll_pwait(p, f, a1, (int)a2, (int)a3);
+        break;
+    case NR_ppoll:
+        r = sys_ppoll(p, a0, a1, a2);
+        break;
     case NR_pipe2: {                                               /* host pipe, non-blocking underneath */
         int hp[2], n0, n1;
         int32_t gfd[2];

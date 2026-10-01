@@ -26,9 +26,16 @@ struct aoi_proc_fd {
     void *dir;                      /* host DIR* for getdents64, opened lazily */
     int kind;                       /* AOI_FD_* */
     int nonblock;                   /* guest O_NONBLOCK (pipes: the host end is always non-blocking) */
+    uint64_t count;                 /* AOI_FD_EVENTFD: the counter */
+    int sem;                        /* AOI_FD_EVENTFD: EFD_SEMAPHORE (reads take 1, not all) */
+    struct aoi_epoll *ep;           /* AOI_FD_EPOLL: the interest list (shared by dups) */
 };
 
-enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER };
+enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,
+       AOI_FD_EVENTFD, AOI_FD_EPOLL };
+
+/* An epoll instance: level-triggered interest entries {fd, events, data}. */
+struct aoi_epoll { int refs, n, cap; struct { int fd; uint32_t events; uint64_t data; } *e; };
 
 /* A file mapping, kept to name code addresses in diagnostics. */
 struct aoi_proc_map { uint64_t start, len, off; char path[160]; };
@@ -53,6 +60,7 @@ struct aoi_thread {
     uint64_t sigwait_mask;          /* AOI_T_SLEEP in rt_sigtimedwait: signals that end it */
     uint64_t sigwait_info;          /* its siginfo_t pointer, or 0 */
     int restart;                    /* AOI_T_SLEEP before re-running a syscall: wake without touching x0 */
+    int64_t poll_deadline;          /* epoll_pwait/ppoll being retried: when it times out (0: not waiting) */
 };
 
 struct aoi_proc {
