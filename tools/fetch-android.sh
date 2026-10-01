@@ -20,4 +20,5 @@ if command -v sha256sum >/dev/null; then echo "$SHA  $TMP/gsi.img.xz" | sha256su
 else echo "$SHA  $TMP/gsi.img.xz" | shasum -a 256 -c -; fi
 xz -dT0 "$TMP/gsi.img.xz"
 sh "$(dirname "$0")/android-root.sh" "$TMP/gsi.img" "$OUT"
+python3 "$(dirname "$0")/mkprops.py" "$OUT"
 rm -rf "$TMP"

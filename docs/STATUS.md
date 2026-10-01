@@ -75,15 +75,58 @@ bundled in the app (`ios/android-files.txt`, built by the workflow with
 | `mksh -c 'echo $((6*7)); …'` | "42", "7 harf", exit 0 | 0.94 M | 0.012 s | 60 MiB |
 | `toybox ls /system/lib64` | all 14 entries, exit 0 | 13.8 M | 0.142 s (97 M/s) | 66 MiB |
 
-**Biggest open risk now: speed of interpreted ART.** Starting ART and running even a
-hello-world dex is likely billions of guest instructions; at ~80 M/s that is tens of
-seconds per app start. Measure it as soon as dalvikvm runs on the host (next steps),
-before building framework pieces on top; the answer decides how early the WebKit
-(Wasm) JIT is needed.
+## Step 3 reached on the host: ART runs a dex — and the first speed measurement
 
-Known simplifications: one thread, `futex` never blocks; signals are recorded but
-never delivered; `socket` is ENOSYS (logd is absent, so logs go nowhere); file
-mappings are private copies; uid 0.
+`make android-test` (with `AOI_ANDROID_ROOT`) now also does the boot-time setup and
+runs ART. `tools/android-setup.sh` does what init/apexd would: the property area
+(`tools/mkprops.py`, bionic's pre-split `prop_area` format, long values included),
+then Android's own `linkerconfig` (223 KB config, 17 APEX namespaces) and
+`derive_classpath` (BOOTCLASSPATH etc.), both in the interpreter. Then:
+
+    aoiproc -e BOOTCLASSPATH=… -e DEX2OATBOOTCLASSPATH=… ROOT \
+        /apex/com.android.art/bin/dalvikvm64 -Xverify:none -cp /data/local/tmp/hello.dex Hello
+    Merhaba from ART
+
+The dex is written by `tests/mkdex.py` (no d8 here: dl.google.com is blocked) and
+checked by Android's own `dexdump` in the interpreter.
+
+**Speed (the open risk from before), host x86:**
+
+| run | guest instructions | time |
+|---|---:|---:|
+| ART hello, boot dex files verified | 1,520 M | 25.4 s |
+| ART hello, `-Xverify:none` | **248 M** | **4.6 s** (≈ 3 s on the iPhone at 80 M/s) |
+
+`aoiproc -p` (sampling profiler) showed 73 % of the first run in libdexfile's
+`DexFileVerifier` re-checking ~40 boot jars; boot dex files are system files, and a
+device skips that through the boot image's vdex, so `-Xverify:none` is right here.
+Of the 248 M, 55 % is linker64 (relocating/linking libart & co.), 12 % libart.
+
+ART currently runs **imageless**: the GSI's boot image was built for the CMC GC (no
+read barriers), and ART only picks CMC when the kernel offers userfaultfd with SIGBUS
+support, so it falls back to the CC GC and rejects the image. Using the image (AOT
+code for all boot classes) needs: guest **signal delivery** (also needed anyway: ART's
+implicit null checks are SIGSEGV), then userfaultfd in SIGBUS mode.
+
+What ART needed from core/proc.c on the way: **green threads** (clone for threads,
+a scheduler with 100k-instruction slices, real futex wait/wake/requeue with
+timeouts, CLONE_CHILD_CLEARTID), a logd emulation (liblog's socket → "P/tag: msg"
+on stderr), a synthetic /proc (self/stat incl. startstack, maps with [stack],
+status, cmdline, meminfo, cpuinfo), membarrier, rt_sigtimedwait (sleeps until a
+tgkill delivers the awaited signal), set/getpriority; in the CPU: dmb/dsb/isb,
+clrex, dc/ic (dc zva zeroes), vector clz/cls.
+
+**Next, in order:**
+1. Guest signals: rt_sigaction handlers, sigframe + rt_sigreturn, synchronous
+   SIGSEGV/SIGBUS from CPU faults, tgkill to other threads.
+2. userfaultfd (SIGBUS mode) + MREMAP_DONTUNMAP → CMC GC → boot image → measure.
+3. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
+4. Bundle ART into the iOS app and measure the same hello on the phone.
+
+Known simplifications: green threads (one host thread runs all guest threads);
+asynchronous signals are not delivered (only to a thread in sigwait); sockets other
+than logd refuse to connect; file mappings are private copies (MAP_SHARED of a file
+does not write back); uid 0; no fork/execve yet.
 
 ## The reference-CPU oracle (use it for every new instruction)
 

@@ -5,7 +5,7 @@
 # The tree stays local (scratch space): never commit Android binaries.
 set -eu
 IMG=$1; OUT=$2
-mkdir -p "$OUT/apex" "$OUT/linkerconfig" "$OUT/dev" "$OUT/proc" "$OUT/data/local/tmp"
+mkdir -p "$OUT/apex" "$OUT/linkerconfig" "$OUT/dev" "$OUT/proc" "$OUT/data/local/tmp" "$OUT/data/dalvik-cache/arm64"
 [ -d "$OUT/system/bin" ] || debugfs -R "rdump /system $OUT" "$IMG" >/dev/null 2>&1
 TMP=$(mktemp -d)
 for a in "$OUT"/system/apex/*.apex "$OUT"/system/apex/*.capex; do
@@ -23,3 +23,20 @@ for a in "$OUT"/system/apex/*.apex "$OUT"/system/apex/*.capex; do
     else echo "skip $name (payload not ext4)"; rmdir "$OUT/apex/$name"; fi
 done
 rm -rf "$TMP"
+# /apex/apex-info-list.xml, as apexd writes it: linkerconfig only builds APEX
+# namespaces for the modules listed there
+{
+    echo '<?xml version="1.0" encoding="utf-8"?>'
+    echo '<apex-info-list>'
+    for a in "$OUT"/system/apex/*.apex "$OUT"/system/apex/*.capex; do
+        [ -e "$a" ] || continue
+        f=$(basename "$a"); name=${f%.capex}; name=${name%.apex}
+        [ -d "$OUT/apex/$name" ] || continue
+        echo "    <apex-info moduleName=\"$name\" modulePath=\"/system/apex/$f\" preinstalledModulePath=\"/system/apex/$f\" versionCode=\"1\" versionName=\"\" isFactory=\"true\" isActive=\"true\" lastUpdateMillis=\"0\" provideSharedApexLibs=\"false\" />"
+    done
+    echo '</apex-info-list>'
+} > "$OUT/apex/apex-info-list.xml"
+# a device's root links these partitions into /system on a GSI
+for part in product system_ext; do
+    [ -e "$OUT/$part" ] || [ ! -d "$OUT/system/$part" ] || ln -s "/system/$part" "$OUT/$part"
+done

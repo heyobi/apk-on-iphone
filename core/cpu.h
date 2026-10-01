@@ -27,8 +27,10 @@ struct aoi_mem {
     struct aoi_region r[AOI_MAX_REGIONS];
 };
 
+/* AOI_STOP_YIELD: a syscall finished (x0 set, pc past the svc) but asked the
+ * scheduler to switch threads, e.g. a futex wait (core/proc.c). */
 enum aoi_stop { AOI_RUN = 0, AOI_STOP_EXIT, AOI_STOP_UNDEF, AOI_STOP_FAULT, AOI_STOP_SYSCALL,
-                AOI_STOP_RETURN, AOI_STOP_IMPORT };
+                AOI_STOP_RETURN, AOI_STOP_IMPORT, AOI_STOP_YIELD };
 
 struct aoi_cpu {
     uint64_t x[31];

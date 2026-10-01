@@ -24,11 +24,31 @@ struct aoi_proc_fd {
     int host;                       /* host file descriptor */
     char path[AOI_PATH];            /* guest path it was opened with (resolved) */
     void *dir;                      /* host DIR* for getdents64, opened lazily */
+    int kind;                       /* AOI_FD_* */
 };
+
+enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD };
 
 /* A file mapping, kept to name code addresses in diagnostics. */
 struct aoi_proc_map { uint64_t start, len, off; char path[160]; };
 #define AOI_PROC_MAPS 2048
+
+/* Guest threads are green threads: all run on the calling host thread, one at a
+ * time, switched every time slice and whenever one blocks (futex, sleep). */
+enum { AOI_T_FREE = 0, AOI_T_RUN, AOI_T_FUTEX, AOI_T_SLEEP };
+#define AOI_PROC_THREADS 128
+
+struct aoi_thread {
+    int state;                      /* AOI_T_* */
+    int tid;
+    struct aoi_cpu cpu;             /* registers while not running */
+    uint64_t futex_addr;            /* AOI_T_FUTEX: the word waited on */
+    uint32_t futex_bitset;
+    int64_t deadline;               /* monotonic ns to give up waiting / sleeping; 0 = never */
+    uint64_t clear_tid;             /* CLONE_CHILD_CLEARTID / set_tid_address */
+    uint64_t sigwait_mask;          /* AOI_T_SLEEP in rt_sigtimedwait: signals that end it */
+    uint64_t sigwait_info;          /* its siginfo_t pointer, or 0 */
+};
 
 struct aoi_proc {
     struct aoi_vm vm;
@@ -37,22 +57,33 @@ struct aoi_proc {
     char root[AOI_PATH];            /* host directory that is the guest's "/" */
     char cwd[AOI_PATH];             /* guest path */
     char exe[AOI_PATH];             /* guest path of the program (/proc/self/exe) */
+    char cmdline[AOI_PATH];         /* argv joined by NULs (/proc/self/cmdline) */
+    size_t cmdline_len;
     struct aoi_proc_fd fd[AOI_PROC_FDS];
     uint64_t sigact[65][4];         /* rt_sigaction records, kept so oact reads back */
     uint64_t sigmask;
     uint64_t altstack[3];
     uint64_t brk;
+    uint64_t stack_start;           /* initial sp (/proc/self/stat startstack) */
     FILE *trace;                    /* strace-style log, or NULL */
+    FILE *log;                      /* where guest liblog lines go (logd emulation), or NULL */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;
+    struct aoi_thread th[AOI_PROC_THREADS];
+    int cur;                        /* index of the thread whose registers are in cpu */
+    int next_tid;
+    int thread_exit;                /* the running thread called exit (not exit_group) */
+    uint64_t *samples;              /* if set: pc at the end of each time slice (profiling) */
+    size_t nsamples, maxsamples;
 };
 
 /* Loads `path` (a guest path) with argv/envp into a fresh process. NULL on success. */
 const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path,
                           int argc, const char *const *argv, const char *const *envp);
 
-/* Runs until exit or a stop; max_steps 0 = no limit. */
+/* Runs all guest threads until the process exits or one stops (fault,
+ * undefined instruction, deadlock); max_steps 0 = no limit. */
 enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps);
 
 void aoi_proc_free(struct aoi_proc *p);

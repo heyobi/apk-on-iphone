@@ -363,6 +363,16 @@ static int two_misc(struct aoi_cpu *c, uint32_t insn)
             }
         } else return 0;
         break;
+    case 0x04:                                        /* cls / clz */
+        if (size == 3) return 0;
+        for (i = 0; i < ne; i++) {
+            uint64_t x = lane(a, i, esz);
+            int bits = 8 * esz, k, cnt = 0;
+            if (u) { for (k = bits - 1; k >= 0 && !(x >> k & 1); k--) cnt++; }
+            else { int top = (int)(x >> (bits - 1) & 1); for (k = bits - 2; k >= 0 && (int)(x >> k & 1) == top; k--) cnt++; }
+            setlane(r, i, esz, (uint64_t)cnt);
+        }
+        break;
     case 0x02: case 0x06: {                           /* [su]addlp / [su]adalp */
         if (size == 3) return 0;
         for (i = 0; i < ne / 2; i++) {

@@ -168,6 +168,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         } else if (insn == 0xd4000001u) {                          /* svc #0 */
             uint64_t r = c->syscall ? c->syscall(c) : aoi_linux_syscall(c);
             if (c->stop == AOI_RUN) c->x[0] = r;
+            else if (c->stop == AOI_STOP_YIELD) { c->x[0] = r; c->pc = next; break; }
         } else if ((insn & 0xffffffe0u) == 0xd53bd040u) {          /* mrs xN, tpidr_el0 */
             setX(c, insn & 31, c->tpidr);
         } else if ((insn & 0xffffffe0u) == 0xd53b00e0u) {          /* mrs xN, dczid_el0 */
@@ -186,6 +187,15 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             c->tpidr = X(c, insn & 31);
         } else if (insn == 0xd503201fu || (insn & 0xfffff01fu) == 0xd503201fu) {
             /* nop / hint */
+        } else if ((insn & 0xfffff09fu) == 0xd503309fu) {          /* dsb / dmb / isb: one thread, in order */
+        } else if ((insn & 0xfffff0ffu) == 0xd503305fu) {          /* clrex */
+            c->excl_valid = 0;
+        } else if ((insn & 0xfffff000u) == 0xd50b7000u) {          /* dc / ic (EL0): no caches here */
+            if (((insn >> 8) & 15) == 4 && ((insn >> 5) & 7) == 1) { /* dc zva: zero a 64-byte block */
+                uint64_t a = X(c, insn & 31) & ~(uint64_t)63;
+                int k;
+                for (k = 0; k < 64 && c->stop == AOI_RUN; k += 8) wr(c, a + k, 0, 8);
+            }
         /* ---- moves (wide immediate) ---- */
         } else if ((insn & 0x1f800000u) == 0x12800000u && ((insn >> 29) & 3) != 1) { /* movn/movz/movk */
             int is64 = insn >> 31, opc = (insn >> 29) & 3, sh = ((insn >> 21) & 3) * 16;

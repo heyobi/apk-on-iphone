@@ -1,8 +1,10 @@
 #define _POSIX_C_SOURCE 200809L
 /* aoiproc: run an unmodified Android program, with Android's own linker64,
- * in the interpreter. usage: aoiproc [-t] ROOT PROGRAM [args...]
+ * in the interpreter. usage: aoiproc [-t] [-e NAME=VALUE]... ROOT PROGRAM [args...]
  * ROOT is a guest root made by tools/android-root.sh; PROGRAM is a guest path
- * such as /system/bin/toybox. -t logs every syscall to stderr. */
+ * such as /system/bin/toybox. -t logs every syscall to stderr; -e adds to the
+ * guest environment; -p prints where the guest spent its instructions
+ * (one sample per 100k-instruction time slice, grouped by library). */
 #include "../core/proc.h"
 
 #include <inttypes.h>
@@ -15,24 +17,35 @@ static struct aoi_proc proc;
 
 int main(int argc, char **argv)
 {
-    static const char *const envp[] = {
+    static const char *base_env[] = {
         "PATH=/product/bin:/apex/com.android.runtime/bin:/system/bin:/system/xbin",
         "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "ANDROID_ART_ROOT=/apex/com.android.art",
         "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata",
         "HOME=/", "TMPDIR=/data/local/tmp", NULL };
+    const char *envp[64];
+    int ne = 0;
     const char *err;
     enum aoi_stop st;
-    int a = 1, trace = 0;
+    int a = 1, trace = 0, profile = 0;
     struct timespec t0, t1;
     double secs;
 
-    if (argc > 1 && !strcmp(argv[1], "-t")) { trace = 1; a++; }
+    while (base_env[ne]) { envp[ne] = base_env[ne]; ne++; }
+    for (;;) {
+        if (argc > a && !strcmp(argv[a], "-t")) { trace = 1; a++; }
+        else if (argc > a && !strcmp(argv[a], "-p")) { profile = 1; a++; }
+        else if (argc > a + 1 && !strcmp(argv[a], "-e") && ne < 63) { envp[ne++] = argv[a + 1]; a += 2; }
+        else break;
+    }
+    envp[ne] = NULL;
     if (argc - a < 2) { fprintf(stderr, "usage: %s [-t] ROOT PROGRAM [args...]\n", argv[0]); return 2; }
-    if ((err = aoi_proc_exec(&proc, argv[a], argv[a + 1], argc - a - 1, (const char *const *)argv + a + 1, envp))) {
+    if ((err = aoi_proc_exec(&proc, argv[a], argv[a + 1], argc - a - 1, (const char *const *)argv + a + 1, (const char *const *)envp))) {
         fprintf(stderr, "[aoiproc] exec %s: %s\n", argv[a + 1], err);
         return 1;
     }
     if (trace) proc.trace = stderr;
+    if (profile && (proc.samples = calloc(1 << 20, sizeof *proc.samples))) proc.maxsamples = 1 << 20;
+    proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     st = aoi_proc_run(&proc, 0);
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -44,6 +57,27 @@ int main(int argc, char **argv)
                     aoi_proc_where(&proc, proc.cpu.x[30], w2, sizeof w2));
     }
     secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    if (proc.samples) {                              /* samples per library, most first */
+        static char names[256][256];
+        static size_t counts[256];
+        size_t i, n = 0, j;
+        for (i = 0; i < proc.nsamples; i++) {
+            char w[256], *plus;
+            aoi_proc_where(&proc, proc.samples[i], w, sizeof w);
+            if (getenv("AOI_PROFILE_RAW")) fprintf(stderr, "[sample] %s\n", w);
+            if ((plus = strrchr(w, '+'))) *plus = 0;
+            for (j = 0; j < n && strcmp(names[j], w); j++) {}
+            if (j == n && n < 256) { snprintf(names[n], sizeof names[n], "%s", w); n++; }
+            if (j < 256) counts[j]++;
+        }
+        for (;;) {
+            size_t best = 0, bi = 0;
+            for (j = 0; j < n; j++) if (counts[j] > best) { best = counts[j]; bi = j; }
+            if (!best || best * 200 < proc.nsamples) break;
+            fprintf(stderr, "[profile] %5.1f%%  %s\n", 100.0 * (double)best / (double)proc.nsamples, names[bi]);
+            counts[bi] = 0;
+        }
+    }
     switch (st) {
     case AOI_STOP_EXIT:
         fprintf(stderr, "[aoiproc] exit %d, %" PRIu64 " instructions, %.2f s, %llu MiB of host chunks\n",

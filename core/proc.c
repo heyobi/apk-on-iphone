@@ -41,7 +41,8 @@ enum { L_EPERM = 1, L_ENOENT = 2, L_ESRCH = 3, L_EINTR = 4, L_EIO = 5, L_EBADF =
        L_EXDEV = 18, L_ENOTDIR = 20, L_EISDIR = 21, L_EINVAL = 22, L_ENFILE = 23, L_EMFILE = 24,
        L_ENOTTY = 25, L_EFBIG = 27, L_ENOSPC = 28, L_ESPIPE = 29, L_EROFS = 30, L_EPIPE = 32,
        L_ERANGE = 34, L_ENAMETOOLONG = 36, L_ENOSYS = 38, L_ENOTEMPTY = 39, L_ELOOP = 40,
-       L_ENODATA = 61, L_EOVERFLOW = 75, L_ENOTSUP = 95, L_ETIMEDOUT = 110 };
+       L_ENODATA = 61, L_EOVERFLOW = 75, L_ENOTSOCK = 88, L_ENOTSUP = 95, L_EAFNOSUPPORT = 97,
+       L_ENOTCONN = 107, L_ETIMEDOUT = 110, L_ECONNREFUSED = 111 };
 
 static int lx_errno(int e)
 {
@@ -244,7 +245,7 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
     int i;
     for (i = min; i < AOI_PROC_FDS; i++)
         if (!p->fd[i].used) {
-            p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL;
+            p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
@@ -438,6 +439,7 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
 
     if (IS_ERR(aoi_vm_map(&p->vm, STACK_TOP - STACK_SIZE, STACK_SIZE, AOI_PROT_R | AOI_PROT_W, 1)))
         return "cannot map the stack";
+    note_map(p, STACK_TOP - STACK_SIZE, STACK_SIZE, 0, "[stack]");
     sp = STACK_TOP;
     execfn = push_str(p, &sp, path);
     platform = push_str(p, &sp, "aarch64");
@@ -448,6 +450,12 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     }
     sp -= 16; rnd = sp; put(p, rnd, random16, 16);
     for (i = argc - 1; i >= 0; i--) argp[i] = push_str(p, &sp, argv[i]);
+    for (i = 0; i < argc; i++) {
+        size_t l = strlen(argv[i]) + 1;
+        if (p->cmdline_len + l > sizeof p->cmdline) break;
+        memcpy(p->cmdline + p->cmdline_len, argv[i], l);
+        p->cmdline_len += l;
+    }
     for (i = envc - 1; i >= 0; i--) envp_a[i] = push_str(p, &sp, envp[i]);
 
     v = words;
@@ -470,6 +478,10 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     p->cpu.mem = &p->mem;
     p->cpu.pc = interp.entry;
     p->cpu.sp = sp;
+    p->stack_start = sp;
+    p->th[0].state = AOI_T_RUN;
+    p->th[0].tid = GUEST_PID;
+    p->next_tid = GUEST_PID + 1;
     p->cpu.syscall = aoi_proc_syscall;
     p->cpu.host_ctx = p;
     return NULL;
@@ -485,15 +497,124 @@ void aoi_proc_free(struct aoi_proc *p)
     aoi_vm_free(&p->vm);
 }
 
+/* ---------- green threads ---------- */
+
+#define SLICE 100000                /* guest instructions per turn */
+
+static int64_t now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/* Wakes up to n threads waiting on the futex word at addr (bitset-filtered);
+ * returns how many. Their futex call returns 0. */
+static int futex_wake(struct aoi_proc *p, uint64_t addr, int n, uint32_t bitset)
+{
+    int i, woken = 0;
+    for (i = 0; i < AOI_PROC_THREADS && woken < n; i++) {
+        struct aoi_thread *t = &p->th[i];
+        if (t->state == AOI_T_FUTEX && t->futex_addr == addr && (t->futex_bitset & bitset)) {
+            t->state = AOI_T_RUN;
+            t->cpu.x[0] = 0;
+            woken++;
+        }
+    }
+    return woken;
+}
+
+/* Saves the running thread and loads the next runnable one (round robin).
+ * Expired waits are woken first; if nobody can run but someone has a deadline,
+ * the host sleeps until it. Returns 0, or -1 if every thread waits forever. */
+static int schedule(struct aoi_proc *p)
+{
+    uint64_t steps = p->cpu.steps;
+    int i, k, next = -1;
+    for (;;) {
+        int64_t now = now_ns(), soonest = 0;
+        for (i = 0; i < AOI_PROC_THREADS; i++) {
+            struct aoi_thread *t = &p->th[i];
+            if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline && t->deadline <= now) {
+                if (i == p->cur) p->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
+                else t->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
+                t->state = AOI_T_RUN;
+            }
+            if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline &&
+                (!soonest || t->deadline < soonest)) soonest = t->deadline;
+        }
+        for (k = 1; k <= AOI_PROC_THREADS; k++) {
+            i = (p->cur + k) % AOI_PROC_THREADS;
+            if (p->th[i].state == AOI_T_RUN) { next = i; break; }
+        }
+        if (next >= 0) break;
+        if (!soonest) return -1;
+        {
+            int64_t d = soonest - now;
+            struct timespec ts;
+            ts.tv_sec = d / 1000000000; ts.tv_nsec = d % 1000000000;
+            nanosleep(&ts, NULL);
+        }
+    }
+    if (next != p->cur) {
+        p->th[p->cur].cpu = p->cpu;
+        p->cpu = p->th[next].cpu;
+        p->cur = next;
+    }
+    p->cpu.steps = steps;
+    p->cpu.excl_valid = 0;          /* another thread may have written: stxr must fail */
+    return 0;
+}
+
+static int live_threads(struct aoi_proc *p)
+{
+    int i, n = 0;
+    for (i = 0; i < AOI_PROC_THREADS; i++) n += p->th[i].state != AOI_T_FREE;
+    return n;
+}
+
+/* The running thread ends (exit, not exit_group): CLONE_CHILD_CLEARTID is honoured. */
+static void thread_end(struct aoi_proc *p)
+{
+    struct aoi_thread *t = &p->th[p->cur];
+    if (t->clear_tid) {
+        uint32_t zero = 0;
+        put(p, t->clear_tid, &zero, 4);
+        futex_wake(p, t->clear_tid & 0x00ffffffffffffffULL, 1 << 30, ~0u);
+    }
+    t->state = AOI_T_FREE;
+}
+
 enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 {
-    return aoi_cpu_run(&p->cpu, max_steps);
+    for (;;) {
+        uint64_t end = p->cpu.steps + SLICE;
+        enum aoi_stop st;
+        if (max_steps && end > max_steps) end = max_steps;
+        st = aoi_cpu_run(&p->cpu, end);
+        if (p->samples && p->nsamples < p->maxsamples) p->samples[p->nsamples++] = p->cpu.pc;
+        if (st == AOI_STOP_EXIT && p->thread_exit) {
+            p->thread_exit = 0;
+            thread_end(p);
+            if (!live_threads(p)) return AOI_STOP_EXIT;
+        } else if (st == AOI_RUN) {
+            if (max_steps && p->cpu.steps >= max_steps) return AOI_RUN;
+        } else if (st != AOI_STOP_YIELD) {
+            return st;                                             /* exit_group, fault, undef */
+        }
+        p->cpu.stop = AOI_RUN;
+        if (schedule(p)) {
+            fprintf(stderr, "[aoiproc] deadlock: every thread waits on a futex with no timeout\n");
+            p->cpu.stop = AOI_STOP_SYSCALL;
+            return AOI_STOP_SYSCALL;
+        }
+    }
 }
 
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_getcwd = 17, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -543,6 +664,73 @@ const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t 
     }
     snprintf(buf, n, "?");
     return buf;
+}
+
+/* ---------- /proc: generated when opened ---------- */
+
+/* Writes the content of a synthetic /proc file into a fresh host temp file and
+ * returns its descriptor (positioned at 0), or -1 if `g` is not one we make. */
+static int proc_file(struct aoi_proc *p, const char *g)
+{
+    const char *f;
+    FILE *t;
+    int fd;
+    if (!strncmp(g, "/proc/self/", 11)) f = g + 11;
+    else if (!strncmp(g, "/proc/thread-self/", 18)) f = g + 18;
+    else if (!strncmp(g, "/proc/1000/", 11)) f = g + 11;
+    else if (!strncmp(g, "/proc/1000/task/1000/", 21)) f = g + 21;
+    else f = g;                                                    /* /proc/meminfo etc. */
+    if (!(t = tmpfile())) return -1;
+    if (!strcmp(f, "cmdline")) {
+        fwrite(p->cmdline, 1, p->cmdline_len, t);
+    } else if (!strcmp(f, "comm")) {
+        const char *b = strrchr(p->exe, '/');
+        fprintf(t, "%.15s\n", b ? b + 1 : p->exe);
+    } else if (!strcmp(f, "stat")) {
+        const char *b = strrchr(p->exe, '/');
+        fprintf(t, "%d (%.15s) R 1 %d %d 0 -1 4194304 0 0 0 0 %llu 0 0 0 20 0 1 0 1 %llu %llu "
+                   "18446744073709551615 0 0 %llu 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+                1000, b ? b + 1 : p->exe, 1000, 1000, (unsigned long long)(p->cpu.steps / 1000000),
+                (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK),
+                (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK / AOI_VM_PAGE),
+                (unsigned long long)p->stack_start);
+    } else if (!strcmp(f, "status")) {
+        fprintf(t, "Name:\tapp\nState:\tR (running)\nTgid:\t1000\nPid:\t1000\nPPid:\t1\nTracerPid:\t0\n"
+                   "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nThreads:\t1\nVmSize:\t%llu kB\nVmRSS:\t%llu kB\n"
+                   "SigQ:\t0/0\nSigPnd:\t0000000000000000\nSigBlk:\t%016llx\n",
+                (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK >> 10),
+                (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK >> 10), (unsigned long long)p->sigmask);
+    } else if (!strcmp(f, "maps")) {                               /* runs of equal protection */
+        uint64_t a = 0, n = p->vm.size / AOI_VM_PAGE;
+        while (a < n) {
+            uint8_t pr = p->vm.prot[a];
+            uint64_t b = a + 1, start = a * AOI_VM_PAGE;
+            char w[256];
+            if (!pr) { a++; continue; }
+            while (b < n && p->vm.prot[b] == pr) b++;
+            aoi_proc_where(p, start, w, sizeof w);
+            if (!strcmp(w, "?")) w[0] = 0; else *strrchr(w, '+') = 0;
+            fprintf(t, "%llx-%llx %c%c%cp 00000000 00:00 0 %s\n", (unsigned long long)start,
+                    (unsigned long long)(b * AOI_VM_PAGE), pr & 1 ? 'r' : '-', pr & 2 ? 'w' : '-', pr & 4 ? 'x' : '-', w);
+            a = b;
+        }
+    } else if (!strcmp(g, "/proc/meminfo")) {
+        fprintf(t, "MemTotal:        8000000 kB\nMemFree:         4000000 kB\nMemAvailable:    4000000 kB\n"
+                   "Buffers:               0 kB\nCached:                0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n");
+    } else if (!strcmp(g, "/proc/cpuinfo")) {
+        fprintf(t, "processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\nCPU implementer\t: 0x61\n"
+                   "CPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\nCPU revision\t: 0\n\n");
+    } else if (!strcmp(g, "/proc/sys/kernel/randomize_va_space")) {
+        fprintf(t, "2\n");
+    } else {
+        fclose(t);
+        return -1;
+    }
+    fflush(t);
+    fd = dup(fileno(t));
+    fclose(t);
+    if (fd >= 0) lseek(fd, 0, SEEK_SET);
+    return fd;
 }
 
 static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int prot, int flags,
@@ -604,6 +792,24 @@ static uint64_t sys_getdents64(struct aoi_proc *p, struct aoi_proc_fd *f, uint64
     return used;
 }
 
+/* logd emulation: liblog writes one packet per writev to /dev/socket/logdw:
+ * header { u8 log_id; u16 tid; u32 sec; u32 nsec } then, for text logs,
+ * u8 priority, tag\0, message. Printed as "P/tag: message". */
+static uint64_t logd_write(struct aoi_proc *p, const uint8_t *pkt, uint64_t n)
+{
+    static const char prio[] = "??VDIWEF";
+    const char *tag, *msg;
+    if (n < 12 || !p->log) return n;
+    if (pkt[0] == 2 || pkt[0] == 3 || pkt[0] == 6 || pkt[0] == 7) return n;   /* binary event buffers */
+    tag = (const char *)pkt + 12;
+    msg = memchr(tag, 0, (size_t)(n - 12)) ? tag + strlen(tag) + 1 : NULL;
+    if (!msg || msg >= (const char *)pkt + n) return n;
+    fprintf(p->log, "%c/%s: %.*s\n", pkt[11] < 8 ? prio[pkt[11]] : '?', tag,
+            (int)((const char *)pkt + n - msg), msg);
+    fflush(p->log);
+    return n;
+}
+
 uint64_t aoi_proc_syscall(struct aoi_cpu *c)
 {
     struct aoi_proc *p = c->host_ctx;
@@ -623,6 +829,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_write: case NR_pwrite64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_LOGD) {
+            uint8_t pkt[4096];
+            uint64_t n = a2 < sizeof pkt ? a2 : sizeof pkt;
+            r = get(p, a1, pkt, n) ? logd_write(p, pkt, n), a2 : err(L_EFAULT);
+            break;
+        }
         if (f->host <= 2) fflush(stdout);
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
         break;
@@ -630,6 +842,23 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_readv: case NR_writev: {
         uint64_t i, total = 0;
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_LOGD && nr == NR_writev) {          /* gather one log packet */
+            uint8_t pkt[4096];
+            uint64_t n = 0;
+            for (i = 0; i < a2 && i < 16; i++) {
+                uint8_t e[16];
+                uint64_t len;
+                if (!get(p, a1 + i * 16, e, 16)) break;
+                len = u64(e + 8);
+                if (n + len > sizeof pkt) len = sizeof pkt - n;
+                if (len && !get(p, u64(e), pkt + n, len)) break;
+                n += len; total += u64(e + 8);
+            }
+            logd_write(p, pkt, n);
+            r = total;
+            break;
+        }
+        if (f->kind != AOI_FD_FILE) { r = err(L_ENOTCONN); break; }
         r = 0;
         for (i = 0; i < a2; i++) {
             uint8_t e[16];
@@ -649,8 +878,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_openat: {
         int hfd, fdn;
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
-        to_host(p, g, h);
-        hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)a3);
+        if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
+            if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
+        } else {
+            to_host(p, g, h);
+            hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)a3);
+        }
         if (hfd < 0) { r = herr(); break; }
         if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
         r = (uint64_t)fdn;
@@ -774,6 +1007,29 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         }
         break;
     }
+    case NR_socket: {                                              /* AF_UNIX only: logd, or nothing */
+        int n, d;
+        if (a0 != 1) { r = err(L_EAFNOSUPPORT); break; }
+        if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+        if ((n = fd_new(p, d, "socket:[unix]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
+        p->fd[n].kind = AOI_FD_SOCKET;
+        r = (uint64_t)n;
+        break;
+    }
+    case NR_connect: {
+        char path[110];
+        uint8_t sa[110];
+        if (!(f = fd_get(p, a0)) || f->kind == AOI_FD_FILE) { r = err(L_ENOTSOCK); break; }
+        memset(sa, 0, sizeof sa);
+        if (a2 < 3 || !get(p, a1, sa, a2 < sizeof sa ? a2 : sizeof sa - 1)) { r = err(L_EFAULT); break; }
+        memcpy(path, sa + 2, sizeof path - 2); path[sizeof path - 3] = 0;
+        if (!strcmp(path, "/dev/socket/logdw")) { f->kind = AOI_FD_LOGD; r = 0; }
+        else r = err(L_ECONNREFUSED);                              /* no other daemons yet */
+        break;
+    }
+    case NR_membarrier:                                            /* one thread: every barrier is trivially done */
+        r = a0 == 0 ? (1 << 3 | 1 << 4) : 0;                       /* QUERY: PRIVATE_EXPEDITED (+REGISTER) */
+        break;
     case NR_getpgid: case NR_getsid: r = GUEST_PID; break;
     case NR_setpgid: r = 0; break;
     case NR_fchmod:
@@ -888,22 +1144,87 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_exit: case NR_exit_group:
         c->exit_code = (int)a0;
         c->stop = AOI_STOP_EXIT;
+        p->thread_exit = nr == NR_exit;                            /* exit ends only this thread */
         r = 0;
         break;
-    case NR_set_tid_address: case NR_gettid: case NR_getpid:
-        r = GUEST_PID;
+    case NR_set_tid_address:
+        p->th[p->cur].clear_tid = a0;
+        r = (uint64_t)p->th[p->cur].tid;
         break;
+    case NR_gettid: r = (uint64_t)p->th[p->cur].tid; break;
+    case NR_getpid: r = GUEST_PID; break;
+    case NR_clone: {                                               /* threads; fork is not done yet */
+        int i;
+        struct aoi_thread *t = NULL;
+        if (!(a0 & 0x100) || !(a0 & 0x10000)) { r = err(L_ENOSYS); break; }  /* need CLONE_VM | CLONE_THREAD */
+        for (i = 0; i < AOI_PROC_THREADS; i++) if (p->th[i].state == AOI_T_FREE) { t = &p->th[i]; break; }
+        if (!t) { r = err(L_EAGAIN); break; }
+        memset(t, 0, sizeof *t);
+        t->tid = p->next_tid++;
+        t->cpu = *c;
+        t->cpu.x[0] = 0;
+        t->cpu.pc = c->pc + 4;                                     /* the child returns from this svc */
+        if (a1) t->cpu.sp = a1;
+        if (a0 & 0x80000) t->cpu.tpidr = a3;                       /* CLONE_SETTLS */
+        t->cpu.excl_valid = 0;
+        t->cpu.stop = AOI_RUN;
+        if (a0 & 0x200000) t->clear_tid = a4;                      /* CLONE_CHILD_CLEARTID */
+        {
+            uint32_t tid32 = (uint32_t)t->tid;
+            if ((a0 & 0x100000) && !put(p, a2, &tid32, 4)) { r = err(L_EFAULT); break; }   /* PARENT_SETTID */
+            if ((a0 & 0x1000000) && !put(p, a4, &tid32, 4)) { r = err(L_EFAULT); break; }  /* CHILD_SETTID */
+        }
+        t->state = AOI_T_RUN;
+        r = (uint64_t)t->tid;
+        break;
+    }
     case NR_getppid: r = 1; break;
     case NR_getuid: case NR_geteuid: case NR_getgid: case NR_getegid: r = 0; break;
     case NR_umask: r = 022; break;
     case NR_set_robust_list: r = 0; break;
-    case NR_futex: {                                               /* one thread: never blocks */
-        int op = (int)a1 & 127;
+    case NR_futex: {
+        int op = (int)a1 & 127;                                    /* minus PRIVATE / CLOCK_REALTIME */
+        uint64_t addr = a0 & 0x00ffffffffffffffULL;
+        uint8_t w[4];
         if (op == 0 || op == 9) {                                  /* WAIT / WAIT_BITSET */
-            uint8_t w[4];
+            struct aoi_thread *t = &p->th[p->cur];
+            int64_t deadline = 0;
             if (!get(p, a0, w, 4)) { r = err(L_EFAULT); break; }
-            r = u32(w) != (uint32_t)a2 ? err(L_EAGAIN) : err(L_ETIMEDOUT);
-        } else r = 0;                                              /* WAKE: nobody waits */
+            if (u32(w) != (uint32_t)a2) { r = err(L_EAGAIN); break; }
+            if (op == 9 && !(uint32_t)a5) { r = err(L_EINVAL); break; }
+            if (a3) {
+                uint8_t ts[16];
+                int64_t v;
+                if (!get(p, a3, ts, 16)) { r = err(L_EFAULT); break; }
+                v = (int64_t)u64(ts) * 1000000000 + (int64_t)u64(ts + 8);
+                if (op == 0) deadline = now_ns() + v;              /* relative */
+                else if (a1 & 256) {                               /* absolute, CLOCK_REALTIME */
+                    struct timespec rt;
+                    clock_gettime(CLOCK_REALTIME, &rt);
+                    deadline = now_ns() + v - ((int64_t)rt.tv_sec * 1000000000 + rt.tv_nsec);
+                } else deadline = v;                               /* absolute, CLOCK_MONOTONIC */
+                if (deadline <= 0) deadline = 1;
+            }
+            t->state = AOI_T_FUTEX;
+            t->futex_addr = addr;
+            t->futex_bitset = op == 9 ? (uint32_t)a5 : ~0u;
+            t->deadline = deadline;
+            c->stop = AOI_STOP_YIELD;
+            r = 0;                                                 /* or ETIMEDOUT, set by the scheduler */
+        } else if (op == 1 || op == 10) {                          /* WAKE / WAKE_BITSET */
+            r = (uint64_t)futex_wake(p, addr, (int)(a2 > 0x7fffffff ? 0x7fffffff : a2), op == 10 ? (uint32_t)a5 : ~0u);
+        } else if (op == 3 || op == 4) {                           /* REQUEUE / CMP_REQUEUE */
+            int i, woken, moved = 0;
+            uint64_t addr2 = a4 & 0x00ffffffffffffffULL;
+            if (op == 4) {
+                if (!get(p, a0, w, 4)) { r = err(L_EFAULT); break; }
+                if (u32(w) != (uint32_t)a5) { r = err(L_EAGAIN); break; }
+            }
+            woken = futex_wake(p, addr, (int)a2, ~0u);
+            for (i = 0; i < AOI_PROC_THREADS && (uint64_t)moved < a3; i++)
+                if (p->th[i].state == AOI_T_FUTEX && p->th[i].futex_addr == addr) { p->th[i].futex_addr = addr2; moved++; }
+            r = (uint64_t)(woken + moved);
+        } else r = err(L_ENOSYS);
         break;
     }
     case NR_rt_sigaction:
@@ -931,7 +1252,30 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case NR_kill: case NR_tkill: case NR_tgkill: {
         uint64_t sig = nr == NR_tgkill ? a2 : a1;
+        uint64_t target = nr == NR_tgkill ? a1 : a0;
         if (!sig) { r = 0; break; }
+        if (nr != NR_kill && target != (uint64_t)p->th[p->cur].tid) {   /* to another thread */
+            int i;
+            for (i = 0; i < AOI_PROC_THREADS; i++) {
+                struct aoi_thread *t = &p->th[i];
+                if (t->state == AOI_T_SLEEP && t->tid == (int)target && (t->sigwait_mask >> (sig - 1) & 1)) {
+                    uint8_t info[128];                             /* it sits in sigwait for this signal */
+                    memset(info, 0, sizeof info);
+                    info[0] = (uint8_t)sig;
+                    if (t->sigwait_info) put(p, t->sigwait_info, info, sizeof info);
+                    t->sigwait_mask = 0;
+                    t->state = AOI_T_RUN;
+                    t->cpu.x[0] = sig;
+                    r = 0;
+                    break;
+                }
+            }
+            if (i < AOI_PROC_THREADS) break;
+            /* otherwise: asynchronous signals are not delivered yet */
+            if (p->trace) fprintf(p->trace, "[sys] signal %llu to thread %llu dropped\n", (unsigned long long)sig, (unsigned long long)target);
+            r = 0;
+            break;
+        }
         fprintf(stderr, "[aoiproc] guest raised signal %llu\n", (unsigned long long)sig);
         c->exit_code = 128 + (int)sig;
         c->stop = AOI_STOP_EXIT;
@@ -972,8 +1316,20 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         struct timespec ts;
         if (!get(p, nr == NR_nanosleep ? a0 : a2, s, 16)) { r = err(L_EFAULT); break; }
         ts.tv_sec = (time_t)u64(s); ts.tv_nsec = (long)u64(s + 8);
-        if (nr == NR_clock_nanosleep && (a1 & 1)) { r = 0; break; } /* TIMER_ABSTIME: not slept */
-        nanosleep(&ts, NULL);
+        {
+            struct aoi_thread *t = &p->th[p->cur];
+            int64_t v = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+            if (nr == NR_clock_nanosleep && (a1 & 1)) {            /* TIMER_ABSTIME */
+                if (a0 == 0) {
+                    struct timespec rt;
+                    clock_gettime(CLOCK_REALTIME, &rt);
+                    v -= (int64_t)rt.tv_sec * 1000000000 + rt.tv_nsec;
+                } else v -= now_ns();
+            }
+            t->state = AOI_T_SLEEP;
+            t->deadline = now_ns() + (v > 0 ? v : 0) + 1;
+            c->stop = AOI_STOP_YIELD;                              /* others run meanwhile */
+        }
         r = 0;
         break;
     }
@@ -997,7 +1353,26 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = put(p, a1, sf, 120) ? 0 : err(L_EFAULT);
         break;
     }
-    case NR_sched_yield: r = 0; break;
+    case NR_rt_sigtimedwait: {                                     /* signals are not delivered: wait it out */
+        struct aoi_thread *t = &p->th[p->cur];
+        uint8_t m[8];
+        t->deadline = 0;
+        if (!get(p, a0, m, 8)) { r = err(L_EFAULT); break; }
+        t->sigwait_mask = u64(m);
+        t->sigwait_info = a1;
+        if (a2) {
+            uint8_t ts[16];
+            if (!get(p, a2, ts, 16)) { r = err(L_EFAULT); break; }
+            t->deadline = now_ns() + (int64_t)u64(ts) * 1000000000 + (int64_t)u64(ts + 8) + 1;
+        }
+        t->state = AOI_T_SLEEP;                                    /* deadline 0: until the process ends */
+        c->stop = AOI_STOP_YIELD;
+        r = err(L_EAGAIN);
+        break;
+    }
+    case NR_sched_yield: c->stop = AOI_STOP_YIELD; r = 0; break;
+    case NR_setpriority: r = 0; break;                              /* accepted; one scheduler for all */
+    case NR_getpriority: r = 20; break;                             /* nice 0, in the kernel's 20-nice form */
     case NR_sched_getscheduler: r = 0; break;                       /* SCHED_OTHER */
     case NR_sched_getparam: { uint32_t prio = 0; r = put(p, a1, &prio, 4) ? 0 : err(L_EFAULT); break; }
     case NR_getrlimit: case NR_prlimit64: {
