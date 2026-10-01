@@ -79,11 +79,11 @@ difftest: build/libstep1.so
 
 # Android programs with Android's own linker64 (needs a root from tools/android-root.sh).
 build/aoiproc: tools/aoiproc.c $(CORE) core/*.h | build
-	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) -lm
+	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) -lm -lpthread
 
 # Debug knobs in the hot paths (AOI_WATCH, AOI_PCRING): off in every other build.
 build/aoiproc-debug: tools/aoiproc.c $(CORE) core/*.h | build
-	$(CC) $(CFLAGS) -DAOI_DEBUG -o $@ tools/aoiproc.c $(CORE) -lm
+	$(CC) $(CFLAGS) -DAOI_DEBUG -o $@ tools/aoiproc.c $(CORE) -lm -lpthread
 
 android-test: build/aoiproc build/mapper.aoi.so
 	sh tests/run_android.sh

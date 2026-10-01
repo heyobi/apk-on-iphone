@@ -19,10 +19,40 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <sys/resource.h>
 
 /* Resident memory at its peak: what a phone would have to hold (chunks also count
  * file mappings that were never touched). */
+/* AOI_TAPS="x,y;x,y;...": after the first frame, taps in screen pixels 4 s apart
+ * (aoi_proc_touch from another thread, as the iOS view sends them). */
+static void *taps(void *arg)
+{
+    const char *s = getenv("AOI_TAPS");
+    float x, y;
+    int n;
+    while (sscanf(s, "%f,%f%n", &x, &y, &n) == 2) {
+        sleep(4);
+        fprintf(stderr, "[aoiproc] tap %.0f,%.0f\n", x, y);
+        aoi_proc_touch(arg, 0, x, y);
+        aoi_proc_touch(arg, 1, x, y);
+        s += n;
+        if (*s == ';') s++;
+    }
+    return NULL;
+}
+
+static void first_frame(void *ctx, const uint8_t *px, uint32_t w, uint32_t h)
+{
+    static int started;
+    pthread_t t;
+    (void)px; (void)w; (void)h;
+    if (started++) return;
+    pthread_create(&t, NULL, taps, ctx);
+    pthread_detach(t);
+}
+
 static long peak_rss_mib(void)
 {
     struct rusage ru;
@@ -89,6 +119,7 @@ int main(int argc, char **argv)
 #endif
     if (profile && (proc.samples = calloc(1 << 20, sizeof *proc.samples))) proc.maxsamples = 1 << 20;
     proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
+    if (getenv("AOI_TAPS")) { proc.frame = first_frame; proc.frame_ctx = &proc; }
     clock_gettime(CLOCK_MONOTONIC, &t0);
     st = aoi_proc_run(&proc, getenv("AOI_STOP_AT") ? strtoull(getenv("AOI_STOP_AT"), NULL, 0) : 0);
     clock_gettime(CLOCK_MONOTONIC, &t1);
