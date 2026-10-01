@@ -69,8 +69,13 @@ final class Input {
         }
         long now = SystemClock.uptimeMillis();
         if (action == 0) downTime = now;
-        MotionEvent ev = MotionEvent.obtain(downTime, now, action, x, y, 0);
-        ev.setSource(SOURCE_TOUCHSCREEN);
+        MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
+        pp.id = 0;
+        pp.toolType = 1;                                           /* TOOL_TYPE_FINGER: Compose's Touch */
+        MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
+        pc.x = x; pc.y = y; pc.pressure = 1f; pc.size = 0.05f;
+        MotionEvent ev = MotionEvent.obtain(downTime, now, action, 1, new MotionEvent.PointerProperties[] { pp },
+                new MotionEvent.PointerCoords[] { pc }, 0, 0, 1f, 1f, 0, 0, SOURCE_TOUCHSCREEN, 0);
         sender.sendInputEvent(++seq, ev);
         ev.recycle();
     }
