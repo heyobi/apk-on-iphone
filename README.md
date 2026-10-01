@@ -31,7 +31,10 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
   links it (34 libc imports bound to a small host shim in `core/bionic.c`), and computes a
   factorial with GMP's own code. `__gmpz_init` and `__gmpz_fac_ui` run — the factorial itself
   executes, millions of real GMP instructions through the interpreter. The final decimal
-  formatting (`__gmpz_get_str`) still hits a stack-pointer bug; see `docs/STATUS.md`.
+  formatting (`__gmpz_get_str`) faulted; the interpreter bugs behind it are fixed (see
+  `docs/STATUS.md`) and the demo needs a re-run.
+- **`difftest`** (`make test` / `make difftest`): checks the interpreter instruction by
+  instruction against Unicorn (QEMU's A64 core) with random encodings and state.
 - **`aoirun`** (host tool, `make test`): a no-JIT AArch64 interpreter + a small Linux/aarch64
   syscall layer + an ELF loader. It runs a real static `aarch64-linux` ELF and produces correct
   output and exit code, at both `-O0` (loops and branches actually execute) and `-O1`. This is

@@ -12,44 +12,52 @@ them, and runs their code on any host — no iPhone, no JIT.
   small host shim, and computes **50!** with GMP's own code:
   `__gmpz_init` and `__gmpz_fac_ui` complete (the factorial itself runs — millions
   of real GMP instructions through our CPU). Only the final decimal formatting
-  (`__gmpz_get_str`) still hits a bug (below).
+  (`__gmpz_get_str`) hit a fault, very likely caused by the decode bugs fixed below
+  (not yet re-run: see "Start here").
 
 This is the core proof: a widely-used Android native library executes unmodified
 in our interpreter.
 
-## The open bug (start here next session)
+## The interpreter is now checked against a reference CPU
 
-`__gmpz_get_str` faults with a store at `pc=0x40042798`
-(`strb w12, [x25, #-0x1]!`) writing to `stack_base - 1`. The fault address is
-always exactly one below the mapped stack, at any stack size, which means **SP
-drifts down to the bottom of the stack** over the many internal GMP calls — a
-stack-pointer tracking bug in the interpreter, not a missing instruction.
+`tests/difftest.py` runs random encodings from every instruction class the
+interpreter claims, from random register and memory state, through both
+`core/cpu.c` and Unicorn (QEMU's A64 core), and compares all registers, flags,
+the next pc and memory. `make test` runs a short pass (it prints SKIP without
+`pip install unicorn`); `make difftest PYTHON=...` runs 5000 per class.
 
-Most likely suspects, in order:
-1. LDP/STP **pre/post-index writeback when Rn = SP** (`core/cpu.c`, the stp/ldp
-   branch) — verify the writeback updates `cpu->sp`, not `x[31]`, and that the
-   imm7 offset is scaled and sign-extended.
-2. ADD/SUB **extended-register** form with SP operand is **not implemented** at
-   all (only immediate and shifted-register are). GMP's `sub sp, sp, xN` /
-   `add sp, sp, xN` would silently corrupt or undef. Add the extended-register
-   add/sub (opcode `0x0b200000` / `0x4b200000`, with the `option`/`imm3` extend).
-3. Confirm every place that computes an address from Rn=31 uses `cpu->sp`.
+Its first run found real decode bugs that explain the old `__gmpz_get_str`
+fault (an SP/pointer running off the stack) far better than an SP-writeback
+bug. All of them are fixed now, and ~130k random instructions match:
 
-A good way to catch it: add an optional SP trace to `aoirun`/`gmpdemo` that logs
-each write to SP with the pc, and watch where SP stops being restored.
+- `smulh`/`umulh` were **swapped**. GMP's multiply and divide-by-invariant code
+  depends on `umulh`, so every big-number result after the first carry was wrong.
+- `ubfm`/`sbfm`/`bfm` were wrong whenever imms < immr: `lsl #n`, `ubfiz`, `sbfiz`
+  and `bfi` all produced garbage. They are rewritten from the ARM ARM pseudocode
+  (wmask/tmask).
+- `csinv`/`csneg` (and `cinv`, `cneg`, `csetm`) computed `csel`/`csinc`.
+- `ret xN` with N = 0 returned to x30.
+- `[Xn, Wm, sxtw]` was treated as `uxtw`.
+- 32-bit `ands`/`bics`/`tst` set N from bit 63, so it was always clear.
+- `ldrsb`/`ldrsh` into W did not sign-extend, `ldpsw` did not sign-extend, `prfm`
+  wrote a register or faulted, and the 64-bit `rev32` reversed all 8 bytes.
+- SIMD&FP loads and stores (`ldr q0`, `str d1`, ...) silently ran as integer
+  accesses. They now stop with AOI_STOP_UNDEF until the V register file exists.
+- Newly implemented: add/sub **extended register** (`add sp, sp, x8` etc.),
+  `ccmp`/`ccmn`, `extr`/`ror`, `ldr` literal, `rev16`. Unallocated encodings
+  in the implemented classes are now rejected rather than executed.
 
-## Instruction coverage in the interpreter (core/cpu.c)
+## Start here next session
 
-Implemented: mov(z/n/k), add/sub (imm, shifted-reg), logical (imm, shifted-reg),
-adc/sbc, madd/msub/smaddl/umaddl/smulh/umulh, udiv/sdiv/lslv/lsrv/asrv/rorv,
-sbfm/bfm/ubfm, rbit/rev/clz/cls, csel/csinc/csinv/csneg, branches (b/bl/br/blr/ret/
-b.cond/cbz/cbnz/tbz/tbnz), adr/adrp, ldr/str (unsigned, unscaled, pre/post,
-register-offset), ldp/stp, svc, mrs/msr tpidr_el0, nop/hint.
-
-**Not yet implemented** (add as real code needs them): the whole **NEON/SIMD** and
-**floating-point** register file (libqalculate's math and any memcpy that uses q
-registers will need it), add/sub extended-register (see bug #2), atomics
-(ldxr/stxr, the LSE ldadd/swp — bionic locks use them), and load/store of SIMD.
+1. **Re-run `gmpdemo` on the Qalculate `libgmp.so`.** The APK was a chat upload
+   and is not in the repo (F-Droid downloads are blocked from the container).
+   Expect `50!` to print correctly now; if it still fails, the fault is new
+   information, not the old bug.
+2. Extend `difftest.py` CLASSES as each new class is implemented. Any class the
+   interpreter runs must show `WRONG 0`.
+3. Then roadmap item 2: the SIMD&FP register file (start with q/d/s loads and
+   stores, `fmov`, `dup`/`movi`, since compilers use q registers for memcpy-like
+   copies), and atomics (`ldxr`/`stxr`, LSE `ldadd`/`swp`/`cas`).
 
 ## Architecture recap (what each file is)
 

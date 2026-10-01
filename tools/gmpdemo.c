@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     void *so;
     unsigned long n = argc > 2 ? strtoul(argv[2], NULL, 10) : 50;
     uint64_t z, str, strbuf, a[3];
-    uint64_t f_init, f_fac, f_get, f_size;
+    uint64_t f_init, f_fac, f_get;
     uint8_t *p;
 
     if (argc < 2) { fprintf(stderr, "usage: %s libgmp.so [n]\n", argv[0]); return 2; }
@@ -56,7 +56,6 @@ int main(int argc, char **argv)
     f_init = aoi_dl_sym(&dl, "__gmpz_init");
     f_fac  = aoi_dl_sym(&dl, "__gmpz_fac_ui");
     f_get  = aoi_dl_sym(&dl, "__gmpz_get_str");
-    f_size = aoi_dl_sym(&dl, "__gmpz_sizeinbase");
     if (!f_init || !f_fac || !f_get) { fprintf(stderr, "GMP symbols not found\n"); return 1; }
     fprintf(stderr, "[gmpdemo] libgmp.so at 0x%" PRIx64 ", %u imports bound\n", dl.lib[0].base, dl.nslots - 1);
 
