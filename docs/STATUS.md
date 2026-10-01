@@ -370,6 +370,14 @@ Keys repeated while held ("9855555999…"): an interpreted tap lasts longer than
 400 ms long-press timeout in the app's time; v0.13.50 sets long_press_timeout to 5 s
 (core settings in bindApplication). 0.14 hides iOS's status bar over the app's frames.
 
+**Where a frame's time goes** (aoiproc -p from the first frame on, six taps; ~6 s per
+frame on the phone): libart 63 %, libhwui 28 %, libc 5 %, the rest small. The app's
+dex code (Compose, Kotlin) is interpreted by ART inside our interpreter; the
+framework is AOT-compiled in the boot image, the APK is not. Next: dex2oat the APK
+(`speed`) once at install, so its code runs as compiled arm64. dex2oat works in the
+interpreter now (MAP_SHARED writes reach the vdex/odex; `verify` takes 18 s / 1 G
+instructions on the host).
+
 **First run on the iPhone (v0.13.48, iPhone 16 Pro):** the app's process starts, binds
 the application and runs its content providers in 13 s (1.04 G instructions), 588 MB
 peak; then createDisplayEventConnection fails: Darwin has no SOCK_SEQPACKET. Message
