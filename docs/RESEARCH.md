@@ -98,6 +98,19 @@ So the iPhone design is: **one iOS process = the original app process (AIM ADR 0
 + native services as in-process threads + binder in-process.** No zygote, no SystemServer,
 no SurfaceFlinger boot. ATL's GPL `api-impl` is not needed on this route.
 
+## Route (decided 2026-10-01)
+
+Native execution via StikDebug was tried on the target phone (v0.1–0.3 of the test
+app: the iOS 27 handshake worked, executing did not) and **dropped by decision**: it
+needs a debugger at every launch and rules out the App Store. The route is:
+
+1. **Interpreter** (now): any iPhone, no special permissions. Measured on an iPhone 16 Pro
+   (iOS 27.0.1): ~85 M guest instructions/s.
+2. **WebKit JIT** (later, for speed): translate guest code to WebAssembly and let
+   WKWebView compile it — the only JIT iOS grants to ordinary apps.
+
+Everything below that assumes native JIT is superseded by this.
+
 ## What this means for the plan
 
 1. **Execution model per platform:** interpreter everywhere (works on any iOS, slow);

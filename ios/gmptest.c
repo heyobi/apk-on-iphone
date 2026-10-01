@@ -1,12 +1,9 @@
-#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include "gmptest.h"
-#include "jitmem.h"
 #include "../core/bionic.h"
 #include "../core/cpu.h"
 #include "../core/dl.h"
-#include "../core/native.h"
 
-#include <dlfcn.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -72,102 +69,10 @@ char *aoi_gmp_interp(const void *so, size_t size, unsigned long n, double *secs,
     while ((p = aoi_mem_ptr(&dl.mem, s + len, 1)) && *p) len++;
     if (!(out = malloc(len + 1)) || !(p = aoi_mem_ptr(&dl.mem, s, len + 1))) { free(out); return NULL; }
     memcpy(out, p, len + 1);
-    LOG("interp: %" PRIu64 " guest instructions", cpu.steps);
+    LOG("interp: %" PRIu64 " guest instructions, %.1f M/s", cpu.steps, *secs > 0 ? (double)cpu.steps / *secs / 1e6 : 0.0);
     return out;
 fail:
     LOG("interp: %s", why(&cpu, st, why_buf, sizeof why_buf));
     return NULL;
 }
 
-/* ---------------- native ---------------- */
-
-typedef int (*probe_fn)(void);
-
-int aoi_jit_probe(int strategy, aoi_log_fn log, void *ctx)
-{
-    static const uint32_t code[2] = { 0x52800540u, 0xd65f03c0u };   /* mov w0, #42; ret */
-    const size_t page = 0x4000;
-    struct aoi_jit_mem m;
-    const char *err;
-    int r;
-    if ((err = aoi_jit_reserve(strategy, 2 * page, page, &m))) { LOG("  %s: %s", aoi_jit_name(strategy), err); return 0; }
-    memcpy(m.buf, code, sizeof code);
-    if ((err = aoi_jit_seal(&m, page))) {
-        LOG("  %s: %s", aoi_jit_name(strategy), err);
-        aoi_jit_release(&m);
-        return 0;
-    }
-    r = ((probe_fn)(uintptr_t)m.load)();
-    aoi_jit_release(&m);
-    LOG("  %s: returned %d %s", aoi_jit_name(strategy), r, r == 42 ? "(works)" : "(WRONG)");
-    return r == 42;
-}
-
-/* bionic -> host libc. Same names and calling convention for these; the few
- * that differ are listed. Variadic functions differ on Darwin (stack-passed
- * varargs) and va_list differs too, so those trap instead of corrupting. */
-static void unsupported_import(void) { fprintf(stderr, "apk-on-iphone: unsupported variadic import called\n"); abort(); }
-static int no_atfork(void) { return 0; }
-
-static void *resolve(const char *name, void *ctx)
-{
-    static const char *const variadic[] = { "printf", "fprintf", "snprintf", "sprintf", "sscanf", "fscanf",
-                                            "vfprintf", "vsnprintf", "vsprintf", "vprintf", NULL };
-    int i;
-    (void)ctx;
-    for (i = 0; variadic[i]; i++) if (!strcmp(name, variadic[i])) return (void *)(uintptr_t)unsupported_import;
-    if (!strcmp(name, "__register_atfork")) return (void *)(uintptr_t)no_atfork;
-#ifdef __APPLE__
-    { extern FILE *__stdinp, *__stdoutp, *__stderrp;
-      if (!strcmp(name, "stdin")) return &__stdinp;
-      if (!strcmp(name, "stdout")) return &__stdoutp;
-      if (!strcmp(name, "stderr")) return &__stderrp; }
-#else
-    if (!strcmp(name, "stdin")) return &stdin;
-    if (!strcmp(name, "stdout")) return &stdout;
-    if (!strcmp(name, "stderr")) return &stderr;
-#endif
-    return dlsym(RTLD_DEFAULT, name);
-}
-
-struct mpz { int alloc, size; void *d; };
-typedef void (*mpz_init_fn)(struct mpz *);
-typedef void (*mpz_fac_fn)(struct mpz *, unsigned long);
-typedef char *(*mpz_get_str_fn)(char *, int, const struct mpz *);
-
-char *aoi_gmp_native(const void *so, size_t size, int strategy, unsigned long n, int execute,
-                     double *secs, aoi_log_fn log, void *ctx)
-{
-    struct aoi_native_layout lay;
-    struct aoi_jit_mem m;
-    const char *err, *missing = NULL;
-    void *fi, *ff, *fg;
-    char *s, *out;
-    struct mpz z;
-    double t0;
-
-    if ((err = aoi_native_layout(so, size, &lay))) { LOG("native: %s", err); return NULL; }
-    if (!lay.text_ok) { LOG("native: code and data share a page; cannot protect them separately"); return NULL; }
-    if ((err = aoi_jit_reserve(strategy, lay.span, lay.text_end, &m))) { LOG("native: %s", err); return NULL; }
-    if ((err = aoi_native_link(so, size, m.buf, m.load, resolve, NULL, &missing))) {
-        LOG("native: %s%s%s", err, missing ? ": " : "", missing ? missing : "");
-        aoi_jit_release(&m);
-        return NULL;
-    }
-    fi = aoi_native_sym(so, size, m.load, "__gmpz_init");
-    ff = aoi_native_sym(so, size, m.load, "__gmpz_fac_ui");
-    fg = aoi_native_sym(so, size, m.load, "__gmpz_get_str");
-    LOG("native: libgmp.so linked for %p (%" PRIu64 " KB, code %" PRIu64 " KB)", (void *)m.load, lay.span >> 10, lay.text_end >> 10);
-    if (!fi || !ff || !fg) { LOG("native: GMP symbols not found"); aoi_jit_release(&m); return NULL; }
-    if (!execute) { aoi_jit_release(&m); return NULL; }
-    if ((err = aoi_jit_seal(&m, lay.text_end))) { LOG("native: %s", err); aoi_jit_release(&m); return NULL; }
-    t0 = now();
-    ((mpz_init_fn)(uintptr_t)fi)(&z);
-    ((mpz_fac_fn)(uintptr_t)ff)(&z, n);
-    s = ((mpz_get_str_fn)(uintptr_t)fg)(NULL, 10, &z);
-    *secs = now() - t0;
-    out = s ? strdup(s) : NULL;
-    free(s);          /* GMP allocated it with the host malloc we bound */
-    /* the image stays mapped: z's limbs were allocated through it; this is a test */
-    return out;
-}

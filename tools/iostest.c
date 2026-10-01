@@ -1,8 +1,6 @@
-/* iostest: run the iOS app's test sequence on the host (no native execution
- * off iOS: the native path only loads and links). usage: iostest app.apk [n] */
+/* iostest: run the iOS app's test sequence on the host. usage: iostest app.apk [n] */
 #include "../core/apk.h"
 #include "../ios/gmptest.h"
-#include "../ios/jitmem.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +26,5 @@ int main(int argc, char **argv)
     if (!(so = aoi_apk_extract(apk, (size_t)n, "lib/arm64-v8a/libgmp.so", &sz, &err))) { fprintf(stderr, "%s\n", err); return 1; }
     printf("libgmp.so: %zu bytes from the APK\n", sz);
     if ((r = aoi_gmp_interp(so, sz, fac, &t, out, NULL))) printf("interp: %lu! has %zu digits, %.3f s\n", fac, strlen(r), t);
-    aoi_gmp_native(so, sz, AOI_JIT_MPROTECT, fac, 0, &t, out, NULL);
     return r ? 0 : 1;
 }
