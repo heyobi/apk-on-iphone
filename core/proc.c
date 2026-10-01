@@ -899,7 +899,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_pipe2 = 59, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_getcwd = 17, NR_pipe2 = 59, NR_mincore = 232, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -1511,6 +1511,18 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         aoi_vm_protect(&p->vm, na, a2, (int)prot0);
         aoi_vm_unmap(&p->vm, a0, a1);
         r = na;
+        break;
+    }
+    case NR_mincore: {                                             /* every mapped page counts as resident */
+        uint64_t q, e = a0 + up(a1, PAGE);
+        uint8_t v[256];
+        if (a0 % PAGE) { r = err(L_EINVAL); break; }
+        if (!mapped(p, a0, a1 ? a1 : 1)) { r = err(L_ENOMEM); break; }
+        for (q = a0, r = 0; q < e; q += sizeof v * PAGE) {
+            uint64_t k, n = (e - q) / PAGE < sizeof v ? (e - q) / PAGE : sizeof v;
+            for (k = 0; k < n; k++) v[k] = !(p->vm.prot[q / PAGE + k] & AOI_PROT_MISSING);
+            if (!put(p, a2 + (q - a0) / PAGE, v, n)) { r = err(L_EFAULT); break; }
+        }
         break;
     }
     case NR_madvise:

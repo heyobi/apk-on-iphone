@@ -202,9 +202,11 @@ sigaction a guest installs.
 hello in **1.07 s** (85 M instructions, 80 M/s; 1.14 s on 0.9). App 0.11 adds an ART GC
 step (`gc.dex`: 20 MB of garbage, `Runtime.gc()`, CC GC) and logs the process's
 phys_footprint now and at its peak after every Android run. **On the phone (0.11):**
-toybox/mksh 27-29 MB, ART hello 1.06 s with a **121 MB peak** (limit 3540 MB). The GC
-step did not run: the workflow generated the dex files inside its cached root step, so a
-restored root lacked gc.dex; 0.12 generates them on every build.
+toybox/mksh 27-29 MB, ART hello 1.06 s with a **121 MB peak** (limit 3540 MB). **App 0.12:**
+the ART GC step runs on the phone: 20 MB of garbage, CC GC (background + explicit),
+**1.12 s, 130 MB peak footprint**. (0.11 lacked gc.dex: the workflow generated the dex
+files inside its cached root step; now they get their own step.) Its one warning,
+`mincore` ENOSYS, is gone: mapped pages report resident, missing ones not.
 
 **Toward the app process: `app_process64` (frameworks/base/cmds/app_process).** It is
 how Android runs framework-using Java commands (`am`, `pm`): AndroidRuntime starts ART
