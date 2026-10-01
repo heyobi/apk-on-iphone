@@ -90,6 +90,10 @@ struct aoi_proc {
     void (*frame)(void *ctx, const uint8_t *pixels, uint32_t width, uint32_t height);
     void *frame_ctx;
     int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
+    /* writable MAP_SHARED file mappings: their pages go back to the file (a dup of
+     * the host fd) on msync, munmap and exit; the guest's view is a copy */
+    struct { uint64_t addr, len, off; int fd; } shm[32];
+    int nshm;
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

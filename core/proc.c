@@ -348,6 +348,7 @@ static void lx_stat(const struct stat *st, uint8_t *o)
 }
 
 static void note_map(struct aoi_proc *p, uint64_t start, uint64_t len, uint64_t off, const char *path);
+static void shm_sync(struct aoi_proc *p, uint64_t a, uint64_t len, int drop);
 
 /* ---------- ELF loading (execve) ---------- */
 
@@ -548,6 +549,7 @@ void aoi_proc_free(struct aoi_proc *p)
     int i;
     aoi_binder_free(p);
     if (p->input_w > 0) { close(p->input_w); p->input_w = 0; }
+    shm_sync(p, 0, ~0ULL >> 1, 1);                                 /* shared file mappings reach their files */
     for (i = 3; i < AOI_PROC_FDS; i++)
         if (p->fd[i].used) {
             if (p->fd[i].dir) closedir(p->fd[i].dir); else close(p->fd[i].host);
@@ -901,10 +903,11 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         if (st == AOI_STOP_EXIT && p->thread_exit) {
             p->thread_exit = 0;
             thread_end(p);
-            if (!live_threads(p)) return AOI_STOP_EXIT;
+            if (!live_threads(p)) { shm_sync(p, 0, ~0ULL >> 1, 1); return AOI_STOP_EXIT; }
         } else if (st == AOI_RUN) {
             if (max_steps && p->cpu.steps >= max_steps) return AOI_RUN;
         } else if (st != AOI_STOP_YIELD) {
+            if (st == AOI_STOP_EXIT) shm_sync(p, 0, ~0ULL >> 1, 1);   /* exit_group: files get their pages */
             return st;                                             /* exit_group, fault, undef */
         }
         p->cpu.stop = AOI_RUN;
@@ -920,7 +923,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 
 enum {
     NR_getcwd = 17, NR_pipe2 = 59, NR_eventfd2 = 19, NR_epoll_create1 = 20, NR_epoll_ctl = 21,
-    NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_socketpair = 199, NR_connect = 203, NR_sendto = 206, NR_recvfrom = 207,
+    NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_msync = 227, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_socketpair = 199, NR_connect = 203, NR_sendto = 206, NR_recvfrom = 207,
     NR_setsockopt = 208, NR_getsockopt = 209, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
@@ -986,6 +989,33 @@ void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y)
     if (w <= 0) return;
     rec[0] = action; memcpy(&rec[1], &x, 4); memcpy(&rec[2], &y, 4); rec[3] = 0;
     if (write(w, rec, sizeof rec) != (ssize_t)sizeof rec) {}       /* a full pipe drops it */
+}
+
+/* Writes back the shared file mappings that overlap [a, a+len); drop: forget the ones
+ * that range covers (munmap). */
+static void shm_sync(struct aoi_proc *p, uint64_t a, uint64_t len, int drop)
+{
+    int i, j;
+    static uint8_t buf[65536];
+    for (i = 0; i < p->nshm; i++) {
+        uint64_t s = p->shm[i].addr, e = s + p->shm[i].len, lo = a > s ? a : s, hi = a + len < e ? a + len : e, x;
+        struct stat st;
+        if (lo >= hi) continue;
+        if (!fstat(p->shm[i].fd, &st) && (uint64_t)st.st_size < p->shm[i].off + (hi - s))
+            hi = (uint64_t)st.st_size > p->shm[i].off ? s + ((uint64_t)st.st_size - p->shm[i].off) : s;
+        for (x = lo; x < hi; ) {
+            uint64_t n = hi - x < sizeof buf ? hi - x : sizeof buf;
+            if (!aoi_vm_read(&p->vm, x, buf, n, 0) ||
+                pwrite(p->shm[i].fd, buf, n, (off_t)(p->shm[i].off + (x - s))) != (ssize_t)n) break;
+            x += n;
+        }
+    }
+    if (!drop) return;
+    for (i = j = 0; i < p->nshm; i++) {
+        if (a <= p->shm[i].addr && p->shm[i].addr + p->shm[i].len <= a + len) { close(p->shm[i].fd); continue; }
+        p->shm[j++] = p->shm[i];
+    }
+    p->nshm = j;
 }
 
 uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name)
@@ -1112,6 +1142,14 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
         int e = fstat(f->host, &st) ? -errno : aoi_vm_map_file(&p->vm, a, len, f->host, off, (uint64_t)st.st_size);
         if (e < 0) { aoi_vm_unmap(&p->vm, a, len); errno = -e; return herr(); }
         note_map(p, a, len, off, f->path);
+        if ((flags & 3) == 1 && (prot & 2) && p->nshm < (int)(sizeof p->shm / sizeof p->shm[0])) {   /* MAP_SHARED, writable */
+            int d = dup(f->host);
+            if (d >= 0) {
+                p->shm[p->nshm].addr = a; p->shm[p->nshm].len = up(len, PAGE);
+                p->shm[p->nshm].off = off; p->shm[p->nshm].fd = d;
+                p->nshm++;
+            }
+        }
     }
     aoi_vm_protect(&p->vm, a, len, prot & 7);
     return a;
@@ -1798,7 +1836,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = sys_mmap(p, a0, a1, (int)a2, (int)a3, sx32(a4), a5);
         break;
     case NR_munmap:
+        if (p->nshm) shm_sync(p, a0, up(a1, PAGE), 1);
         r = (uint64_t)(int64_t)aoi_vm_unmap(&p->vm, a0, a1);
+        break;
+    case NR_msync:
+        shm_sync(p, a0, up(a1, PAGE), 0);
+        r = 0;
         break;
     case NR_mprotect:
         r = (uint64_t)(int64_t)aoi_vm_protect(&p->vm, a0, a1, (int)a2 & 7);
