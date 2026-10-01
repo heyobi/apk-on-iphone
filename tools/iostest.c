@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 /* iostest: run the iOS app's test sequence on the host. usage: iostest app.apk [n]
  * AOI_ANDROID_ROOT=root AOI_APP_DATA=dir: the app button instead (dir is the guest's /data). */
 #include "../core/apk.h"
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static void out(void *ctx, const char *line) { (void)ctx; printf("%s\n", line); }
@@ -24,6 +26,7 @@ static void *taps(void *arg)
         printf("tap %.0f,%.0f\n", x, y);
         fflush(stdout);
         aoi_android_touch(0, x, y);
+        { struct timespec ts = { 0, 120000000 }; nanosleep(&ts, NULL); }   /* a finger stays ~0.1 s */
         aoi_android_touch(1, x, y);
         s += n;
         if (*s == ';') s++;
