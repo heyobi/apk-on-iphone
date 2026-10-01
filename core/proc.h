@@ -125,6 +125,10 @@ int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind
  * turns into MotionEvents on the window's input channel. Dropped until it is open. */
 void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y);
 
+/* A host AF_UNIX pair that keeps message boundaries: SOCK_SEQPACKET, or where the
+ * host has none (Darwin) SOCK_DGRAM with room for many messages. 0 or -1. */
+int aoi_host_msgpair(int sv[2]);
+
 uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name);
 void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len);
 

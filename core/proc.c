@@ -967,6 +967,18 @@ static void note_map(struct aoi_proc *p, uint64_t start, uint64_t len, uint64_t 
     }
 }
 
+int aoi_host_msgpair(int sv[2])
+{
+    int k, size = 256 * 1024;
+    if (!getenv("AOI_NO_SEQPACKET") && !socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv)) return 0;   /* (the env: test Darwin's path) */
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv)) return -1;
+    for (k = 0; k < 2; k++) {
+        setsockopt(sv[k], SOL_SOCKET, SO_SNDBUF, &size, sizeof size);
+        setsockopt(sv[k], SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+    }
+    return 0;
+}
+
 void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y)
 {
     int32_t rec[4];
@@ -1599,7 +1611,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (a0 != 1) { r = err(L_EAFNOSUPPORT); break; }
         ht = t == 1 ? SOCK_STREAM : t == 2 ? SOCK_DGRAM : t == 5 ? SOCK_SEQPACKET : -1;
         if (ht < 0) { r = err(L_EINVAL); break; }
-        if (socketpair(AF_UNIX, ht, 0, hv)) { r = herr(); break; }
+        if (ht == SOCK_SEQPACKET ? aoi_host_msgpair(hv) : socketpair(AF_UNIX, ht, 0, hv)) { r = herr(); break; }
         fcntl(hv[0], F_SETFL, O_NONBLOCK); fcntl(hv[1], F_SETFL, O_NONBLOCK);
         fcntl(hv[0], F_SETFD, FD_CLOEXEC); fcntl(hv[1], F_SETFD, FD_CLOEXEC);
         if ((n0 = fd_new(p, hv[0], "socket:[pair]", 0)) < 0) { close(hv[0]); close(hv[1]); r = err(L_EMFILE); break; }

@@ -363,6 +363,12 @@ also found the boot image's arm64/*.vdex links (stat'ed, so the trace only shows
 targets; tracefiles.py now adds links next to listed files) and a missing `content`
 service (aoi.ContentService: registerContentObserver and friends, no sync).
 
+**First run on the iPhone (v0.13.48, iPhone 16 Pro):** the app's process starts, binds
+the application and runs its content providers in 13 s (1.04 G instructions), 588 MB
+peak; then createDisplayEventConnection fails: Darwin has no SOCK_SEQPACKET. Message
+pairs (vsync's BitTube, InputChannel's socketpair) now fall back to SOCK_DGRAM with
+256 KiB buffers (`aoi_host_msgpair`; `AOI_NO_SEQPACKET=1` takes that path on Linux).
+
 **Past layout, toward the first frame.** The window configuration now carries the
 screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);
 the activity metrics are logged at resume. New, not yet seen working end to end:

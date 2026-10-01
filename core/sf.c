@@ -198,7 +198,7 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
         int k, sv[2];
         uint32_t h;
         for (k = 0; k < CONNS && sf->c[k].used; k++) {}
-        if (k == CONNS || socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv)) { rep->status = -12; return; }
+        if (k == CONNS || aoi_host_msgpair(sv)) { rep->status = -12; return; }
         fcntl(sv[0], F_SETFL, O_NONBLOCK); fcntl(sv[1], F_SETFL, O_NONBLOCK);
         fcntl(sv[0], F_SETFD, FD_CLOEXEC); fcntl(sv[1], F_SETFD, FD_CLOEXEC);
         memset(&sf->c[k], 0, sizeof sf->c[k]);
