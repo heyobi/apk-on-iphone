@@ -3,7 +3,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g -Wall -Wextra -std=c11
 AARCH64 := clang --target=aarch64-linux-gnu -nostdlib -static -fuse-ld=lld
 
-CORE := core/elf.c core/scan.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c
+CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c
 
 all: build/apkscan
 
@@ -16,7 +16,8 @@ build/test_scan: tests/test_scan.c $(CORE) core/*.h | build
 build/fixture.elf: tests/fixture.S | build
 	$(AARCH64) -o $@ $<
 
-test: build/test_scan build/fixture.elf build/apkscan build/aoirun
+test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun
+	./build/test_vm
 	./build/test_scan build/fixture.elf
 	./build/apkscan build/fixture.elf
 	sh tests/run_guest.sh
@@ -56,3 +57,6 @@ build/isacheck: tools/isacheck.c $(CORE) core/oracle.c core/*.h | build
 IOS_SRC := ios/gmptest.c core/apk.c
 build/iostest: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) -lm -lz
+
+build/test_vm: tests/test_vm.c $(CORE) core/*.h | build
+	$(CC) $(CFLAGS) -o $@ tests/test_vm.c $(CORE) -lm

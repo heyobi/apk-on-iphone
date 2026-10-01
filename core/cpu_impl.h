@@ -3,12 +3,28 @@
 #define AOI_CPU_IMPL_H
 
 #include "cpu.h"
+#include "vm.h"
 
 #include <string.h>
 
+/* Host pointer for a guest access needing `need` (AOI_PROT_*); NULL = fault.
+ * The flat space's common case (inside one page) is inlined. */
+static inline uint8_t *gptr(struct aoi_cpu *c, uint64_t a, int len, int need)
+{
+    struct aoi_vm *vm = c->mem->vm;
+    if (vm) {
+        if (a + (uint64_t)len <= vm->size && (a ^ (a + (uint64_t)len - 1)) < AOI_VM_PAGE) {
+            uint8_t f = vm->prot[a / AOI_VM_PAGE];
+            return f && (f & need) == need ? vm->host + a : NULL;
+        }
+        return aoi_vm_ptr(vm, a, (uint64_t)len, need);
+    }
+    return aoi_mem_ptr(c->mem, a, (uint64_t)len);
+}
+
 static inline uint64_t rd(struct aoi_cpu *c, uint64_t a, int len)
 {
-    uint8_t *p = aoi_mem_ptr(c->mem, a, (uint64_t)len);
+    uint8_t *p = gptr(c, a, len, AOI_PROT_R);
     uint64_t v = 0;
     int i;
     if (!p) { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return 0; }
@@ -18,11 +34,20 @@ static inline uint64_t rd(struct aoi_cpu *c, uint64_t a, int len)
 
 static inline void wr(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
 {
-    uint8_t *p = aoi_mem_ptr(c->mem, a, (uint64_t)len);
+    uint8_t *p = gptr(c, a, len, AOI_PROT_W);
     int i;
     if (!p) { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return; }
     if (c->trace && c->nwlog < 4) { c->wlog_addr[c->nwlog] = a; c->wlog_len[c->nwlog++] = len; }
     for (i = 0; i < len; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+static inline uint32_t fetch(struct aoi_cpu *c, uint64_t a)
+{
+    uint8_t *p = gptr(c, a, 4, AOI_PROT_X);
+    uint32_t v;
+    if (!p) { c->stop = AOI_STOP_FAULT; c->fault_addr = a; return 0; }
+    memcpy(&v, p, 4);
+    return v;
 }
 
 static inline uint64_t sextn(uint64_t v, int bits)

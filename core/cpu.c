@@ -5,6 +5,7 @@
 uint8_t *aoi_mem_ptr(struct aoi_mem *mem, uint64_t addr, uint64_t len)
 {
     int i;
+    if (mem->vm) return aoi_vm_ptr(mem->vm, addr, len, 0);
     for (i = 0; i < mem->n; i++) {
         struct aoi_region *r = &mem->r[i];
         if (addr >= r->base && addr + len >= addr && addr + len <= r->base + r->size)
@@ -123,7 +124,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             c->pc = c->x[30];
             continue;
         }
-        insn = (uint32_t)rd(c, c->pc, 4);
+        insn = (uint32_t)fetch(c, c->pc);
         if (c->stop != AOI_RUN) break;
         c->steps++;
         next = c->pc + 4;

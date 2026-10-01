@@ -23,7 +23,7 @@ jobs:
             -O2 -g0 -Wall -fobjc-arc -std=gnu11 \
             -o "$APP/ApkOnIphone" \
             ios/main.m ios/gmptest.c \
-            core/apk.c core/elf.c core/scan.c core/cpu.c core/simd.c \
+            core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
             core/linux.c core/load.c core/dl.c core/bionic.c \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -lz
           cp ios/Info.plist "$APP/Info.plist"

@@ -17,7 +17,12 @@ struct aoi_region {
     uint8_t *host;
 };
 
+struct aoi_vm;
+
+/* Guest memory: either a flat address space (vm, core/vm.h) or, for the small
+ * test tools, a table of regions. */
 struct aoi_mem {
+    struct aoi_vm *vm;
     int n;
     struct aoi_region r[AOI_MAX_REGIONS];
 };
