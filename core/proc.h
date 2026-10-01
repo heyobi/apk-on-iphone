@@ -28,11 +28,11 @@ struct aoi_proc_fd {
     int nonblock;                   /* guest O_NONBLOCK (pipes: the host end is always non-blocking) */
 };
 
-enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE };
+enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER };
 
 /* A file mapping, kept to name code addresses in diagnostics. */
 struct aoi_proc_map { uint64_t start, len, off; char path[160]; };
-#define AOI_PROC_MAPS 2048
+#define AOI_PROC_MAPS 4096
 
 /* Guest threads are green threads: all run on the calling host thread, one at a
  * time, switched every time slice and whenever one blocks (futex, sleep). */
@@ -73,6 +73,7 @@ struct aoi_proc {
     int uffd;                       /* offer userfaultfd (ART then picks the CMC GC and its boot image); off: ENOSYS */
     struct { uint64_t start, len; } uffd_reg[16];   /* ranges registered with a userfaultfd (missing mode) */
     int nuffd_reg;
+    struct aoi_binder *binder;      /* in-process binder driver state (core/binder.c), or NULL */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

@@ -6,6 +6,7 @@
 #define _GNU_SOURCE
 #define _DARWIN_C_SOURCE
 #include "proc.h"
+#include "binder.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -531,6 +532,7 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
 void aoi_proc_free(struct aoi_proc *p)
 {
     int i;
+    aoi_binder_free(p);
     for (i = 3; i < AOI_PROC_FDS; i++)
         if (p->fd[i].used) {
             if (p->fd[i].dir) closedir(p->fd[i].dir); else close(p->fd[i].host);
@@ -762,12 +764,13 @@ static int sig_fault(struct aoi_proc *p)
 
 static int64_t now_ns(void);
 
-/* A blocking call that would wait (an empty pipe): the thread sleeps 1 ms and the
- * syscall runs again, so the other guest threads (the writer) get to run. */
-static uint64_t block_and_retry(struct aoi_proc *p)
+/* A blocking call that would wait (an empty pipe, a binder looper with no work):
+ * the thread sleeps `ns` and the syscall runs again, so the other guest threads
+ * (the writer) get to run. */
+static uint64_t block_and_retry(struct aoi_proc *p, int64_t ns)
 {
     p->th[p->cur].state = AOI_T_SLEEP;
-    p->th[p->cur].deadline = now_ns() + 1000000;
+    p->th[p->cur].deadline = now_ns() + ns;
     p->th[p->cur].restart = 1;
     p->cpu.stop = AOI_STOP_RESTART;
     return 0;
@@ -877,7 +880,8 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         if (!sig_pending(p)) return p->cpu.stop;
         st = aoi_cpu_run(&p->cpu, end);
         if (st == AOI_STOP_FAULT && sig_fault(p)) continue;
-        if (p->samples && p->nsamples < p->maxsamples) p->samples[p->nsamples++] = p->cpu.pc;
+        if (st == AOI_RUN && p->samples && p->nsamples < p->maxsamples)   /* time slices, not waits */
+            p->samples[p->nsamples++] = p->cpu.pc;
         if (st == AOI_STOP_EXIT && p->thread_exit) {
             p->thread_exit = 0;
             thread_end(p);
@@ -926,7 +930,15 @@ static void trace_sys(struct aoi_proc *p, uint64_t nr, uint64_t r)
 static void note_map(struct aoi_proc *p, uint64_t start, uint64_t len, uint64_t off, const char *path)
 {
     struct aoi_proc_map *m;
-    if (p->nmaps == AOI_PROC_MAPS) return;
+    if (p->nmaps == AOI_PROC_MAPS) {                                /* full: forget what is unmapped now */
+        int i, j;
+        for (i = j = 0; i < p->nmaps; i++) {
+            uint64_t s0 = p->maps[i].start;
+            if (s0 < p->vm.size && p->vm.prot[s0 / AOI_VM_PAGE]) p->maps[j++] = p->maps[i];
+        }
+        p->nmaps = j;
+        if (p->nmaps == AOI_PROC_MAPS) return;
+    }
     m = &p->maps[p->nmaps++];
     m->start = start; m->len = len; m->off = off;
     {
@@ -1027,6 +1039,11 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
     if (!len || off % PAGE) return err(L_EINVAL);
     if (!(flags & 0x20)) {                                         /* file mapping */
         if (!(f = fd_get(p, (uint64_t)fd))) return err(L_EBADF);
+        if (f->kind == AOI_FD_BINDER) {                            /* the binder receive buffer */
+            a = aoi_vm_map(&p->vm, fixed ? addr : (addr ? down(addr, PAGE) : 0), len, prot & 7, fixed);
+            if (!IS_ERR(a)) { aoi_binder_mapped(p, a, up(len, PAGE)); note_map(p, a, len, 0, f->path); }
+            return a;
+        }
     }
     if (noreplace) {
         for (i = 0; i < up(len, PAGE); i += PAGE)
@@ -1111,7 +1128,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_read: case NR_pread64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 1, nr == NR_read ? -1 : (int64_t)a3) : 0;
-        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p);
+        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p, 1000000);
         break;
     }
     case NR_write: case NR_pwrite64: {
@@ -1124,7 +1141,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         }
         if (f->host <= 2) fflush(stdout);
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
-        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p);
+        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p, 1000000);
         break;
     }
     case NR_readv: case NR_writev: {
@@ -1168,6 +1185,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
         if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
+        } else if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder")) {
+            if ((hfd = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+            if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
+            p->fd[fdn].kind = AOI_FD_BINDER;                        /* core/binder.c */
+            r = (uint64_t)fdn;
+            if (p->trace) fprintf(p->trace, "[sys] open %s -> %d (binder)\n", g, fdn);
+            break;
         } else {
             to_host(p, g, h);
             hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)a3);
@@ -1403,6 +1427,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_ioctl:
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_BINDER) {
+            int block;
+            r = aoi_binder_ioctl(p, a1, a2, &block);
+            if (block) r = block_and_retry(p, 5000000);             /* a looper waits for work */
+            break;
+        }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_UFFD) {
             if (a1 == 0xc018aa3f) {                                /* UFFDIO_API {api, features, ioctls} */
                 uint64_t api[3];

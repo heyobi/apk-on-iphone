@@ -222,10 +222,26 @@ blocking guest read/write turned into a 1 ms sleep plus a re-run of the syscall
 `make test`). memfd_create stays ENOSYS on purpose: ART's JIT would then dual-map its
 code cache through MAP_SHARED, and our file mappings are private copies.
 
+**app_process64 runs a dex through the framework runtime** (`make android-test`):
+`CLASSPATH=hello.dex app_process64 /system/bin Hello` prints "Merhaba from ART" —
+AndroidRuntime, libandroid_runtime's JNI for all framework classes, RuntimeInit,
+ProcessState and a binder thread pool, full BCP + boot image + CMC: **386 M
+instructions, ~8 s host** (35 % linker64 linking libandroid_runtime's ~150 libraries,
+32 % libart). It works over **`core/binder.c`, an in-process binder driver**: open of
+/dev/binder, hwbinder, vndbinder; VERSION, SET_MAX_THREADS and friends; mmap of the
+receive buffer; BINDER_WRITE_READ walking BC_* commands by their encoded size and
+resuming from write/read_consumed like the kernel; a looper with nothing to read sleeps
+(5 ms) and retries. Handle 0 is a built-in servicemanager: PING and INTERFACE answered,
+the Android 14 IServiceManager calls answered "no such service" (null binder, empty
+lists) — `aoiproc -t` logs each call as `[binder] servicemanager call N (...) "name"`.
+Any other handle is a dead object. This hello asks for no service yet.
+Also: the profiler counts only expired time slices (a thread waiting on a pipe no
+longer shows up as `read`), and the code-name table forgets unmapped ranges when full.
+
 **Next, in order:**
-1. An in-process **/dev/binder**: version, mmap, looper threads that wait, transactions
-   to handle 0 (servicemanager) answered "no such service"; then native services
-   (AIM ADR 0013) one by one, as app_process asks for them.
+1. A real app's process: start an APK's code through the framework (ActivityThread /
+   an Instrumentation-like entry), see which services it asks servicemanager for, and
+   implement those natively behind real binder handles (AIM ADR 0013).
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.

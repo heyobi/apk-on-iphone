@@ -47,5 +47,11 @@ check "ART hello, boot image + CMC" "Merhaba from ART" $ENV /apex/com.android.ar
 # shellcheck disable=SC2086
 check "ART GC, CMC compaction" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
     -cp /data/local/tmp/gc.dex Hello
+# Android's own launcher for framework-using Java (am, pm): AndroidRuntime,
+# libandroid_runtime's JNI, RuntimeInit, ProcessState over the in-process binder.
+SCP=$(awk '$2=="SYSTEMSERVERCLASSPATH" {printf "-e %s=%s", $2, $3}' "$R/data/system/environ/classpath")
+# shellcheck disable=SC2086
+check "app_process64 (framework runtime, binder)" "Merhaba from ART" $ENV $SCP -e CLASSPATH=/data/local/tmp/hello.dex \
+    /system/bin/app_process64 /system/bin Hello
 unset AOI_UFFD
 exit $fail

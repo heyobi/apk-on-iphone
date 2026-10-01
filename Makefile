@@ -4,7 +4,7 @@ PYTHON  ?= python3
 CFLAGS  ?= -O2 -g -Wall -Wextra -std=c11
 AARCH64 := clang --target=aarch64-linux-gnu -nostdlib -static -fuse-ld=lld
 
-CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c
+CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c
 
 all: build/apkscan
 
