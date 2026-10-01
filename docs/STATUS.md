@@ -64,10 +64,22 @@ protection, which backed all of scudo's 8 GiB reservation). Cost: ~5 % (toybox e
 0.19 → 0.20 s). **Confirmed on the device** (app 0.7): the sparse 64 GiB space with an
 8 GiB scudo reservation runs with 3 chunks — "fits on this device".
 
-Next risk being checked: core/proc.c on iOS itself (Darwin's stat/dirent/errno/open
-flags, the app sandbox). App 0.8 bundles a 9 MB guest root (toybox + mksh and their
-libraries, `ios/android-files.txt`, built by the workflow with `tools/mini-root.sh`)
-and its **Android** button runs them on the phone.
+**Step 1 runs on the iPhone** (app 0.8, iPhone 16 Pro, iOS 27.0.1, no JIT, no
+entitlement): Android's own linker64 loads toybox and mksh from the 9 MB guest root
+bundled in the app (`ios/android-files.txt`, built by the workflow with
+`tools/mini-root.sh`) and core/proc.c serves their syscalls on Darwin:
+
+| program | result | instructions | time | host chunks |
+|---|---|---:|---:|---:|
+| `toybox echo` | correct, exit 0 | 13.6 M | 0.175 s (78 M/s) | 62 MiB |
+| `mksh -c 'echo $((6*7)); …'` | "42", "7 harf", exit 0 | 0.94 M | 0.012 s | 60 MiB |
+| `toybox ls /system/lib64` | all 14 entries, exit 0 | 13.8 M | 0.142 s (97 M/s) | 66 MiB |
+
+**Biggest open risk now: speed of interpreted ART.** Starting ART and running even a
+hello-world dex is likely billions of guest instructions; at ~80 M/s that is tens of
+seconds per app start. Measure it as soon as dalvikvm runs on the host (next steps),
+before building framework pieces on top; the answer decides how early the WebKit
+(Wasm) JIT is needed.
 
 Known simplifications: one thread, `futex` never blocks; signals are recorded but
 never delivered; `socket` is ENOSYS (logd is absent, so logs go nowhere); file
