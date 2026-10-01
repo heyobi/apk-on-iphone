@@ -116,6 +116,15 @@ status, cmdline, meminfo, cpuinfo), membarrier, rt_sigtimedwait (sleeps until a
 tgkill delivers the awaited signal), set/getpriority; in the CPU: dmb/dsb/isb,
 clrex, dc/ic (dc zva zeroes), vector clz/cls.
 
+**ART on the phone, trimmed (app 0.9).** For the device, two measured cuts: the six
+core boot jars are enough (`BOOTCLASSPATH`=core-oj, core-libart, okhttp,
+bouncycastle, apache-xml, core-icu4j, with `-Ximage:` given so ART does not ask for a
+mainline jar), and `tools/android-setup.sh` marks every public NDK library
+`nopreload` in /system/etc/public.libraries.txt, so libhwui/libgui/libpdfium… are no
+longer linked at start. ART hello: **85 M instructions, 1.7 s** on the host (from 248 M).
+The bundled root (`ios/android-files.txt`, from `aoiproc -t` traces) is 73 MB; the
+workflow builds aoiproc on the macOS runner and runs android-setup.sh there.
+
 **Next, in order:**
 1. Guest signals: rt_sigaction handlers, sigframe + rt_sigreturn, synchronous
    SIGSEGV/SIGBUS from CPU faults, tgkill to other threads.

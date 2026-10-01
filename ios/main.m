@@ -148,6 +148,8 @@ static int list_cb(const char *name, size_t len, void *ctx) {
         aoi_android_run(root.UTF8String, tmp.UTF8String, 3, sh, log_cb, (__bridge void *)self);
         [self append:@"Android toybox ls /system/lib64 ..."];
         aoi_android_run(root.UTF8String, tmp.UTF8String, 3, ls, log_cb, (__bridge void *)self);
+        [self append:@"Android ART (dalvikvm64) hello.dex ..."];
+        aoi_android_art_hello(root.UTF8String, tmp.UTF8String, log_cb, (__bridge void *)self);
     });
 }
 

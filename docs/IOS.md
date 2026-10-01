@@ -20,7 +20,9 @@ no debugger, nothing beyond a normal sideloaded app.
    loads `toybox` and `mksh` from the AOSP 14 files bundled in the app (`aroot/`,
    9 MB, list in `ios/android-files.txt`, put there by the workflow) and they run in
    the interpreter through `core/proc.c`. Expected: "merhaba, ben Android toybox",
-   "mksh: 42", "7 harf" and a listing of /system/lib64, each with `exit 0`.
+   "mksh: 42", "7 harf" and a listing of /system/lib64, each with `exit 0`; then
+   **ART**: `dalvikvm64` runs a hello-world dex ("Merhaba from ART", ~85 M
+   instructions). The bundled root is ~73 MB (list in `ios/android-files.txt`).
 6. **Logu kopyala** to share the log; it is also in Files → On My iPhone → APK on iPhone →
    `log.txt`.
 

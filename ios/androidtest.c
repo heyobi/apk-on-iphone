@@ -27,9 +27,32 @@ static void say(aoi_log_fn log, void *ctx, const char *fmt, ...)
 int aoi_android_run(const char *root, const char *tmpdir, int argc, const char *const *argv,
                     aoi_log_fn log, void *ctx)
 {
-    static const char *const envp[] = {
+    return aoi_android_run_env(root, tmpdir, argc, argv, NULL, log, ctx);
+}
+
+/* The six core boot jars: enough for ART to start (see docs/STATUS.md). */
+#define CORE_BCP "/apex/com.android.art/javalib/core-oj.jar:/apex/com.android.art/javalib/core-libart.jar:" \
+    "/apex/com.android.art/javalib/okhttp.jar:/apex/com.android.art/javalib/bouncycastle.jar:" \
+    "/apex/com.android.art/javalib/apache-xml.jar:/apex/com.android.i18n/javalib/core-icu4j.jar"
+
+int aoi_android_art_hello(const char *root, const char *tmpdir, aoi_log_fn log, void *ctx)
+{
+    static const char *const env[] = { "BOOTCLASSPATH=" CORE_BCP, "DEX2OATBOOTCLASSPATH=" CORE_BCP, NULL };
+    static const char *const argv[] = { "/apex/com.android.art/bin/dalvikvm64", "-Xverify:none",
+                                        "-Ximage:/system/framework/boot.art", "-cp", "/data/local/tmp/hello.dex",
+                                        "Hello", NULL };
+    return aoi_android_run_env(root, tmpdir, 6, argv, env, log, ctx);
+}
+
+int aoi_android_run_env(const char *root, const char *tmpdir, int argc, const char *const *argv,
+                        const char *const *env, aoi_log_fn log, void *ctx)
+{
+    static const char *const base[] = {
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
-        "TMPDIR=/data/local/tmp", NULL };
+        "TMPDIR=/data/local/tmp", "ANDROID_ART_ROOT=/apex/com.android.art",
+        "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata", NULL };
+    const char *envp[32];
+    int ne = 0;
     struct aoi_proc *p = calloc(1, sizeof *p);
     char tmp[1024], line[1024];
     const char *err;
@@ -40,15 +63,19 @@ int aoi_android_run(const char *root, const char *tmpdir, int argc, const char *
     FILE *f;
 
     if (!p) { say(log, ctx, "android: out of memory"); return -1; }
+    while (base[ne]) { envp[ne] = base[ne]; ne++; }
+    while (env && *env && ne < 31) envp[ne++] = *env++;
+    envp[ne] = NULL;
     snprintf(tmp, sizeof tmp, "%s/aoi-out-XXXXXX", tmpdir);
     if ((fd = mkstemp(tmp)) < 0) { say(log, ctx, "android: cannot create %s", tmp); free(p); return -1; }
-    if ((err = aoi_proc_exec(p, root, argv[0], argc, argv, envp))) {
+    if ((err = aoi_proc_exec(p, root, argv[0], argc, argv, (const char *const *)envp))) {
         say(log, ctx, "android: exec %s: %s", argv[0], err);
         aoi_proc_free(p); free(p); close(fd); unlink(tmp);
         return -1;
     }
     p->fd[1].host = fd;                 /* guest stdout/stderr -> the temporary file */
     p->fd[2].host = fd;
+    p->log = fdopen(dup(fd), "w");      /* and liblog's lines (logd emulation) */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     st = aoi_proc_run(p, 0);
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -58,7 +85,8 @@ int aoi_android_run(const char *root, const char *tmpdir, int argc, const char *
         rewind(f);
         while (fgets(line, sizeof line, f)) {
             line[strcspn(line, "\n")] = 0;
-            if (!strstr(line, "ld.config.txt")) say(log, ctx, "  | %s", line);   /* known: no linkerconfig yet */
+            if (!strstr(line, "ld.config.txt") && !strstr(line, "cutils-trace"))   /* known, harmless */
+                say(log, ctx, "  | %s", line);
         }
         fclose(f);
     } else close(fd);
@@ -75,6 +103,7 @@ int aoi_android_run(const char *root, const char *tmpdir, int argc, const char *
             (int)st, (unsigned long long)p->cpu.pc, aoi_proc_where(p, p->cpu.pc, w, sizeof w),
             (unsigned long long)p->cpu.fault_addr, p->cpu.fault_insn, (unsigned long long)p->cpu.steps);
     }
+    if (p->log) fclose(p->log);
     aoi_proc_free(p);
     free(p);
     return rc;
