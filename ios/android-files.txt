@@ -5,18 +5,20 @@
 # Includes files written by tools/android-setup.sh. Made from the AOSP 14 GSI pinned in
 # tools/fetch-android.sh with tools/tracefiles.py over aoiproc -t traces; regenerate
 # when that changes. aoi.dex and mapper.aoi.so are built by the workflow.
-# The programs aoiproc execs itself (app_process64, linker64) are not in traces: listed by hand.
+# The programs aoiproc execs itself (app_process64, dex2oat64, linker64) are not in traces: listed by hand.
 /apex/apex-info-list.xml
 /apex/com.android.adservices/javalib/framework-adservices.jar
 /apex/com.android.adservices/javalib/framework-sdksandbox.jar
 /apex/com.android.appsearch/javalib/framework-appsearch.jar
 /apex/com.android.art/bin/dalvikvm64
+/apex/com.android.art/bin/dex2oat64
 /apex/com.android.art/javalib/apache-xml.jar
 /apex/com.android.art/javalib/bouncycastle.jar
 /apex/com.android.art/javalib/core-libart.jar
 /apex/com.android.art/javalib/core-oj.jar
 /apex/com.android.art/javalib/okhttp.jar
 /apex/com.android.art/lib64/libandroidio.so
+/apex/com.android.art/lib64/libart-dexlayout.so
 /apex/com.android.art/lib64/libart.so
 /apex/com.android.art/lib64/libartbase.so
 /apex/com.android.art/lib64/libartpalette.so

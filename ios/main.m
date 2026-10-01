@@ -219,7 +219,9 @@ static int list_cb(const char *name, size_t len, void *ctx) {
   withIntermediateDirectories:YES attributes:nil error:nil];   /* ART's oat files for the app and aoi.dex */
     NSString *apkDir = [data stringByAppendingPathComponent:@"app/apk"];
     [fm createDirectoryAtPath:apkDir withIntermediateDirectories:YES attributes:nil error:nil];
-    [self.apk writeToFile:[apkDir stringByAppendingPathComponent:@"base.apk"] atomically:NO];
+    NSString *apkPath = [apkDir stringByAppendingPathComponent:@"base.apk"];
+    if (![[NSData dataWithContentsOfFile:apkPath] isEqualToData:self.apk])    /* a new APK: compiled again */
+        [self.apk writeToFile:apkPath atomically:NO];
 
     if (!self.screen) {
         self.screen = [[AoiScreen alloc] initWithFrame:self.view.bounds];

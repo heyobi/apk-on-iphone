@@ -12,6 +12,7 @@
 #include <sys/resource.h>
 #endif
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -178,16 +179,16 @@ void aoi_android_touch(int action, float x, float y)
     if (p) aoi_proc_touch(p, action, x, y);
 }
 
-int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
-                    void *frame_ctx, aoi_log_fn log, void *ctx)
+/* One guest process with the app environment: /data in datadir, output to fd. Its
+ * exit code, or -1 (logged). frame: SurfaceFlinger's frames (the app), or NULL. */
+static int run_guest(const char *root, const char *datadir, int fd, const char *const *argv, int argc,
+                     aoi_frame_fn frame, void *frame_ctx, const char *what, aoi_log_fn log, void *ctx)
 {
     static const char *const base[] = {
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
         "TMPDIR=/data/local/tmp", "ANDROID_ART_ROOT=/apex/com.android.art",
         "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata",
         "CLASSPATH=/data/local/tmp/aoi.dex", NULL };
-    static const char *const argv[] = { "/system/bin/app_process64", "/system/bin", "aoi.Main",
-                                        "/data/app/apk/base.apk", NULL };
     static char vals[3][4096];
     const char *cp[4], *envp[16];
     struct aoi_proc *p = calloc(1, sizeof *p);
@@ -195,17 +196,16 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     enum aoi_stop st;
     struct timespec t0, t1;
     double secs, now, peak;
-    int ne = 0, i, fd, rc = -1;
+    int ne = 0, i, rc = -1;
 
-    if (!p) { say(log, ctx, "app: out of memory"); return -1; }
-    if (!classpath_env(datadir, vals, cp)) { say(log, ctx, "app: no %s/system/environ/classpath", datadir); free(p); return -1; }
+    if (!p) { say(log, ctx, "%s: out of memory", what); return -1; }
+    if (!classpath_env(datadir, vals, cp)) { say(log, ctx, "%s: no %s/system/environ/classpath", what, datadir); free(p); return -1; }
     while (base[ne]) { envp[ne] = base[ne]; ne++; }
     for (i = 0; cp[i]; i++) envp[ne++] = cp[i];
     envp[ne] = NULL;
-    if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); free(p); return -1; }
-    if ((err = aoi_proc_exec(p, root, argv[0], 4, argv, envp))) {
-        say(log, ctx, "app: exec: %s", err);
-        aoi_proc_free(p); free(p); close(fd);
+    if ((err = aoi_proc_exec(p, root, argv[0], argc, argv, envp))) {
+        say(log, ctx, "%s: exec: %s", what, err);
+        aoi_proc_free(p); free(p);
         return -1;
     }
     snprintf(p->data, sizeof p->data, "%s", datadir);
@@ -217,25 +217,56 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     p->log = fdopen(dup(fd), "w");
     if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    running = p;
+    if (frame) running = p;
     st = aoi_proc_run(p, 0);
     running = NULL;
     clock_gettime(CLOCK_MONOTONIC, &t1);
     secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
     if (st == AOI_STOP_EXIT) {
         rc = p->cpu.exit_code;
-        say(log, ctx, "app: exit %d after %.1f s, %llu instructions", rc, secs, (unsigned long long)p->cpu.steps);
+        say(log, ctx, "%s: exit %d after %.1f s, %llu instructions", what, rc, secs, (unsigned long long)p->cpu.steps);
     } else {
         char w[256];
-        say(log, ctx, "app: stopped (%d) at pc=%#llx in %s, insn %#x after %.1f s, %llu instructions", (int)st,
+        say(log, ctx, "%s: stopped (%d) at pc=%#llx in %s, insn %#x after %.1f s, %llu instructions", what, (int)st,
             (unsigned long long)p->cpu.pc, aoi_proc_where(p, p->cpu.pc, w, sizeof w), p->cpu.fault_insn, secs,
             (unsigned long long)p->cpu.steps);
     }
     memory_mb(&now, &peak);
-    say(log, ctx, "app: memory %.0f MB now, %.0f MB peak", now, peak);
+    say(log, ctx, "%s: memory %.0f MB now, %.0f MB peak", what, now, peak);
     if (p->log) fclose(p->log);
-    close(fd);
     aoi_proc_free(p);
     free(p);
+    return rc;
+}
+
+/* The APK's code compiled ahead of time (dex2oat, `speed`), once per APK: oat/arm64/
+ * next to it, where ART looks. In the interpreter the app's dex code would otherwise
+ * be interpreted twice (by ART, inside ours): 63 % of a frame. */
+static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_fn log, void *ctx)
+{
+    static const char *const argv[] = { "/apex/com.android.art/bin/dex2oat64", "--dex-file=/data/app/apk/base.apk",
+        "--oat-file=/data/app/apk/oat/arm64/base.odex", "--instruction-set=arm64", "--compiler-filter=speed",
+        "--class-loader-context=PCL[]", NULL };
+    char odex[1024], dir[1024], apk[1024];
+    struct stat so, sa;
+    snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
+    snprintf(odex, sizeof odex, "%s/app/apk/oat/arm64/base.odex", datadir);
+    if (!stat(odex, &so) && !stat(apk, &sa) && so.st_size > 0 && so.st_mtime >= sa.st_mtime) return;   /* done */
+    snprintf(dir, sizeof dir, "%s/app/apk/oat", datadir); mkdir(dir, 0755);
+    snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", datadir); mkdir(dir, 0755);
+    say(log, ctx, "dex2oat: the app's code is compiled once (a few minutes) ...");
+    if (run_guest(root, datadir, fd, argv, 6, NULL, NULL, "dex2oat", log, ctx) != 0) unlink(odex);   /* run interpreted */
+}
+
+int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
+                    void *frame_ctx, aoi_log_fn log, void *ctx)
+{
+    static const char *const argv[] = { "/system/bin/app_process64", "/system/bin", "aoi.Main",
+                                        "/data/app/apk/base.apk", NULL };
+    int fd, rc;
+    if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
+    compile_apk(root, datadir, fd, log, ctx);
+    rc = run_guest(root, datadir, fd, argv, 4, frame, frame_ctx, "app", log, ctx);
+    close(fd);
     return rc;
 }
