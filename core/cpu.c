@@ -135,18 +135,73 @@ static uint64_t aoi_cntvct(void)
     return (uint64_t)(ns / 1000000000) * AOI_CNTFRQ + (uint64_t)(ns % 1000000000) * 3 / 125;
 }
 
+#ifdef AOI_OPHIST
+/* Host profiling: how often each instruction shape runs (register fields masked out),
+ * printed at exit, most frequent first. */
+#include <stdio.h>
+#include <stdlib.h>
+#define OPH (1u << 20)
+static uint32_t oph_key[OPH];
+static uint64_t oph_n[OPH];
+static int cmp_oph(const void *x, const void *y)
+{
+    uint64_t a = oph_n[*(const uint32_t *)x], b = oph_n[*(const uint32_t *)y];
+    return a < b ? 1 : a > b ? -1 : 0;
+}
+static void oph_dump(void)
+{
+    static uint32_t idx[OPH];
+    uint32_t i, n = 0;
+    uint64_t total = 0;
+    for (i = 0; i < OPH; i++) if (oph_n[i]) { idx[n++] = i; total += oph_n[i]; }
+    qsort(idx, n, sizeof *idx, cmp_oph);
+    for (i = 0; i < n && i < 80; i++)
+        fprintf(stderr, "[ophist] %08x %6.2f%% %llu\n", oph_key[idx[i]], 100.0 * (double)oph_n[idx[i]] / (double)total,
+                (unsigned long long)oph_n[idx[i]]);
+}
+static void aoi_ophist(uint32_t insn)
+{
+    static int armed;
+    uint32_t k = insn & 0xffe0fc00u, h;
+    if (!armed) { armed = 1; atexit(oph_dump); }
+    if (getenv("AOI_OPHIST_FULL")) k = insn;
+    for (h = (k * 2654435761u) >> 12; ; h = (h + 1) & (OPH - 1))
+        if (oph_key[h] == k && oph_n[h]) { oph_n[h]++; return; }
+        else if (!oph_n[h]) { oph_key[h] = k; oph_n[h] = 1; return; }
+}
+#endif
+
+/* Decode cache: which branch of the chain below an instruction word takes, so a word
+ * seen before jumps straight to its code (GCC/clang labels as values) instead of being
+ * tested against the patterns before it. The choice depends on the word alone. An
+ * entry is word << 32 | branch + 1, one 64-bit store (two host threads may share it). */
+#define DCACHE_BITS 14
+static uint64_t dcache[1u << DCACHE_BITS];
+#define DCACHE_SLOT(w) (((w) * 0x9e3779b1u) >> (32 - DCACHE_BITS))
+#define BODY(k) L##k: if (learn) dcache[DCACHE_SLOT(insn)] = (uint64_t)insn << 32 | ((k) + 1);
+
 enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
 {
+    static void *const body[] = { &&L0, &&L1, &&L2, &&L3, &&L4, &&L5, &&L6, &&L7, &&L8, &&L9, &&L10, &&L11, &&L12, &&L13, &&L14, &&L15, &&L16, &&L17, &&L18, &&L19, &&L20, &&L21, &&L22, &&L23, &&L24, &&L25, &&L26, &&L27, &&L28, &&L29, &&L30, &&L31, &&L32, &&L33, &&L34, &&L35, &&L36, &&L37, &&L38, &&L39, &&L40, &&L41, &&L42, &&L43, &&L44, &&L45, &&L46, &&L47, &&L48, &&L49, &&L50, &&L51, &&L52 };
+    /* per call, in registers: the step limit, the trace hook, and the code page being
+     * run (its host address), so most fetches skip the page-table walk; a syscall may
+     * map, unmap or protect memory, so it forgets the page */
+    const uint64_t limit = max_steps ? max_steps : ~0ULL;
+    void (*const trace)(struct aoi_cpu *, int) = c->trace;
+    const uint8_t *cpage = NULL;
+    uint64_t cpage_va = 1;                                         /* no page: never matches an aligned pc */
     c->stop = AOI_RUN;
     while (c->stop == AOI_RUN) {
         uint32_t insn;
         uint64_t next;
-        if (max_steps && c->steps >= max_steps) break;
-        if (c->thunk_slots && c->pc >= c->thunk_base && c->pc < c->thunk_base + 4 * c->thunk_slots) {
+        int learn;
+        if (c->steps >= limit) break;
+        if (c->pc - c->thunk_base < 4 * c->thunk_slots) {
             unsigned slot = (unsigned)((c->pc - c->thunk_base) / 4);
             uint64_t r;
             if (slot == 0) { c->stop = AOI_STOP_RETURN; break; }
             r = c->host_call(c, slot);
+            cpage_va = 1;                                          /* it may have mapped memory */
             if (c->stop != AOI_RUN) break;
             c->x[0] = r;
             c->pc = c->x[30];
@@ -155,11 +210,21 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
 #ifdef AOI_DEBUG
         if (aoi_pcring) aoi_pcring[c->steps & 1023] = c->pc;
 #endif
-        insn = (uint32_t)fetch(c, c->pc);
-        if (c->stop != AOI_RUN) break;
+        if ((c->pc & ~(uint64_t)0xffc) == cpage_va) insn = *(const aoi_u32u *)(cpage + (c->pc & 0xffc));
+        else {
+            insn = (uint32_t)fetch(c, c->pc);
+            if (c->stop != AOI_RUN) break;
+            if (!(c->pc & 3)) {
+                cpage = gptr(c, c->pc, 4, AOI_PROT_X) - (c->pc & 0xffc);
+                cpage_va = c->pc & ~(uint64_t)0xfff;
+            }
+        }
+#ifdef AOI_OPHIST
+        aoi_ophist(insn);
+#endif
         c->steps++;
         next = c->pc + 4;
-        if (c->trace) { c->nwlog = 0; c->trace(c, 0); }
+        if (trace) { c->nwlog = 0; trace(c, 0); }
 
         /* ---- SIMD & FP data processing (op0 x111), except modified immediate below: straight
          * to simd.c instead of down the chain (Skia's raster pipeline is mostly these) ---- */
@@ -167,8 +232,13 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!aoi_simd_step(c, insn)) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
             if (c->stop != AOI_RUN) break;
             c->pc = next;
-            if (c->trace) c->trace(c, 1);
+            if (trace) trace(c, 1);
             continue;
+        }
+        {
+            uint64_t e = dcache[DCACHE_SLOT(insn)];
+            if ((uint32_t)(e >> 32) == insn && (uint32_t)e) { learn = 0; goto *body[(uint32_t)e - 1]; }
+            learn = 1;
         }
         /* ---- the rest: start the chain at the instruction's group (op0, bits 28-25), so
          * a load or a register op is not first compared with every branch and system
@@ -180,70 +250,71 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         default: break;                                            /* branches, system, the rest */
         }
         /* ---- branches ---- */
-        if ((insn & 0xfc000000u) == 0x14000000u) {                 /* b */
+        if ((insn & 0xfc000000u) == 0x14000000u) { BODY(0)                 /* b */
             next = c->pc + (sextn(insn & 0x3ffffff, 26) << 2);
-        } else if ((insn & 0xfc000000u) == 0x94000000u) {          /* bl */
+        } else if ((insn & 0xfc000000u) == 0x94000000u) { BODY(1)          /* bl */
             c->x[30] = c->pc + 4;
             next = c->pc + (sextn(insn & 0x3ffffff, 26) << 2);
-        } else if ((insn & 0xfffffc1fu) == 0xd63f0000u) {          /* blr */
+        } else if ((insn & 0xfffffc1fu) == 0xd63f0000u) { BODY(2)          /* blr */
             uint64_t t = X(c, (insn >> 5) & 31); c->x[30] = c->pc + 4; next = t;
-        } else if ((insn & 0xfffffc1fu) == 0xd61f0000u) {          /* br */
+        } else if ((insn & 0xfffffc1fu) == 0xd61f0000u) { BODY(3)          /* br */
             next = X(c, (insn >> 5) & 31);
-        } else if ((insn & 0xfffffc1fu) == 0xd65f0000u) {          /* ret */
+        } else if ((insn & 0xfffffc1fu) == 0xd65f0000u) { BODY(4)          /* ret */
             next = X(c, (insn >> 5) & 31);             /* Rn is always encoded; x30 is only the default */
-        } else if ((insn & 0xff000010u) == 0x54000000u) {          /* b.cond */
+        } else if ((insn & 0xff000010u) == 0x54000000u) { BODY(5)          /* b.cond */
             if (cond_holds(c, insn & 0xf)) next = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
-        } else if ((insn & 0x7e000000u) == 0x34000000u) {          /* cbz/cbnz */
+        } else if ((insn & 0x7e000000u) == 0x34000000u) { BODY(6)          /* cbz/cbnz */
             int is64 = insn >> 31, nz = (insn >> 24) & 1;
             uint64_t v = X(c, insn & 31); if (!is64) v &= 0xffffffffu;
             if ((v != 0) == (nz != 0)) next = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
-        } else if ((insn & 0x7e000000u) == 0x36000000u) {          /* tbz/tbnz */
+        } else if ((insn & 0x7e000000u) == 0x36000000u) { BODY(7)          /* tbz/tbnz */
             int nz = (insn >> 24) & 1, b = ((insn >> 26 & 0x20)) | ((insn >> 19) & 0x1f);
             uint64_t v = X(c, insn & 31);
             if ((((v >> b) & 1) != 0) == (nz != 0)) next = c->pc + (sextn((insn >> 5) & 0x3fff, 14) << 2);
         /* ---- system ---- */
-        } else if (insn == 0xd4000001u) {                          /* svc #0 */
+        } else if (insn == 0xd4000001u) { BODY(8)                          /* svc #0 */
             uint64_t r = c->syscall ? c->syscall(c) : aoi_linux_syscall(c);
+            cpage_va = 1;
             if (c->stop == AOI_RUN) c->x[0] = r;
             else if (c->stop == AOI_STOP_YIELD) { c->x[0] = r; c->pc = next; break; }
             else if (c->stop == AOI_STOP_NEWPC) { c->stop = AOI_RUN; continue; }
             else if (c->stop == AOI_STOP_RESTART) { c->stop = AOI_STOP_YIELD; break; }
-        } else if ((insn & 0xffffffe0u) == 0xd53bd040u) {          /* mrs xN, tpidr_el0 */
+        } else if ((insn & 0xffffffe0u) == 0xd53bd040u) { BODY(9)          /* mrs xN, tpidr_el0 */
             setX(c, insn & 31, c->tpidr);
-        } else if ((insn & 0xffffffe0u) == 0xd53b00e0u) {          /* mrs xN, dczid_el0 */
+        } else if ((insn & 0xffffffe0u) == 0xd53b00e0u) { BODY(10)          /* mrs xN, dczid_el0 */
             setX(c, insn & 31, 0x10);                              /* DZP: dc zva prohibited */
-        } else if ((insn & 0xffffffe0u) == 0xd53b0020u) {          /* mrs xN, ctr_el0 */
+        } else if ((insn & 0xffffffe0u) == 0xd53b0020u) { BODY(11)          /* mrs xN, ctr_el0 */
             setX(c, insn & 31, 0x8444c004u);                       /* 64-byte I/D lines, like a Cortex-A */
-        } else if ((insn & 0xffffffe0u) == 0xd53be000u) {          /* mrs xN, cntfrq_el0 */
+        } else if ((insn & 0xffffffe0u) == 0xd53be000u) { BODY(12)          /* mrs xN, cntfrq_el0 */
             setX(c, insn & 31, AOI_CNTFRQ);
-        } else if ((insn & 0xffffffe0u) == 0xd53be040u || (insn & 0xffffffe0u) == 0xd53be020u) { /* cntvct/cntpct */
+        } else if ((insn & 0xffffffe0u) == 0xd53be040u || (insn & 0xffffffe0u) == 0xd53be020u) { BODY(13) /* cntvct/cntpct */
             setX(c, insn & 31, aoi_cntvct());
-        } else if ((insn & 0xffdfffe0u) == 0xd51b4200u) {          /* mrs/msr nzcv */
+        } else if ((insn & 0xffdfffe0u) == 0xd51b4200u) { BODY(14)          /* mrs/msr nzcv */
             if (insn & 0x200000u)
                 setX(c, insn & 31, (uint64_t)(c->n << 31 | c->z << 30 | c->c << 29 | c->v << 28) & 0xf0000000u);
             else {
                 uint64_t v = X(c, insn & 31);
                 c->n = v >> 31 & 1; c->z = v >> 30 & 1; c->c = v >> 29 & 1; c->v = v >> 28 & 1;
             }
-        } else if ((insn & 0xffdfffe0u) == 0xd51b4400u) {          /* mrs/msr fpcr */
+        } else if ((insn & 0xffdfffe0u) == 0xd51b4400u) { BODY(15)          /* mrs/msr fpcr */
             if (insn & 0x200000u) setX(c, insn & 31, c->fpcr); else c->fpcr = (uint32_t)X(c, insn & 31);
-        } else if ((insn & 0xffdfffe0u) == 0xd51b4420u) {          /* mrs/msr fpsr */
+        } else if ((insn & 0xffdfffe0u) == 0xd51b4420u) { BODY(16)          /* mrs/msr fpsr */
             if (insn & 0x200000u) setX(c, insn & 31, c->fpsr); else c->fpsr = (uint32_t)X(c, insn & 31);
-        } else if ((insn & 0xffffffe0u) == 0xd51bd040u) {          /* msr tpidr_el0, xN */
+        } else if ((insn & 0xffffffe0u) == 0xd51bd040u) { BODY(17)          /* msr tpidr_el0, xN */
             c->tpidr = X(c, insn & 31);
-        } else if (insn == 0xd503201fu || (insn & 0xfffff01fu) == 0xd503201fu) {
+        } else if (insn == 0xd503201fu || (insn & 0xfffff01fu) == 0xd503201fu) { BODY(18)
             /* nop / hint */
-        } else if ((insn & 0xfffff09fu) == 0xd503309fu) {          /* dsb / dmb / isb: one thread, in order */
-        } else if ((insn & 0xfffff0ffu) == 0xd503305fu) {          /* clrex */
+        } else if ((insn & 0xfffff09fu) == 0xd503309fu) { BODY(19)          /* dsb / dmb / isb: one thread, in order */
+        } else if ((insn & 0xfffff0ffu) == 0xd503305fu) { BODY(20)          /* clrex */
             c->excl_valid = 0;
-        } else if ((insn & 0xfffff000u) == 0xd50b7000u) {          /* dc / ic (EL0): no caches here */
+        } else if ((insn & 0xfffff000u) == 0xd50b7000u) { BODY(21)          /* dc / ic (EL0): no caches here */
             if (((insn >> 8) & 15) == 4 && ((insn >> 5) & 7) == 1) { /* dc zva: zero a 64-byte block */
                 uint64_t a = X(c, insn & 31) & ~(uint64_t)63;
                 int k;
                 for (k = 0; k < 64 && c->stop == AOI_RUN; k += 8) wr(c, a + k, 0, 8);
             }
         /* ---- moves (wide immediate) ---- */
-        } else dp_imm: if ((insn & 0x1f800000u) == 0x12800000u && ((insn >> 29) & 3) != 1) { /* movn/movz/movk */
+        } else dp_imm: if ((insn & 0x1f800000u) == 0x12800000u && ((insn >> 29) & 3) != 1) { BODY(22) /* movn/movz/movk */
             int is64 = insn >> 31, opc = (insn >> 29) & 3, sh = ((insn >> 21) & 3) * 16;
             uint64_t imm = (uint64_t)((insn >> 5) & 0xffff) << sh, r;
             int rd_ = insn & 31;
@@ -253,7 +324,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
         /* ---- add/sub immediate ---- */
-        } else if ((insn & 0x1f000000u) == 0x11000000u) {          /* add/sub imm (+ADDS/SUBS) */
+        } else if ((insn & 0x1f000000u) == 0x11000000u) { BODY(23)          /* add/sub imm (+ADDS/SUBS) */
             int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
             int sh = (insn >> 22) & 1; uint64_t imm = (insn >> 10) & 0xfff;
             int rn = (insn >> 5) & 31, rd_ = insn & 31;
@@ -263,7 +334,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             if (rd_ == 31 && !setf) c->sp = r; else setX(c, rd_, r);
         /* ---- logical immediate ---- */
-        } else if ((insn & 0x1f800000u) == 0x12000000u) {          /* and/orr/eor/ands imm */
+        } else if ((insn & 0x1f800000u) == 0x12000000u) { BODY(24)          /* and/orr/eor/ands imm */
             int is64 = insn >> 31, opc = (insn >> 29) & 3;
             int nn = (insn >> 22) & 1, immr = (insn >> 16) & 0x3f, imms = (insn >> 10) & 0x3f;
             int rn = (insn >> 5) & 31, rd_ = insn & 31;
@@ -276,7 +347,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (opc == 3) { c->z = r == 0; c->n = (int)(r >> (is64 ? 63 : 31)) & 1; c->c = 0; c->v = 0; }
             if (rd_ == 31 && opc != 3) c->sp = r; else setX(c, rd_, r);
         /* ---- add/sub shifted register ---- */
-        } else dp_reg: if ((insn & 0x1f200000u) == 0x0b000000u) {  /* add/sub/adds/subs reg */
+        } else dp_reg: if ((insn & 0x1f200000u) == 0x0b000000u) { BODY(25)  /* add/sub/adds/subs reg */
             int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
             int shift = (insn >> 22) & 3, imm6 = (insn >> 10) & 0x3f;
             int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
@@ -290,7 +361,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
         /* ---- logical shifted register ---- */
-        } else if ((insn & 0x1f000000u) == 0x0a000000u) {          /* and/orr/eor/ands/bic reg */
+        } else if ((insn & 0x1f000000u) == 0x0a000000u) { BODY(26)          /* and/orr/eor/ands/bic reg */
             int is64 = insn >> 31, opc = (insn >> 29) & 3, negate = (insn >> 21) & 1;
             int shift = (insn >> 22) & 3, imm6 = (insn >> 10) & 0x3f;
             int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
@@ -307,7 +378,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (opc == 3) { c->z = r == 0; c->n = (int)(r >> (is64 ? 63 : 31)) & 1; c->c = 0; c->v = 0; }
             setX(c, rd_, r);
         /* ---- SIMD&FP load/store (V bit set): q/d/s/h/b registers ---- */
-        } else ldst: if ((insn & 0x3e000000u) == 0x2c000000u) {    /* stp/ldp s/d/q */
+        } else ldst: if ((insn & 0x3e000000u) == 0x2c000000u) { BODY(27)    /* stp/ldp s/d/q */
             int opc = insn >> 30, load = (insn >> 22) & 1, mode = (insn >> 23) & 3;
             int rt = insn & 31, rn = (insn >> 5) & 31, rt2 = (insn >> 10) & 31;
             int scale = 2 + opc, bytes = 1 << scale;
@@ -317,12 +388,12 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (load) { vld(c, rt, a, bytes); vld(c, rt2, a + bytes, bytes); }
             else { vst(c, rt, a, bytes); vst(c, rt2, a + bytes, bytes); }
             if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
-        } else if ((insn & 0x3f000000u) == 0x3d000000u) {          /* ldr/str b..q [Xn, #uimm] */
+        } else if ((insn & 0x3f000000u) == 0x3d000000u) { BODY(28)          /* ldr/str b..q [Xn, #uimm] */
             int size = insn >> 30, opc = (insn >> 22) & 3, rn = (insn >> 5) & 31, rt = insn & 31;
             int bytes = (opc & 2) ? 16 : 1 << size;
             uint64_t a = ((rn == 31) ? c->sp : c->x[rn]) + ((uint64_t)((insn >> 10) & 0xfff) * (uint64_t)bytes);
             if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
-        } else if ((insn & 0x3f200000u) == 0x3c000000u) {          /* ldur/stur, pre/post b..q */
+        } else if ((insn & 0x3f200000u) == 0x3c000000u) { BODY(29)          /* ldur/stur, pre/post b..q */
             int size = insn >> 30, opc = (insn >> 22) & 3, mode = (insn >> 10) & 3;
             int rn = (insn >> 5) & 31, rt = insn & 31, bytes = (opc & 2) ? 16 : 1 << size;
             int64_t off = (int64_t)sextn((insn >> 12) & 0x1ff, 9);
@@ -330,7 +401,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (mode == 2) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
             if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
             if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
-        } else if ((insn & 0x3f200c00u) == 0x3c200800u) {          /* ldr/str b..q [Xn, Xm{,ext}] */
+        } else if ((insn & 0x3f200c00u) == 0x3c200800u) { BODY(30)          /* ldr/str b..q [Xn, Xm{,ext}] */
             int size = insn >> 30, opc = (insn >> 22) & 3, rm = (insn >> 16) & 31;
             int option = (insn >> 13) & 7, S = (insn >> 12) & 1, rn = (insn >> 5) & 31, rt = insn & 31;
             int bytes = (opc & 2) ? 16 : 1 << size, sh = (opc & 2) ? 4 : size;
@@ -338,14 +409,14 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (option == 2) idx = (uint32_t)idx; else if (option == 6) idx = sextn((uint32_t)idx, 32);
             a = ((rn == 31) ? c->sp : c->x[rn]) + (S ? idx << sh : idx);
             if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
-        } else if ((insn & 0x3f000000u) == 0x1c000000u) {          /* ldr s/d/q, literal */
+        } else if ((insn & 0x3f000000u) == 0x1c000000u) { BODY(31)          /* ldr s/d/q, literal */
             int opc = insn >> 30;
             vld(c, insn & 31, c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2), 4 << opc);
-        } else if ((insn & 0x3f000000u) == 0x18000000u) {          /* ldr w/x, ldrsw, prfm literal */
+        } else if ((insn & 0x3f000000u) == 0x18000000u) { BODY(32)          /* ldr w/x, ldrsw, prfm literal */
             int opc = insn >> 30;
             uint64_t a = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
             if (opc != 3) ild(c, insn & 31, a, opc == 1 ? 8 : 4, opc == 2 ? 2 : 1);
-        } else if ((insn & 0xbfbf0000u) == 0x0c000000u || (insn & 0xbfa00000u) == 0x0c800000u) {
+        } else if ((insn & 0xbfbf0000u) == 0x0c000000u || (insn & 0xbfa00000u) == 0x0c800000u) { BODY(33)
             /* ld1-ld4 / st1-st4 (multiple structures), optionally post-indexed */
             int q = (insn >> 30) & 1, load = (insn >> 22) & 1, post = (insn >> 23) & 1;
             int rm = (insn >> 16) & 31, opcode = (insn >> 12) & 0xf, size = (insn >> 10) & 3;
@@ -361,13 +432,36 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (size == 3 && !q && selem > 1) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto ldst_done; }
             elems = (q ? 16 : 8) / esz;
             if (load) for (r_ = 0; r_ < rpt * selem; r_++) { int t = (rt + r_) & 31; c->vreg[t][0] = 0; c->vreg[t][1] = 0; }
+            if (selem == 1)                                        /* ld1/st1: whole registers, in order */
+                for (r_ = 0; r_ < rpt && c->stop == AOI_RUN; r_++) {
+                    int t = (rt + r_) & 31;
+                    if (load) vld(c, t, a, q ? 16 : 8); else vst(c, t, a, q ? 16 : 8);
+                    a += q ? 16 : 8;
+                }
+            else
             for (r_ = 0; r_ < rpt; r_++)
                 for (e = 0; e < elems; e++)
                     for (k = 0; k < selem; k++) {
                         int t = (rt + r_ + k) & 31;
                         uint8_t *lane = (uint8_t *)c->vreg[t] + e * esz;   /* host is little-endian */
-                        if (load) { uint64_t v = rd(c, a, esz); memcpy(lane, &v, (size_t)esz); }
-                        else { uint64_t v = 0; memcpy(&v, lane, (size_t)esz); wr(c, a, v, esz); }
+                        uint64_t v = 0;
+                        if (load) {
+                            v = rd(c, a, esz);
+                            switch (esz) {
+                            case 1: lane[0] = (uint8_t)v; break;
+                            case 2: *(aoi_u16u *)lane = (uint16_t)v; break;
+                            case 4: *(aoi_u32u *)lane = (uint32_t)v; break;
+                            default: *(aoi_u64u *)lane = v; break;
+                            }
+                        } else {
+                            switch (esz) {
+                            case 1: v = lane[0]; break;
+                            case 2: v = *(const aoi_u16u *)lane; break;
+                            case 4: v = *(const aoi_u32u *)lane; break;
+                            default: v = *(const aoi_u64u *)lane; break;
+                            }
+                            wr(c, a, v, esz);
+                        }
                         a += (uint64_t)esz;
                     }
             if (post && c->stop == AOI_RUN) {
@@ -376,7 +470,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             }
             if (0) { ldst_done: break; }
         /* ---- load/store: register offset (integer) ---- */
-        } else if ((insn & 0x3b200c00u) == 0x38200800u) {          /* ldr/str [Xn, Xm{,ext}] */
+        } else if ((insn & 0x3b200c00u) == 0x38200800u) { BODY(34)          /* ldr/str [Xn, Xm{,ext}] */
             int size = insn >> 30, opc = (insn >> 22) & 3;
             int rm = (insn >> 16) & 31, option = (insn >> 13) & 7, S = (insn >> 12) & 1;
             int rn = (insn >> 5) & 31, rt = insn & 31, bytes = 1 << size;
@@ -390,7 +484,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             else if (size == 3 && opc == 2) { /* prfm: no-op */ }
             else ild(c, rt, a, bytes, opc);
         /* ---- load/store: unsigned offset (32/64-bit integer) ---- */
-        } else if ((insn & 0x3b000000u) == 0x39000000u) {          /* ldr/str [Xn, #imm] unsigned */
+        } else if ((insn & 0x3b000000u) == 0x39000000u) { BODY(35)          /* ldr/str [Xn, #imm] unsigned */
             int size = insn >> 30, opc = (insn >> 22) & 3;
             int rn = (insn >> 5) & 31, rt = insn & 31;
             uint64_t base = (rn == 31) ? c->sp : c->x[rn];
@@ -400,7 +494,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             else if (size == 3 && opc == 2) { /* prfm: no-op */ }
             else ild(c, rt, a, bytes, opc);
         /* ---- load/store: signed/unscaled/pre/post (9-bit imm) ---- */
-        } else if ((insn & 0x3b200000u) == 0x38000000u) {          /* ldur/stur, pre/post index */
+        } else if ((insn & 0x3b200000u) == 0x38000000u) { BODY(36)          /* ldur/stur, pre/post index */
             int size = insn >> 30, opc = (insn >> 22) & 3, mode = (insn >> 10) & 3;
             int rn = (insn >> 5) & 31, rt = insn & 31, bytes = 1 << size;
             int64_t off = (int64_t)sextn((insn >> 12) & 0x1ff, 9);
@@ -413,7 +507,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             else ild(c, rt, a, bytes, opc);
             if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         /* ---- load/store pair ---- */
-        } else if ((insn & 0x3a000000u) == 0x28000000u && ((insn >> 26) & 1) == 0) { /* stp/ldp */
+        } else if ((insn & 0x3a000000u) == 0x28000000u && ((insn >> 26) & 1) == 0) { BODY(37) /* stp/ldp */
             int is64 = (insn >> 31) & 1, load = (insn >> 22) & 1, mode = (insn >> 23) & 3;
             int rt = insn & 31, rn = (insn >> 5) & 31, rt2 = (insn >> 10) & 31;
             int scale = is64 ? 3 : 2, bytes = 1 << scale;
@@ -427,7 +521,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             else { wr(c, a, X(c, rt), bytes); wr(c, a + bytes, X(c, rt2), bytes); }
             if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         /* ---- conditional select (csel/csinc/csinv/csneg, incl cset/csetm) ---- */
-        } else if ((insn & 0x1fe00000u) == 0x1a800000u) {
+        } else if ((insn & 0x1fe00000u) == 0x1a800000u) { BODY(38)
             int is64 = insn >> 31, op = (insn >> 30) & 1, o2 = (insn >> 10) & 3;
             int rm = (insn >> 16) & 31, cond = (insn >> 12) & 0xf, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t a = X(c, rn), b = X(c, rm), r;
@@ -437,7 +531,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
         /* ---- data processing (1 source): rbit/rev/clz/cls ---- */
-        } else if ((insn & 0x5fe00000u) == 0x5ac00000u && ((insn >> 16) & 0x1f) == 0) {
+        } else if ((insn & 0x5fe00000u) == 0x5ac00000u && ((insn >> 16) & 0x1f) == 0) { BODY(39)
             int is64 = insn >> 31, op = (insn >> 10) & 0x3f;
             int rn = (insn >> 5) & 31, rd_ = insn & 31, width = is64 ? 64 : 32;
             uint64_t a = X(c, rn), r = 0; int i;
@@ -457,7 +551,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             setX(c, rd_, r);
             if (0) { done1: break; }
         /* ---- add/sub with carry: adc/adcs/sbc/sbcs ---- */
-        } else if ((insn & 0x1fe0fc00u) == 0x1a000000u) {
+        } else if ((insn & 0x1fe0fc00u) == 0x1a000000u) { BODY(40)
             int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
             int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t a = X(c, rn), b = X(c, rm), r;
@@ -465,7 +559,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
         /* ---- data processing (3 source): madd/msub ---- */
-        } else if ((insn & 0x1f000000u) == 0x1b000000u) {
+        } else if ((insn & 0x1f000000u) == 0x1b000000u) { BODY(41)
             int is64 = insn >> 31, o0 = (insn >> 15) & 1, op31 = (insn >> 21) & 7;
             int rm = (insn >> 16) & 31, ra = (insn >> 10) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t n_ = X(c, rn), m = X(c, rm), acc = X(c, ra), r;
@@ -486,7 +580,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             setX(c, rd_, r);
         /* ---- data processing (2 source): udiv/sdiv/lslv/lsrv/asrv/rorv ---- */
-        } else if ((insn & 0x5fe00000u) == 0x1ac00000u) {
+        } else if ((insn & 0x5fe00000u) == 0x1ac00000u) { BODY(42)
             int is64 = insn >> 31, op = (insn >> 10) & 0x3f;
             int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t a = X(c, rn), b = X(c, rm), r; unsigned sh;
@@ -522,7 +616,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             setX(c, rd_, r);
             if (0) { done: break; }
         /* ---- bitfield: sbfm/bfm/ubfm (incl lsl/lsr/asr/sxt/uxt imm) ---- */
-        } else if ((insn & 0x1f800000u) == 0x13000000u) {
+        } else if ((insn & 0x1f800000u) == 0x13000000u) { BODY(43)
             /* ARM ARM: bot = ROR(src, R) & wmask; top = dst (bfm), sign (sbfm) or 0 (ubfm);
              * result = (top & ~tmask) | (bot & tmask) */
             int is64 = insn >> 31, opc = (insn >> 29) & 3;
@@ -538,7 +632,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             r = ((top & ~tmask) | (bot & tmask)) & mask;
             setX(c, rd_, r);
         /* ---- extr (and ror immediate) ---- */
-        } else if ((insn & 0x7fa00000u) == 0x13800000u) {
+        } else if ((insn & 0x7fa00000u) == 0x13800000u) { BODY(44)
             int is64 = insn >> 31, lsb = (insn >> 10) & 0x3f;
             int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t hi = X(c, rn), lo = X(c, rm), r;
@@ -546,7 +640,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             else { lo = (uint32_t)lo; hi = (uint32_t)hi; r = lsb ? ((lo >> lsb) | (hi << (32 - lsb))) & 0xffffffffu : lo; }
             setX(c, rd_, r);
         /* ---- conditional compare: ccmp/ccmn (register and immediate) ---- */
-        } else if ((insn & 0x3fe00410u) == 0x3a400000u) {
+        } else if ((insn & 0x3fe00410u) == 0x3a400000u) { BODY(45)
             int is64 = insn >> 31, sub = (insn >> 30) & 1, imm = (insn >> 11) & 1;
             int rm = (insn >> 16) & 31, cond = (insn >> 12) & 0xf, rn = (insn >> 5) & 31;
             if (cond_holds(c, (unsigned)cond)) {
@@ -557,7 +651,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                 c->n = f >> 3 & 1; c->z = f >> 2 & 1; c->c = f >> 1 & 1; c->v = f & 1;
             }
         /* ---- add/sub extended register (sp-capable) ---- */
-        } else if ((insn & 0x1fe00000u) == 0x0b200000u) {
+        } else if ((insn & 0x1fe00000u) == 0x0b200000u) { BODY(46)
             int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
             int rm = (insn >> 16) & 31, option = (insn >> 13) & 7, sh = (insn >> 10) & 7;
             int rn = (insn >> 5) & 31, rd_ = insn & 31;
@@ -573,7 +667,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             if (rd_ == 31 && !setf) c->sp = r; else setX(c, rd_, r);
         /* ---- SIMD modified immediate: movi/mvni/orr/bic (vector), fmov (vector imm) ---- */
-        } else if ((insn & 0x9ff80400u) == 0x0f000400u) {
+        } else if ((insn & 0x9ff80400u) == 0x0f000400u) { BODY(47)
             int q = (insn >> 30) & 1, op = (insn >> 29) & 1, cmode = (insn >> 12) & 0xf, rd_ = insn & 31;
             uint64_t imm8 = ((insn >> 16) & 7) << 5 | ((insn >> 5) & 0x1f), imm = 0;
             int i;
@@ -590,7 +684,8 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             case 6: imm = (cmode & 1) ? (imm8 << 16) | 0xffff : (imm8 << 8) | 0xff; imm |= imm << 32; break;
             case 7:
                 if (!(cmode & 1) && !op) { for (i = 0; i < 8; i++) imm |= imm8 << (8 * i); }   /* 8-bit */
-                else if (!(cmode & 1) && op) { for (i = 0; i < 8; i++) if (imm8 >> i & 1) imm |= (uint64_t)0xff << (8 * i); } /* 64-bit */
+                else if (!(cmode & 1) && op) { uint64_t t = (imm8 | imm8 << 28) & 0x0000000f0000000fULL;       /* bit i -> byte i */
+              t = (t | t << 14) & 0x0003000300030003ULL; t = (t | t << 7) & 0x0101010101010101ULL; imm = t * 0xff; } /* 64-bit */
                 else if (!op) { imm = vfp_imm32(imm8); imm |= imm << 32; }                            /* fmov .2s/.4s */
                 else if (q) imm = vfp_imm64(imm8);                                                   /* fmov .2d */
                 else { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; goto simdimm_done; }
@@ -608,7 +703,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             }
             if (0) { simdimm_done: break; }
         /* ---- atomics: load-acquire/store-release, exclusives, cas ---- */
-        } else if ((insn & 0x3f000000u) == 0x08000000u) {
+        } else if ((insn & 0x3f000000u) == 0x08000000u) { BODY(48)
             int size = insn >> 30, o2 = insn >> 23 & 1, L = insn >> 22 & 1, o1 = insn >> 21 & 1;
             int rs = insn >> 16 & 31, rt2 = insn >> 10 & 31, rn = insn >> 5 & 31, rt = insn & 31, bytes = 1 << size;
             uint64_t a = rn == 31 ? c->sp : c->x[rn], old;
@@ -652,12 +747,12 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                     if (c->stop == AOI_RUN) setX(c, rs, old);
                 }
             } else { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
-        } else if ((insn & 0x3f20fc00u) == 0x3820c000u && ((insn >> 16) & 31) == 31 && !(insn >> 26 & 1)) {
+        } else if ((insn & 0x3f20fc00u) == 0x3820c000u && ((insn >> 16) & 31) == 31 && !(insn >> 26 & 1)) { BODY(49)
             /* ldapr / ldaprb / ldaprh (RCpc load-acquire): a plain load here */
             int bytes = 1 << (insn >> 30), rn = insn >> 5 & 31;
             uint64_t v = rd(c, rn == 31 ? c->sp : c->x[rn], bytes);
             if (c->stop == AOI_RUN) setX(c, insn & 31, v);
-        } else if ((insn & 0x3f200c00u) == 0x38200000u && !(insn >> 26 & 1)) {
+        } else if ((insn & 0x3f200c00u) == 0x38200000u && !(insn >> 26 & 1)) { BODY(50)
             /* LSE: ldadd/ldclr/ldeor/ldset/ld[su]max/ld[su]min, swp (single-threaded: plain RMW) */
             int size = insn >> 30, o3 = insn >> 15 & 1, opc = insn >> 12 & 7;
             int rs = insn >> 16 & 31, rn = insn >> 5 & 31, rt = insn & 31, bytes = 1 << size;
@@ -675,10 +770,10 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             wr(c, a, nv, bytes);
             if (c->stop == AOI_RUN) setX(c, rt, old);
         /* ---- pc-relative ---- */
-        } else if ((insn & 0x9f000000u) == 0x90000000u) {          /* adrp */
+        } else if ((insn & 0x9f000000u) == 0x90000000u) { BODY(51)          /* adrp */
             uint64_t imm = (sextn((((insn >> 5) & 0x7ffff) << 2) | ((insn >> 29) & 3), 21)) << 12;
             setX(c, insn & 31, (c->pc & ~(uint64_t)0xfff) + imm);
-        } else if ((insn & 0x9f000000u) == 0x10000000u) {          /* adr */
+        } else if ((insn & 0x9f000000u) == 0x10000000u) { BODY(52)          /* adr */
             uint64_t imm = sextn((((insn >> 5) & 0x7ffff) << 2) | ((insn >> 29) & 3), 21);
             setX(c, insn & 31, c->pc + imm);
         } else if (aoi_simd_step(c, insn)) {
@@ -689,7 +784,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             break;
         }
         if (c->stop == AOI_RUN) c->pc = next;
-        if (c->trace) c->trace(c, 1);
+        if (trace) trace(c, 1);
     }
     return c->stop;
 }

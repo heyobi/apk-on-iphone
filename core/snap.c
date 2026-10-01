@@ -14,7 +14,8 @@
  *   - binder, SurfaceFlinger and gralloc state (their own *_snap functions);
  *   - the apps' files under /data/data, put back on load (see save_data).
  * The guest's monotonic clock continues from where it was if the host's restarted.
- * A snapshot is only valid for the build that wrote it (AOI_SNAP_BUILD). */
+ * A snapshot is only valid for the build that wrote it (AOI_SNAP_BUILD; on the host
+ * AOI_SNAP_ANY_BUILD=1 skips that, to compare interpreter changes that keep the structs). */
 #define _GNU_SOURCE                 /* pread */
 #define _DARWIN_C_SOURCE
 #include "binder.h"
@@ -417,7 +418,7 @@ const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root
     memset(p, 0, sizeof *p);
     if (!f) return "no snapshot";
     if (!r(f, magic, 8) || memcmp(magic, SNAP_MAGIC, 8) || !r(f, build, sizeof build) ||
-        memcmp(build, AOI_SNAP_BUILD, sizeof build) || !r(f, &sz, 4) || sz != sizeof *p) {
+        (memcmp(build, AOI_SNAP_BUILD, sizeof build) && !getenv("AOI_SNAP_ANY_BUILD")) || !r(f, &sz, 4) || sz != sizeof *p) {
         fclose(f);
         return "a snapshot of another build";
     }

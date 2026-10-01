@@ -35,7 +35,9 @@ static void *taps(void *arg)
     int n;
     while (sscanf(s, "%f,%f%n", &x, &y, &n) == 2) {
         sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
-        fprintf(stderr, "[aoiproc] tap %.0f,%.0f\n", x, y);
+        { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+          fprintf(stderr, "[aoiproc] tap %.0f,%.0f at %.3f s, %llu instructions\n", x, y,
+                  (double)ts.tv_sec + (double)ts.tv_nsec / 1e9, (unsigned long long)((struct aoi_proc *)arg)->cpu.steps); }
         aoi_proc_touch(arg, 0, x, y);
         { struct timespec ts = { 0, 120000000 }; nanosleep(&ts, NULL); }   /* a finger stays ~0.1 s */
         aoi_proc_touch(arg, 1, x, y);
@@ -53,7 +55,11 @@ static void first_frame(void *ctx, const uint8_t *px, uint32_t w, uint32_t h)
 {
     static int started;
     pthread_t t;
+    struct timespec ts;
     (void)px; (void)w; (void)h;
+    clock_gettime(CLOCK_MONOTONIC, &ts);              /* for benchmarks: instructions and time per frame */
+    fprintf(stderr, "[frame] %d after %llu instructions, at %.3f s\n", started + 1,
+            (unsigned long long)((struct aoi_proc *)ctx)->cpu.steps, (double)ts.tv_sec + (double)ts.tv_nsec / 1e9);
     if (started++) return;
     if (getenv("AOI_PROFILE_FROM_FRAME")) ((struct aoi_proc *)ctx)->nsamples = 0;   /* profile the taps only */
     pthread_create(&t, NULL, taps, ctx);
@@ -72,6 +78,7 @@ static long peak_rss_mib(void)
 }
 
 static struct aoi_proc proc;
+static char stop_at[32];
 
 #ifdef AOI_DEBUG
 extern uint32_t aoi_watch_val;
@@ -113,17 +120,25 @@ int main(int argc, char **argv)
     if (argc - a < 2) { fprintf(stderr, "usage: %s [-t] ROOT PROGRAM [args...]\n", argv[0]); return 2; }
     if (getenv("AOI_SNAPSHOT_LOAD")) {               /* resume a saved process (core/snap.c) instead */
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        if ((err = aoi_snap_load(&proc, getenv("AOI_SNAPSHOT_LOAD"), argv[a], NULL))) {
+        if ((err = aoi_snap_load(&proc, getenv("AOI_SNAPSHOT_LOAD"), argv[a], getenv("AOI_DATA")))) {
             fprintf(stderr, "[aoiproc] snapshot %s: %s\n", getenv("AOI_SNAPSHOT_LOAD"), err);
             return 1;
         }
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        fprintf(stderr, "[aoiproc] snapshot loaded in %.2f s\n",
-                (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9);
+        fprintf(stderr, "[aoiproc] snapshot loaded in %.2f s, at %llu instructions\n",
+                (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9,
+                (unsigned long long)proc.cpu.steps);
+        if (getenv("AOI_STOP_AFTER")) {             /* AOI_STOP_AT, counted from the snapshot */
+            snprintf(stop_at, sizeof stop_at, "%llu",
+                     (unsigned long long)(proc.cpu.steps + strtoull(getenv("AOI_STOP_AFTER"), NULL, 0)));
+            setenv("AOI_STOP_AT", stop_at, 1);
+        }
     } else if ((err = aoi_proc_exec(&proc, argv[a], argv[a + 1], argc - a - 1, (const char *const *)argv + a + 1, (const char *const *)envp))) {
         fprintf(stderr, "[aoiproc] exec %s: %s\n", argv[a + 1], err);
         return 1;
     }
+    if (getenv("AOI_DATA") && !getenv("AOI_SNAPSHOT_LOAD"))     /* guest /data is this host directory */
+        snprintf(proc.data, sizeof proc.data, "%s", getenv("AOI_DATA"));
     if (getenv("AOI_SNAPSHOT_SAVE")) snprintf(proc.snap_path, sizeof proc.snap_path, "%s", getenv("AOI_SNAPSHOT_SAVE"));
     if (trace) proc.trace = stderr;
 #ifdef AOI_DEBUG

@@ -392,6 +392,23 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Interpreter 1.6x faster while drawing (app 0.16).** Measured from a Qalculate
+snapshot with taps (`AOI_SNAPSHOT_LOAD` + `AOI_TAPS`; callgrind over 60 M guest
+instructions): 327 -> 199 host instructions per guest instruction; 24 -> 37 M guest
+instructions/s on the host. What did it: a decode cache (instruction word -> its branch
+of cpu.c's chain, via labels as values; SIMD words -> their class decoder), no memcpy
+calls in guest loads/stores and lane access, fast paths for the forms Skia's raster
+pipeline runs (4 x float fadd/fsub/fmul/fmax/fmin, bitwise ops, fmla by element,
+int<->float conversions, shifts), fetch from the current code page. difftest WRONG 0.
+Where a tap's time goes now: 86 % libhwui, mostly Skia's highp raster pipeline (4
+pixels per stage call, float). Every frame repaints ~800 K pixels (store_8888 runs
+199,394 times per frame, whatever changed): Compose in software mode invalidates the
+whole view. A tap gives 3-4 frames of ~65 M instructions. Next: the raster pipeline's
+hot stages natively on the host (the system image is fixed, so their addresses are
+known), and/or fewer pixels.
+
+On the phone, app 0.15: a launch from the snapshot takes 0.1 s, with the history kept.
+
 **Snapshots: the second launch resumes in under a second (host), app 0.15.**
 `core/snap.c` saves the whole guest process to a file and loads it back: struct
 aoi_proc as is (host pointers and fds fixed up), guest memory page by page (a page that

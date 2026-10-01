@@ -13,13 +13,27 @@
 
 typedef uint64_t vec[2];
 
-static uint64_t lane(const uint64_t *v, int i, int esz)
+/* Element i of esz bytes (little-endian host), without memcpy calls. */
+static inline uint64_t lane(const uint64_t *v, int i, int esz)
 {
-    uint64_t r = 0;
-    memcpy(&r, (const uint8_t *)v + i * esz, (size_t)esz);
-    return r;
+    const uint8_t *p = (const uint8_t *)v + i * esz;
+    switch (esz) {
+    case 1: return *p;
+    case 2: return *(const aoi_u16u *)p;
+    case 4: return *(const aoi_u32u *)p;
+    default: return *(const aoi_u64u *)p;
+    }
 }
-static void setlane(uint64_t *v, int i, int esz, uint64_t x) { memcpy((uint8_t *)v + i * esz, &x, (size_t)esz); }
+static inline void setlane(uint64_t *v, int i, int esz, uint64_t x)
+{
+    uint8_t *p = (uint8_t *)v + i * esz;
+    switch (esz) {
+    case 1: *p = (uint8_t)x; break;
+    case 2: *(aoi_u16u *)p = (uint16_t)x; break;
+    case 4: *(aoi_u32u *)p = (uint32_t)x; break;
+    default: *(aoi_u64u *)p = x; break;
+    }
+}
 static uint64_t emask(int esz) { return esz == 8 ? ~0ULL : ((uint64_t)1 << (8 * esz)) - 1; }
 static int64_t sx(uint64_t v, int esz) { return (int64_t)sextn(v & emask(esz), 8 * esz); }
 
@@ -362,7 +376,7 @@ static int fp_misc(int key, uint64_t x, int dbl, uint64_t *out, int scalar)
 
 /* ---------------- Advanced SIMD integer classes ---------------- */
 
-static int three_same(struct aoi_cpu *c, uint32_t insn, int scalar)
+static __attribute__((noinline)) int three_same(struct aoi_cpu *c, uint32_t insn, int scalar)
 {
     int q = scalar ? 1 : insn >> 30 & 1, u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 11 & 0x1f;
     int m = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, ne = scalar ? 1 : (q ? 16 : 8) / esz, i;
@@ -396,26 +410,27 @@ static int three_same(struct aoi_cpu *c, uint32_t insn, int scalar)
         if (!scalar && q && !dbl && !(c->fpcr & 0x03c00000u) &&
             (k == 0x1a || k == 0x3a || k == 0x5b || k == 0x1e || k == 0x3e)) {
             float x[4], y[4], z[4];
-            uint32_t xb[4], yb[4], zb[4];
             int nan = 0;
-            memcpy(x, a, 16); memcpy(y, b, 16); memcpy(xb, a, 16); memcpy(yb, b, 16);
-            for (i = 0; i < 4; i++) nan |= x[i] != x[i] || y[i] != y[i];
-            if (!nan) {
-                for (i = 0; i < 4; i++)
-                    switch (k) {
-                    case 0x1a: z[i] = x[i] + y[i]; break;
-                    case 0x3a: z[i] = x[i] - y[i]; break;
-                    case 0x5b: z[i] = x[i] * y[i]; break;
-                    case 0x1e: if (x[i] == y[i]) { zb[i] = xb[i] & yb[i]; memcpy(&z[i], &zb[i], 4); }   /* +0 > -0 */
-                               else z[i] = x[i] > y[i] ? x[i] : y[i];
-                               break;
-                    default:   if (x[i] == y[i]) { zb[i] = xb[i] | yb[i]; memcpy(&z[i], &zb[i], 4); }
-                               else z[i] = x[i] < y[i] ? x[i] : y[i];
-                               break;
-                    }
-                for (i = 0; i < 4; i++) nan |= z[i] != z[i];   /* inf - inf, 0 * inf: ARM's default NaN */
-                if (!nan) { memcpy(c->vreg[d], z, 16); return 1; }
+            memcpy(x, a, 16); memcpy(y, b, 16);
+            switch (k) {                                /* one loop per op: the compiler vectorizes them */
+            case 0x1a: for (i = 0; i < 4; i++) z[i] = x[i] + y[i]; break;
+            case 0x3a: for (i = 0; i < 4; i++) z[i] = x[i] - y[i]; break;
+            case 0x5b: for (i = 0; i < 4; i++) z[i] = x[i] * y[i]; break;
+            default: {                                  /* fmax / fmin: a NaN operand need not reach z */
+                uint32_t xb[4], yb[4], zb[4];
+                memcpy(xb, a, 16); memcpy(yb, b, 16);
+                for (i = 0; i < 4; i++) nan |= x[i] != x[i] || y[i] != y[i];
+                for (i = 0; i < 4; i++)                 /* equal: +0 vs -0, max(+0, -0) = +0 */
+                    zb[i] = x[i] == y[i] ? (k == 0x1e ? xb[i] & yb[i] : xb[i] | yb[i])
+                          : (k == 0x1e ? x[i] > y[i] : x[i] < y[i]) ? xb[i] : yb[i];
+                memcpy(z, zb, 16);
+                break;
             }
+            }
+            /* a NaN result (from a NaN operand, inf - inf, 0 * inf) takes the general
+             * path: ARM's NaN rules */
+            for (i = 0; i < 4; i++) nan |= z[i] != z[i];
+            if (!nan) { memcpy(c->vreg[d], z, 16); return 1; }
         }
         /* scalar: fmulx, fcmeq/ge/gt, facge/gt, fabd, frecps, frsqrts */
         if (scalar && k != 0x1b && k != 0x1c && k != 0x5c && k != 0x7c && k != 0x5d && k != 0x7d
@@ -513,7 +528,7 @@ static int three_same(struct aoi_cpu *c, uint32_t insn, int scalar)
     return 1;
 }
 
-static int two_misc(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int two_misc(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0x1f;
     int n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, ne = (q ? 16 : 8) / esz, i, j;
@@ -558,6 +573,31 @@ static int two_misc(struct aoi_cpu *c, uint32_t insn)
         int dbl = size & 1, fesz = dbl ? 8 : 4, key = u << 6 | (size >> 1) << 5 | op;
         uint64_t z;
         if (dbl && !q) return 0;
+        /* fast path, single precision with the default FPCR (round to nearest even, as the
+         * host): conversions to and from 32-bit integers, which Skia does per pixel */
+        if (!dbl && !(c->fpcr & 0x03c00000u) &&
+            (key == 0x1d || key == 0x5d || key == 0x3b || key == 0x7b || key == 0x1a || key == 0x5a)) {
+            uint32_t xb[4], zb[4] = {0, 0, 0, 0};
+            float f;
+            memcpy(xb, a, 16);
+            for (i = 0; i < (q ? 4 : 2); i++) {
+                switch (key) {
+                case 0x1d: f = (float)(int32_t)xb[i]; memcpy(&zb[i], &f, 4); break;              /* scvtf */
+                case 0x5d: f = (float)xb[i]; memcpy(&zb[i], &f, 4); break;                       /* ucvtf */
+                default:
+                    memcpy(&f, &xb[i], 4);
+                    if (key == 0x1a || key == 0x5a) f = rintf(f);                                 /* fcvtn*: to even */
+                    else f = truncf(f);                                                           /* fcvtz* */
+                    if (key & 0x40) zb[i] = !(f > 0) ? 0 : f >= 4294967296.0f ? 0xffffffffu : (uint32_t)f;
+                    else zb[i] = f != f ? 0 : f >= 2147483648.0f ? 0x7fffffffu
+                               : f < -2147483648.0f ? 0x80000000u : (uint32_t)(int32_t)f;
+                    break;
+                }
+            }
+            memcpy(c->vreg[d], zb, 16);
+            if (!q) c->vreg[d][1] = 0;
+            return 1;
+        }
         for (i = 0; i < (q ? 16 : 8) / fesz; i++) {
             if (!fp_misc(key, lane(a, i, fesz), dbl, &z, 0)) return 0;
             setlane(r, i, fesz, z);
@@ -649,7 +689,7 @@ static int two_misc(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int across(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int across(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0x1f;
     int n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, ne = (q ? 16 : 8) / esz, i;
@@ -683,7 +723,7 @@ static int across(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int shift_imm(struct aoi_cpu *c, uint32_t insn, int scalar)
+static __attribute__((noinline)) int shift_imm(struct aoi_cpu *c, uint32_t insn, int scalar)
 {
     int q = scalar ? 1 : insn >> 30 & 1, u = insn >> 29 & 1, immh = insn >> 19 & 0xf, op = insn >> 11 & 0x1f;
     int n = insn >> 5 & 31, d = insn & 31, immhb = insn >> 16 & 0x7f, i;
@@ -721,6 +761,23 @@ static int shift_imm(struct aoi_cpu *c, uint32_t insn, int scalar)
     if ((op == 0x1c || op == 0x1f) && esz < 4) return 0;   /* fixed-point conversions: s/d only (no fp16) */
     if (esz == 8 && !q) return 0;
     ne = scalar ? 1 : (q ? 16 : 8) / esz;
+    if (!scalar && (op == 0x00 || (op == 0x0a && !u))) {   /* ushr / sshr / shl: lanes typed, no helpers */
+        #define SHIFT_LANES(T, ST, N)                                                               \
+        { T x[N], z[N]; memcpy(x, a, sizeof x);                                                      \
+          for (i = 0; i < ne; i++)                                                                   \
+              z[i] = op == 0x0a ? (T)(x[i] << lsh) : u ? (T)(rsh >= bits ? 0 : x[i] >> rsh)          \
+                   : (T)((ST)x[i] >> (rsh >= bits ? bits - 1 : rsh));                                \
+          for (; i < N; i++) z[i] = 0;                                                               \
+          memcpy(c->vreg[d], z, sizeof z); }
+        switch (esz) {
+        case 1: SHIFT_LANES(uint8_t, int8_t, 16) break;
+        case 2: SHIFT_LANES(uint16_t, int16_t, 8) break;
+        case 4: SHIFT_LANES(uint32_t, int32_t, 4) break;
+        default: SHIFT_LANES(uint64_t, int64_t, 2) break;
+        }
+        #undef SHIFT_LANES
+        return 1;
+    }
     for (i = 0; i < ne; i++) {
         uint64_t x = lane(a, i, esz), z, dv = lane(c->vreg[d], i, esz);
         __int128 sxv = sx(x, esz);
@@ -758,7 +815,7 @@ static int shift_imm(struct aoi_cpu *c, uint32_t insn, int scalar)
     return 1;
 }
 
-static int three_diff(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int three_diff(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0xf;
     int m = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, i, half = q ? 8 / esz : 0;
@@ -815,7 +872,7 @@ static int three_diff(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int copy(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int copy(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, op = insn >> 29 & 1, imm5 = insn >> 16 & 31, imm4 = insn >> 11 & 0xf;
     int n = insn >> 5 & 31, d = insn & 31, size, esz, idx, i;
@@ -858,7 +915,7 @@ static int copy(struct aoi_cpu *c, uint32_t insn)
     }
 }
 
-static int permute(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int permute(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, size = insn >> 22 & 3, op = insn >> 12 & 7;
     int m = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, esz = 1 << size, ne = (q ? 16 : 8) / esz, i;
@@ -880,7 +937,7 @@ static int permute(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int ext(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int ext(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, m = insn >> 16 & 31, pos = insn >> 11 & 0xf, n = insn >> 5 & 31, d = insn & 31;
     int len = q ? 16 : 8, i;
@@ -895,7 +952,7 @@ static int ext(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int tbl(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int tbl(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, m = insn >> 16 & 31, len = (insn >> 13 & 3) + 1, tbx = insn >> 12 & 1;
     int n = insn >> 5 & 31, d = insn & 31, i;
@@ -910,7 +967,7 @@ static int tbl(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int scalar_misc(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int scalar_misc(struct aoi_cpu *c, uint32_t insn)
 {
     int u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0x1f, n = insn >> 5 & 31, d = insn & 31;
     int dbl = size & 1, key = u << 6 | (size >> 1) << 5 | op;
@@ -920,7 +977,7 @@ static int scalar_misc(struct aoi_cpu *c, uint32_t insn)
     return 1;
 }
 
-static int scalar_pairwise(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int scalar_pairwise(struct aoi_cpu *c, uint32_t insn)
 {
     int u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0x1f, n = insn >> 5 & 31, d = insn & 31;
     if (u && (op == 0x0c || op == 0x0d || op == 0x0f)) {   /* fmaxnmp / fminnmp / faddp / fmaxp / fminp */
@@ -984,7 +1041,7 @@ static int int_elem(struct aoi_cpu *c, uint32_t insn, int scalar)
 }
 
 /* fmul / fmulx / fmla / fmls by element, vector and scalar */
-static int fp_elem(struct aoi_cpu *c, uint32_t insn, int scalar)
+static __attribute__((noinline)) int fp_elem(struct aoi_cpu *c, uint32_t insn, int scalar)
 {
     int q = insn >> 30 & 1, u = insn >> 29 & 1, sz = insn >> 22 & 1, L = insn >> 21 & 1, M = insn >> 20 & 1;
     int rm = insn >> 16 & 15, op = insn >> 12 & 0xf, H = insn >> 11 & 1, n = insn >> 5 & 31, d = insn & 31;
@@ -996,6 +1053,21 @@ static int fp_elem(struct aoi_cpu *c, uint32_t insn, int scalar)
     idx = dbl ? H : H << 1 | L;
     e = lane(c->vreg[M << 4 | rm], idx, fesz);
     ne = scalar ? 1 : (q ? 16 : 8) / fesz;
+    /* fast path: 4 x single fmla / fmls / fmul by element, default FPCR, no NaN in or out
+     * (ARM's NaN rules take the general path) */
+    if (!scalar && q && !dbl && !u && !(c->fpcr & 0x03c00000u)) {
+        float x[4], acc[4], z[4], f;
+        int nan;
+        memcpy(&f, &e, 4); memcpy(x, c->vreg[n], 16); memcpy(acc, c->vreg[d], 16);
+        nan = f != f;
+        for (i = 0; i < 4; i++) nan |= x[i] != x[i] || (op != 0x9 && acc[i] != acc[i]);
+        if (!nan) {
+            for (i = 0; i < 4; i++)
+                z[i] = op == 0x9 ? x[i] * f : fmaf(op == 0x5 ? -x[i] : x[i], f, acc[i]);
+            for (i = 0; i < 4; i++) nan |= z[i] != z[i];
+            if (!nan) { memcpy(c->vreg[d], z, 16); return 1; }
+        }
+    }
     for (i = 0; i < ne; i++) {
         uint64_t x = lane(c->vreg[n], i, fesz), acc = lane(c->vreg[d], i, fesz), z;
         switch (op) {
@@ -1011,7 +1083,7 @@ static int fp_elem(struct aoi_cpu *c, uint32_t insn, int scalar)
 }
 
 /* mov (scalar, element) = dup b/h/s/d, v.t[i] */
-static int scalar_dup(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int scalar_dup(struct aoi_cpu *c, uint32_t insn)
 {
     int imm5 = insn >> 16 & 31, n = insn >> 5 & 31, d = insn & 31, size, esz;
     if (!(imm5 & 0xf)) return 0;
@@ -1022,7 +1094,7 @@ static int scalar_dup(struct aoi_cpu *c, uint32_t insn)
 }
 
 /* ld1-ld4 / st1-st4 (single structure, one lane) and ld1r-ld4r */
-static int ldst_single(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int ldst_single(struct aoi_cpu *c, uint32_t insn)
 {
     int q = insn >> 30 & 1, post = insn >> 23 & 1, load = insn >> 22 & 1, R = insn >> 21 & 1;
     int rm = insn >> 16 & 31, opcode = insn >> 13 & 7, S = insn >> 12 & 1, size = insn >> 10 & 3;
@@ -1062,7 +1134,7 @@ wb:
 
 /* ---------------- scalar floating point ---------------- */
 
-static int fp_scalar(struct aoi_cpu *c, uint32_t insn)
+static __attribute__((noinline)) int fp_scalar(struct aoi_cpu *c, uint32_t insn)
 {
     int ptype = insn >> 22 & 3, n = insn >> 5 & 31, d = insn & 31, m = insn >> 16 & 31;
     int dbl = ptype == 1, fsz = dbl ? 8 : 4;
@@ -1170,28 +1242,119 @@ static int fp_scalar(struct aoi_cpu *c, uint32_t insn)
     #undef SETF
 }
 
+/* The commonest vector forms (Skia's raster pipeline: 4 x float arithmetic, bitwise
+ * selects), recognised by their whole opcode before the class decoders. 1: done; 0:
+ * not one of them, or a case the class decoder must handle (NaN, non-default FPCR). */
+static inline int simd_fast(struct aoi_cpu *c, uint32_t insn)
+{
+    int n = insn >> 5 & 31, m = insn >> 16 & 31, d = insn & 31, q = insn >> 30 & 1, i;
+    uint32_t key = insn & 0xbfe0fc00u;
+    switch (key) {
+    case 0x0e201c00u: case 0x0e601c00u: case 0x0ea01c00u: case 0x0ee01c00u:   /* and bic orr orn */
+    case 0x2e201c00u: case 0x2e601c00u: case 0x2ea01c00u: case 0x2ee01c00u: { /* eor bsl bit bif */
+        uint64_t r[2];
+        for (i = 0; i < 2; i++) {
+            uint64_t x = c->vreg[n][i], y = c->vreg[m][i], z = c->vreg[d][i];
+            switch (key >> 22 & 0x83) {                                            /* U, size */
+            case 0x00: r[i] = x & y; break;               case 0x01: r[i] = x & ~y; break;
+            case 0x02: r[i] = x | y; break;               case 0x03: r[i] = x | ~y; break;
+            case 0x80: r[i] = x ^ y; break;
+            case 0x81: r[i] = (z & x) | (~z & y); break;                           /* bsl */
+            case 0x82: r[i] = (z & ~y) | (x & y); break;                           /* bit */
+            default: r[i] = (z & y) | (x & ~y); break;                             /* bif */
+            }
+        }
+        c->vreg[d][0] = r[0]; c->vreg[d][1] = q ? r[1] : 0;
+        return 1;
+    }
+    case 0x0e20d400u: case 0x0ea0d400u: case 0x2e20dc00u:                     /* fadd fsub fmul .4s */
+    case 0x0e20f400u: case 0x0ea0f400u: {                                     /* fmax fmin .4s */
+        float x[4], y[4], z[4];
+        int nan = 0;
+        if (!q || (c->fpcr & 0x03c00000u)) return 0;
+        memcpy(x, c->vreg[n], 16); memcpy(y, c->vreg[m], 16);
+        switch (key) {
+        case 0x0e20d400u: for (i = 0; i < 4; i++) z[i] = x[i] + y[i]; break;
+        case 0x0ea0d400u: for (i = 0; i < 4; i++) z[i] = x[i] - y[i]; break;
+        case 0x2e20dc00u: for (i = 0; i < 4; i++) z[i] = x[i] * y[i]; break;
+        default: {
+            uint32_t xb[4], yb[4], zb[4];
+            int mx = key == 0x0e20f400u;
+            memcpy(xb, x, 16); memcpy(yb, y, 16);
+            for (i = 0; i < 4; i++) nan |= x[i] != x[i] || y[i] != y[i];
+            for (i = 0; i < 4; i++)                                  /* max(+0, -0) = +0, min = -0 */
+                zb[i] = x[i] == y[i] ? (mx ? xb[i] & yb[i] : xb[i] | yb[i])
+                      : (mx ? x[i] > y[i] : x[i] < y[i]) ? xb[i] : yb[i];
+            memcpy(z, zb, 16);
+            break;
+        }
+        }
+        for (i = 0; i < 4; i++) nan |= z[i] != z[i];                 /* ARM's NaN rules: the class decoder */
+        if (nan) return 0;
+        memcpy(c->vreg[d], z, 16);
+        return 1;
+    }
+    }
+    return 0;
+}
+
+/* Which class decoder an instruction word belongs to (0: none), and a cache of it, as
+ * core/cpu.c's decode cache: word << 32 | class, one 64-bit store. */
+static int simd_class(uint32_t insn)
+{
+    if ((insn & 0x9f200400u) == 0x0e200400u) return 1;
+    if ((insn & 0xdf200400u) == 0x5e200400u) return 2;
+    if ((insn & 0x9f3e0c00u) == 0x0e200800u) return 3;
+    if ((insn & 0x9f3e0c00u) == 0x0e300800u) return 4;
+    if ((insn & 0x9f800400u) == 0x0f000400u && (insn >> 19 & 0xf)) return 5;
+    if ((insn & 0xdf800400u) == 0x5f000400u && (insn >> 19 & 0xf)) return 6;
+    if ((insn & 0x9f200c00u) == 0x0e200000u) return 7;
+    if ((insn & 0x9fe08400u) == 0x0e000400u) return 8;
+    if ((insn & 0xbf208c00u) == 0x0e000800u) return 9;
+    if ((insn & 0xbfe08400u) == 0x2e000000u) return 10;
+    if ((insn & 0xbfe08c00u) == 0x0e000000u) return 11;
+    if ((insn & 0xbf000000u) == 0x0d000000u) return 12;
+    if ((insn & 0xdf3e0c00u) == 0x5e200800u) return 13;
+    if ((insn & 0xffe0fc00u) == 0x5e000400u) return 14;
+    if ((insn & 0xdf3e0c00u) == 0x5e300800u) return 15;
+    if ((insn & 0x9f000400u) == 0x0f000000u) return 16;
+    if ((insn & 0xdf000400u) == 0x5f000000u) return 17;
+    if ((insn & 0x5f000000u) == 0x1e000000u || (insn & 0xff000000u) == 0x1f000000u) return 18;
+    return 0;
+}
+
+#define SCACHE_BITS 13
+static uint64_t scache[1u << SCACHE_BITS];
+
 int aoi_simd_step(struct aoi_cpu *c, uint32_t insn)
 {
-    int ok;
-    if ((insn & 0x9f200400u) == 0x0e200400u) ok = three_same(c, insn, 0);
-    else if ((insn & 0xdf200400u) == 0x5e200400u) ok = three_same(c, insn, 1);
-    else if ((insn & 0x9f3e0c00u) == 0x0e200800u) ok = two_misc(c, insn);
-    else if ((insn & 0x9f3e0c00u) == 0x0e300800u) ok = across(c, insn);
-    else if ((insn & 0x9f800400u) == 0x0f000400u && (insn >> 19 & 0xf)) ok = shift_imm(c, insn, 0);
-    else if ((insn & 0xdf800400u) == 0x5f000400u && (insn >> 19 & 0xf)) ok = shift_imm(c, insn, 1);
-    else if ((insn & 0x9f200c00u) == 0x0e200000u) ok = three_diff(c, insn);
-    else if ((insn & 0x9fe08400u) == 0x0e000400u) ok = copy(c, insn);
-    else if ((insn & 0xbf208c00u) == 0x0e000800u) ok = permute(c, insn);
-    else if ((insn & 0xbfe08400u) == 0x2e000000u) ok = ext(c, insn);
-    else if ((insn & 0xbfe08c00u) == 0x0e000000u) ok = tbl(c, insn);
-    else if ((insn & 0xbf000000u) == 0x0d000000u) ok = ldst_single(c, insn);
-    else if ((insn & 0xdf3e0c00u) == 0x5e200800u) ok = scalar_misc(c, insn);
-    else if ((insn & 0xffe0fc00u) == 0x5e000400u) ok = scalar_dup(c, insn);
-    else if ((insn & 0xdf3e0c00u) == 0x5e300800u) ok = scalar_pairwise(c, insn);
-    else if ((insn & 0x9f000400u) == 0x0f000000u) ok = fp_elem(c, insn, 0);
-    else if ((insn & 0xdf000400u) == 0x5f000000u) ok = fp_elem(c, insn, 1);
-    else if ((insn & 0x5f000000u) == 0x1e000000u || (insn & 0xff000000u) == 0x1f000000u) ok = fp_scalar(c, insn);
-    else return 0;
+    int ok, cls;
+    uint64_t *slot = &scache[(insn * 0x9e3779b1u) >> (32 - SCACHE_BITS)], e;
+    if (simd_fast(c, insn)) return 1;
+    e = *slot;
+    if ((uint32_t)(e >> 32) == insn && (uint32_t)e) cls = (int)(uint32_t)e;
+    else if ((cls = simd_class(insn))) *slot = (uint64_t)insn << 32 | (uint32_t)cls;
+    switch (cls) {
+    case 1: ok = three_same(c, insn, 0); break;
+    case 2: ok = three_same(c, insn, 1); break;
+    case 3: ok = two_misc(c, insn); break;
+    case 4: ok = across(c, insn); break;
+    case 5: ok = shift_imm(c, insn, 0); break;
+    case 6: ok = shift_imm(c, insn, 1); break;
+    case 7: ok = three_diff(c, insn); break;
+    case 8: ok = copy(c, insn); break;
+    case 9: ok = permute(c, insn); break;
+    case 10: ok = ext(c, insn); break;
+    case 11: ok = tbl(c, insn); break;
+    case 12: ok = ldst_single(c, insn); break;
+    case 13: ok = scalar_misc(c, insn); break;
+    case 14: ok = scalar_dup(c, insn); break;
+    case 15: ok = scalar_pairwise(c, insn); break;
+    case 16: ok = fp_elem(c, insn, 0); break;
+    case 17: ok = fp_elem(c, insn, 1); break;
+    case 18: ok = fp_scalar(c, insn); break;
+    default: return 0;
+    }
     if (!ok) UNDEF();
     return 1;
 }

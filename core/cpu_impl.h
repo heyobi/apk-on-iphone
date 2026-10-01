@@ -7,6 +7,12 @@
 
 #include <string.h>
 
+/* Unaligned, aliasing-safe loads and stores of 2, 4, 8 bytes (GCC and clang): the
+ * compiler turns them into single moves, never memcpy calls. */
+typedef uint16_t __attribute__((may_alias, aligned(1))) aoi_u16u;
+typedef uint32_t __attribute__((may_alias, aligned(1))) aoi_u32u;
+typedef uint64_t __attribute__((may_alias, aligned(1))) aoi_u64u;
+
 /* Host pointer for a guest access needing `need` (AOI_PROT_*); NULL = fault, or
  * (sparse space only) an access that straddles two 2 MiB chunks, which rd/wr
  * then do byte-wise. The common case (inside one page) is inlined. */
@@ -38,7 +44,12 @@ static inline uint64_t rd(struct aoi_cpu *c, uint64_t a, int len)
     }
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     (void)i;
-    memcpy(&v, p, (size_t)len);                     /* little-endian host: the guest's byte order */
+    switch (len) {                                  /* little-endian host: the guest's byte order */
+    case 1: v = *p; break;
+    case 2: v = *(const aoi_u16u *)p; break;
+    case 4: v = *(const aoi_u32u *)p; break;
+    default: v = *(const aoi_u64u *)p; break;
+    }
 #else
     for (i = 0; i < len; i++) v |= (uint64_t)p[i] << (8 * i);
 #endif
@@ -67,7 +78,12 @@ static inline void wr(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
         return;
     }
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    memcpy(p, &v, (size_t)len);
+    switch (len) {
+    case 1: *p = (uint8_t)v; break;
+    case 2: *(aoi_u16u *)p = (uint16_t)v; break;
+    case 4: *(aoi_u32u *)p = (uint32_t)v; break;
+    default: *(aoi_u64u *)p = v; break;
+    }
 #else
     for (i = 0; i < len; i++) p[i] = (uint8_t)(v >> (8 * i));
 #endif
