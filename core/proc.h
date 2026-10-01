@@ -25,9 +25,10 @@ struct aoi_proc_fd {
     char path[AOI_PATH];            /* guest path it was opened with (resolved) */
     void *dir;                      /* host DIR* for getdents64, opened lazily */
     int kind;                       /* AOI_FD_* */
+    int nonblock;                   /* guest O_NONBLOCK (pipes: the host end is always non-blocking) */
 };
 
-enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD };
+enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE };
 
 /* A file mapping, kept to name code addresses in diagnostics. */
 struct aoi_proc_map { uint64_t start, len, off; char path[160]; };
@@ -51,6 +52,7 @@ struct aoi_thread {
     uint64_t altstack[3];           /* sigaltstack: sp, flags, size */
     uint64_t sigwait_mask;          /* AOI_T_SLEEP in rt_sigtimedwait: signals that end it */
     uint64_t sigwait_info;          /* its siginfo_t pointer, or 0 */
+    int restart;                    /* AOI_T_SLEEP before re-running a syscall: wake without touching x0 */
 };
 
 struct aoi_proc {

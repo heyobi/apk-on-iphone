@@ -17,7 +17,7 @@ build/test_scan: tests/test_scan.c $(CORE) core/*.h | build
 build/fixture.elf: tests/fixture.S | build
 	$(AARCH64) -o $@ $<
 
-test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf
+test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf build/pipes.elf
 	./build/test_vm
 	./build/test_scan build/fixture.elf
 	./build/apkscan build/fixture.elf
@@ -25,6 +25,7 @@ test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun
 	$(MAKE) build/libstep1.so
 	$(PYTHON) tests/difftest.py 300
 	./build/aoiproc build /signals.elf
+	./build/aoiproc build /pipes.elf
 	sh tests/run_android.sh
 
 build:
@@ -89,4 +90,8 @@ android-test: build/aoiproc
 
 # Signal delivery (SIGSEGV from a fault, sigreturn, tgkill, masks) through core/proc.c.
 build/signals.elf: tests/signals.c | build
+	clang --target=aarch64-linux-gnu -nostdlib -static -ffreestanding -fno-stack-protector -fuse-ld=lld -O1 -o $@ $<
+
+# pipe2: a blocking read across green threads, O_NONBLOCK.
+build/pipes.elf: tests/pipes.c | build
 	clang --target=aarch64-linux-gnu -nostdlib -static -ffreestanding -fno-stack-protector -fuse-ld=lld -O1 -o $@ $<

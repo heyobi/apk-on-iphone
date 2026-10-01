@@ -198,11 +198,28 @@ jars (no boot image to gain), and CMC on the device is untested.
 `aoiproc -t` prints a frame-pointer backtrace on each guest SIGSEGV and every
 sigaction a guest installs.
 
+**Toward the app process: `app_process64` (frameworks/base/cmds/app_process).** It is
+how Android runs framework-using Java commands (`am`, `pm`): AndroidRuntime starts ART
+with the full BCP and boot image, registers the framework's JNI from
+libandroid_runtime, then RuntimeInit runs a class's main. With
+`CLASSPATH=/data/local/tmp/hello.dex app_process64 /system/bin Hello` (and
+`AOI_UFFD=1`) it gets through AndroidRuntime and ART's start (401 M instructions) and
+stops where expected: ProcessState aborts because **/dev/binder** cannot be opened.
+Fixed on the way: the CPU ABI properties a GSI lacks (vendor partition) are now
+defaults in `tools/mkprops.py`; `pipe2` exists, with host ends non-blocking and a
+blocking guest read/write turned into a 1 ms sleep plus a re-run of the syscall
+(`AOI_STOP_RESTART`, so other green threads can write meanwhile; `tests/pipes.c` in
+`make test`). memfd_create stays ENOSYS on purpose: ART's JIT would then dual-map its
+code cache through MAP_SHARED, and our file mappings are private copies.
+
 **Next, in order:**
-1. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
+1. An in-process **/dev/binder**: version, mmap, looper threads that wait, transactions
+   to handle 0 (servicemanager) answered "no such service"; then native services
+   (AIM ADR 0013) one by one, as app_process asks for them.
+2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.
-2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
+3. fork/execve/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);
 signals are delivered at time-slice and syscall boundaries; sockets other

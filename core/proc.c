@@ -278,6 +278,7 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
     for (i = min; i < AOI_PROC_FDS; i++)
         if (!p->fd[i].used) {
             p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
+            p->fd[i].nonblock = 0;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
@@ -681,7 +682,8 @@ static int sig_send(struct aoi_proc *p, int i, int sig)
     if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && !(t->sigmask & SIGBIT(sig))) {
         uint64_t eintr = (uint64_t)-(int64_t)L_EINTR;
         t->state = AOI_T_RUN;
-        if (i == p->cur) p->cpu.x[0] = eintr; else t->cpu.x[0] = eintr;
+        if (t->restart) t->restart = 0;                        /* the syscall reruns after the handler */
+        else if (i == p->cur) p->cpu.x[0] = eintr; else t->cpu.x[0] = eintr;
     }
     return 1;
 }
@@ -758,6 +760,19 @@ static int sig_fault(struct aoi_proc *p)
 
 /* ---------- green threads ---------- */
 
+static int64_t now_ns(void);
+
+/* A blocking call that would wait (an empty pipe): the thread sleeps 1 ms and the
+ * syscall runs again, so the other guest threads (the writer) get to run. */
+static uint64_t block_and_retry(struct aoi_proc *p)
+{
+    p->th[p->cur].state = AOI_T_SLEEP;
+    p->th[p->cur].deadline = now_ns() + 1000000;
+    p->th[p->cur].restart = 1;
+    p->cpu.stop = AOI_STOP_RESTART;
+    return 0;
+}
+
 #define SLICE 100000                /* guest instructions per turn */
 
 static int64_t now_ns(void)
@@ -795,7 +810,8 @@ static int schedule(struct aoi_proc *p)
         for (i = 0; i < AOI_PROC_THREADS; i++) {
             struct aoi_thread *t = &p->th[i];
             if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline && t->deadline <= now) {
-                if (i == p->cur) p->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
+                if (t->restart) t->restart = 0;
+                else if (i == p->cur) p->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
                 else t->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
                 t->state = AOI_T_RUN;
             }
@@ -883,7 +899,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_getcwd = 17, NR_pipe2 = 59, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -1095,6 +1111,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_read: case NR_pread64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 1, nr == NR_read ? -1 : (int64_t)a3) : 0;
+        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p);
         break;
     }
     case NR_write: case NR_pwrite64: {
@@ -1107,6 +1124,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         }
         if (f->host <= 2) fflush(stdout);
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
+        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p);
         break;
     }
     case NR_readv: case NR_writev: {
@@ -1128,7 +1146,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = total;
             break;
         }
-        if (f->kind != AOI_FD_FILE) { r = err(L_ENOTCONN); break; }
+        if (f->kind != AOI_FD_FILE && f->kind != AOI_FD_PIPE) { r = err(L_ENOTCONN); break; }
         r = 0;
         for (i = 0; i < a2; i++) {
             uint8_t e[16];
@@ -1247,12 +1265,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             int d = dup(f->host), n;
             if (d < 0) { r = herr(); break; }
             if ((n = fd_new(p, d, f->path, (int)a2)) < 0) { close(d); r = err(L_EMFILE); break; }
+            p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
             r = (uint64_t)n;
             break;
         }
         case 1: case 2: r = 0; break;                              /* F_GETFD / F_SETFD */
-        case 3: r = 2; break;                                      /* F_GETFL: O_RDWR */
-        case 4: r = 0; break;                                      /* F_SETFL */
+        case 3: r = 2 | (f->nonblock ? 04000 : 0); break;          /* F_GETFL: O_RDWR (+ O_NONBLOCK) */
+        case 4: f->nonblock = (a2 & 04000) != 0; r = 0; break;     /* F_SETFL: O_NONBLOCK is what counts */
         default: r = err(L_EINVAL); break;
         }
         break;
@@ -1268,13 +1287,29 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             struct aoi_proc_fd *t = &p->fd[a1];
             if (t->used && a1 > 2) { if (t->dir) closedir(t->dir); else close(t->host); }
             if (a1 <= 2) { dup2(d, (int)a1); close(d); d = (int)a1; }
-            t->used = 1; t->host = d; t->dir = NULL;
+            t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
             join(t->path, AOI_PATH, "", f->path);
             r = a1;
         } else {
             if ((n = fd_new(p, d, f->path, 0)) < 0) { close(d); r = err(L_EMFILE); break; }
+            p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
             r = (uint64_t)n;
         }
+        break;
+    }
+    case NR_pipe2: {                                               /* host pipe, non-blocking underneath */
+        int hp[2], n0, n1;
+        int32_t gfd[2];
+        if (a1 & ~(uint64_t)(04000 | 02000000)) { r = err(L_EINVAL); break; }   /* O_NONBLOCK, O_CLOEXEC */
+        if (pipe(hp)) { r = herr(); break; }
+        fcntl(hp[0], F_SETFL, O_NONBLOCK); fcntl(hp[1], F_SETFL, O_NONBLOCK);
+        fcntl(hp[0], F_SETFD, FD_CLOEXEC); fcntl(hp[1], F_SETFD, FD_CLOEXEC);
+        if ((n0 = fd_new(p, hp[0], "pipe:[0]", 0)) < 0) { close(hp[0]); close(hp[1]); r = err(L_EMFILE); break; }
+        if ((n1 = fd_new(p, hp[1], "pipe:[0]", 0)) < 0) { p->fd[n0].used = 0; close(hp[0]); close(hp[1]); r = err(L_EMFILE); break; }
+        p->fd[n0].kind = p->fd[n1].kind = AOI_FD_PIPE;
+        p->fd[n0].nonblock = p->fd[n1].nonblock = (a1 & 04000) != 0;
+        gfd[0] = n0; gfd[1] = n1;
+        r = put(p, a0, gfd, 8) ? 0 : err(L_EFAULT);
         break;
     }
     case NR_socket: {                                              /* AF_UNIX only: logd, or nothing */
@@ -1781,6 +1816,6 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = err(L_ENOSYS);
         break;
     }
-    trace_sys(p, nr, r);
+    if (c->stop != AOI_STOP_RESTART) trace_sys(p, nr, r);       /* a blocked retry is not a result */
     return r;
 }

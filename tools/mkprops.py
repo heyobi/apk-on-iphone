@@ -125,7 +125,10 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__.split("\n\n")[0])
     root = sys.argv[1]
-    props = {}
+    # What a device's vendor partition (absent from a GSI) would say; build.prop wins.
+    props = {b"ro.product.cpu.abi": b"arm64-v8a", b"ro.product.cpu.abilist": b"arm64-v8a",
+             b"ro.product.cpu.abilist64": b"arm64-v8a", b"ro.product.cpu.abilist32": b"",
+             b"ro.zygote": b"zygote64"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)
