@@ -17,9 +17,17 @@ SideStore, AltStore or Sideloadly → install `ApkOnIphone.ipa`.
 
 ## 3. Enable JIT
 
-Open StikDebug and enable JIT for **APK on iPhone** (it launches the app attached).
-Without JIT the interpreter test still runs; the app says JIT is missing and does
-not try native code (executing it would kill the app).
+Open the app and press **JIT al**. It opens StikDebug with
+`stikdebug://enable-jit?bundle-id=…&pid=…` (plus `script-name=universal.js` on TXM
+devices). StikDebug attaches and returns to the app; the log then shows
+`JIT (CS_DEBUGGED): VAR`, and on TXM devices `TXM: 64 MB çalıştırılabilir alan hazır`.
+
+TXM devices (A15+/M2+ on iOS 26 or later — e.g. iPhone 13 and newer) need StikDebug's
+**universal** script: the app asks it, with `brk #0xf00d`, to prepare one executable
+region before StikDebug detaches. This has to happen on every launch.
+
+Without JIT the interpreter test still runs; the app does not try native code then
+(executing it would kill the app).
 
 ## 4. Run
 
@@ -36,11 +44,10 @@ Three ways to get executable memory are tried, each with a two-instruction funct
 
 | strategy | expected on |
 |---|---|
+| `TXM pool (StikDebug universal script)` | TXM devices, iOS 26+ (the only one tried there) |
 | `MAP_JIT + pthread_jit_write_protect_np` | iOS 17.4–18.x with StikDebug |
 | `mprotect RW -> RX` | older devices / iOS versions with CS_DEBUGGED |
 | `vm_remap dual mapping` | the MeloNX-style path |
 
-If all three report "kernel did not grant execute", the device is a TXM one
-(A15+/M2+ on iOS 26): it needs the StikDebug script protocol (a debugger that stays
-attached and authorizes one region at launch), which is the next step for this app.
-If a strategy crashes the app, the next launch notes it and skips it.
+If a strategy (or the TXM handshake) crashes the app, the next launch notes it and
+skips it; pressing **JIT al** again clears that and retries.
