@@ -65,7 +65,7 @@ build/isacheck: tools/isacheck.c $(CORE) core/oracle.c core/*.h | build
 # The iOS app's test sequence on the host.
 IOS_SRC := ios/gmptest.c ios/vmprobe.c ios/androidtest.c core/apk.c
 build/iostest: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h | build
-	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) -lm -lz
+	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) -lm -lz -lpthread
 
 build/test_vm: tests/test_vm.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tests/test_vm.c $(CORE) -lm

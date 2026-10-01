@@ -345,7 +345,11 @@ so the guest's /data is a writable copy in Documents (`p->data`: core/proc.c map
 what Qalculate's process opens (tools/tracefiles.py over a trace; .apex packages that
 are only stat'ed with O_PATH become empty files). The workflow builds aoi.dex (setup-java)
 and mapper.aoi.so (brew lld). Checked on the host with `build/iostest`
-(AOI_ANDROID_ROOT + AOI_APP_DATA): same frame.
+(AOI_ANDROID_ROOT + AOI_APP_DATA): same frame. Touch: the iOS view sends one-finger
+touches (`aoi_android_touch` -> `aoi_proc_touch`) into a host pipe the guest opens as
+/dev/aoi_input; `aoi.Input` (java/src) reads the records and sends MotionEvents with the
+framework's own InputEventSender on the server end of the window's input channel.
+`iostest` taps with `AOI_APP_TAPS="x,y;..."`.
 
 **Past layout, toward the first frame.** The window configuration now carries the
 screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);

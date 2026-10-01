@@ -170,6 +170,14 @@ static int classpath_env(const char *datadir, char vals[3][4096], const char **e
     return n;
 }
 
+static struct aoi_proc *volatile running;   /* the app's process, while aoi_android_app runs */
+
+void aoi_android_touch(int action, float x, float y)
+{
+    struct aoi_proc *p = running;
+    if (p) aoi_proc_touch(p, action, x, y);
+}
+
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
                     void *frame_ctx, aoi_log_fn log, void *ctx)
 {
@@ -209,7 +217,9 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     p->log = fdopen(dup(fd), "w");
     if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
     clock_gettime(CLOCK_MONOTONIC, &t0);
+    running = p;
     st = aoi_proc_run(p, 0);
+    running = NULL;
     clock_gettime(CLOCK_MONOTONIC, &t1);
     secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
     if (st == AOI_STOP_EXIT) {

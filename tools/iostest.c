@@ -5,22 +5,52 @@
 #include "../ios/vmprobe.h"
 #include "../ios/androidtest.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static void out(void *ctx, const char *line) { (void)ctx; printf("%s\n", line); }
+
+/* AOI_APP_TAPS="x,y;x,y;...": taps in screen pixels, 4 s apart, after the first frame. */
+static void *taps(void *arg)
+{
+    const char *s = arg;
+    float x, y;
+    int n;
+    while (sscanf(s, "%f,%f%n", &x, &y, &n) == 2) {
+        sleep(4);
+        printf("tap %.0f,%.0f\n", x, y);
+        fflush(stdout);
+        aoi_android_touch(0, x, y);
+        aoi_android_touch(1, x, y);
+        s += n;
+        if (*s == ';') s++;
+    }
+    return NULL;
+}
 
 /* The app button's frames: the newest one as a PPM file (ctx: its path). */
 static void frame(void *ctx, const unsigned char *px, unsigned w, unsigned h)
 {
-    FILE *f = fopen(ctx, "wb");
+    static int frames;
+    char path[600];
+    FILE *f;
     size_t i;
+    if (frames++ == 0 && getenv("AOI_APP_TAPS")) {
+        pthread_t t;
+        pthread_create(&t, NULL, taps, getenv("AOI_APP_TAPS"));
+        pthread_detach(t);
+    }
+    snprintf(path, sizeof path, "%s.%d.ppm", (const char *)ctx, frames);   /* every frame kept */
+    f = fopen(path, "wb");
     if (!f) return;
     fprintf(f, "P6\n%u %u\n255\n", w, h);
     for (i = 0; i < (size_t)w * h; i++) fwrite(px + 4 * i, 1, 3, f);
     fclose(f);
-    printf("frame %ux%u -> %s\n", w, h, (const char *)ctx);
+    printf("frame %ux%u -> %s\n", w, h, path);
+    fflush(stdout);
 }
 
 int main(int argc, char **argv)

@@ -89,6 +89,7 @@ struct aoi_proc {
      * packed 4-byte pixels (R, G, B, X/A) */
     void (*frame)(void *ctx, const uint8_t *pixels, uint32_t width, uint32_t height);
     void *frame_ctx;
+    int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;
@@ -119,6 +120,11 @@ int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind
 
 /* Read-write anonymous guest memory for a host-side service (gralloc buffers), named
  * `name` in crash reports: its address, or an error value (>= -4096). */
+/* A touch for the app (any host thread): action 0 down, 1 up, 2 move, at (x, y) in
+ * screen pixels. Goes to /dev/aoi_input, which java/src/aoi/Input.java reads and
+ * turns into MotionEvents on the window's input channel. Dropped until it is open. */
+void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y);
+
 uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name);
 void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len);
 

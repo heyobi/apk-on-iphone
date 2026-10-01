@@ -10,13 +10,35 @@
 #include "vmprobe.h"
 #include "androidtest.h"
 
+/* The Android app's screen: its frames, aspect-fit; one-finger touches go to the app
+ * in its pixels (aoi_android_touch). */
+@interface AoiScreen : UIImageView
+@end
+
+@implementation AoiScreen
+- (BOOL)send:(int)action touches:(NSSet<UITouch *> *)touches {
+    UITouch *t = touches.anyObject;
+    CGSize img = self.image.size, v = self.bounds.size;
+    if (!t || img.width <= 0) return NO;
+    CGFloat k = MIN(v.width / img.width, v.height / img.height);
+    CGFloat ox = (v.width - img.width * k) / 2, oy = (v.height - img.height * k) / 2;
+    CGPoint pt = [t locationInView:self];
+    aoi_android_touch(action, (float)((pt.x - ox) / k * self.image.scale), (float)((pt.y - oy) / k * self.image.scale));
+    return YES;
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { if (e.allTouches.count == 1) [self send:0 touches:t]; }
+- (void)touchesMoved:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { if (e.allTouches.count == 1) [self send:2 touches:t]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { [self send:1 touches:t]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { [self send:1 touches:t]; }
+@end
+
 @interface VC : UIViewController <UIDocumentPickerDelegate>
 @property(nonatomic, strong) UITextView *logView;
 @property(nonatomic, strong) UITextField *nField;
 @property(nonatomic, strong) NSData *apk;
 @property(nonatomic, strong) NSMutableString *log;
 @property(nonatomic) dispatch_queue_t work;
-@property(nonatomic, strong) UIImageView *screen;    /* the Android app's frames */
+@property(nonatomic, strong) AoiScreen *screen;      /* the Android app's frames */
 @end
 
 static void log_cb(void *ctx, const char *line);
@@ -190,16 +212,17 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     [self.apk writeToFile:[apkDir stringByAppendingPathComponent:@"base.apk"] atomically:NO];
 
     if (!self.screen) {
-        self.screen = [[UIImageView alloc] initWithFrame:self.view.bounds];
+        self.screen = [[AoiScreen alloc] initWithFrame:self.view.bounds];
         self.screen.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         self.screen.contentMode = UIViewContentModeScaleAspectFit;
         self.screen.backgroundColor = UIColor.blackColor;
         self.screen.userInteractionEnabled = YES;
         UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideScreen)];
-        t.numberOfTapsRequired = 2;
+        t.numberOfTouchesRequired = 2;                          /* two fingers: back to the log */
+        t.cancelsTouchesInView = NO;
         [self.screen addGestureRecognizer:t];
     }
-    [self append:@"Uygulama başlıyor (ilk kare yorumlayıcıda ~1 dakika sürebilir) ..."];
+    [self append:@"Uygulama başlıyor (ilk kare yorumlayıcıda ~1 dakika sürebilir). İki parmakla dokunmak loga döner."];
     dispatch_async(self.work, ^{
         aoi_android_app(root.UTF8String, data.UTF8String, logPath.UTF8String, frame_cb, (__bridge void *)self,
                         log_cb, (__bridge void *)self);

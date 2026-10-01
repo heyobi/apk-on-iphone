@@ -547,6 +547,7 @@ void aoi_proc_free(struct aoi_proc *p)
 {
     int i;
     aoi_binder_free(p);
+    if (p->input_w > 0) { close(p->input_w); p->input_w = 0; }
     for (i = 3; i < AOI_PROC_FDS; i++)
         if (p->fd[i].used) {
             if (p->fd[i].dir) closedir(p->fd[i].dir); else close(p->fd[i].host);
@@ -966,6 +967,15 @@ static void note_map(struct aoi_proc *p, uint64_t start, uint64_t len, uint64_t 
     }
 }
 
+void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y)
+{
+    int32_t rec[4];
+    int w = p->input_w;
+    if (w <= 0) return;
+    rec[0] = action; memcpy(&rec[1], &x, 4); memcpy(&rec[2], &y, 4); rec[3] = 0;
+    if (write(w, rec, sizeof rec) != (ssize_t)sizeof rec) {}       /* a full pipe drops it */
+}
+
 uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name)
 {
     uint64_t a = aoi_vm_map(&p->vm, 0, up(len, PAGE), AOI_PROT_R | AOI_PROT_W, 0);
@@ -1381,6 +1391,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
         if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
+        } else if (!strcmp(g, "/dev/aoi_input")) {                 /* touches from the host (aoi_proc_touch) */
+            int pv[2];
+            if (p->input_w > 0 || pipe(pv)) { r = err(L_EBUSY); break; }
+            fcntl(pv[0], F_SETFL, O_NONBLOCK); fcntl(pv[0], F_SETFD, FD_CLOEXEC); fcntl(pv[1], F_SETFD, FD_CLOEXEC);
+            if ((fdn = fd_new(p, pv[0], g, 0)) < 0) { close(pv[0]); close(pv[1]); r = err(L_EMFILE); break; }
+            p->fd[fdn].kind = AOI_FD_PIPE;
+            p->input_w = pv[1];
+            r = (uint64_t)fdn;
+            break;
         } else if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder")) {
             if ((hfd = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
             if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }

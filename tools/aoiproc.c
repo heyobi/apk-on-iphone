@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE                /* ru_maxrss on macOS */
 /* aoiproc: run an unmodified Android program, with Android's own linker64,
  * in the interpreter. usage: aoiproc [-t] [-e NAME=VALUE]... ROOT PROGRAM [args...]
  * ROOT is a guest root made by tools/android-root.sh; PROGRAM is a guest path

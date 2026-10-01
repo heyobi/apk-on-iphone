@@ -29,4 +29,8 @@ typedef void (*aoi_frame_fn)(void *ctx, const unsigned char *rgbx, unsigned widt
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
                     void *frame_ctx, aoi_log_fn log, void *ctx);
 
+/* A touch for the running app (from any thread): action 0 down, 1 up, 2 move, at
+ * (x, y) in its screen pixels (the frames' size). Ignored when no app runs. */
+void aoi_android_touch(int action, float x, float y);
+
 #endif

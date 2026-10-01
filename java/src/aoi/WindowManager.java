@@ -16,6 +16,7 @@ import android.view.InsetsState;
  *  Session it hands out. */
 final class WindowManager extends IWindowManager.Stub {
     private final WindowSession session = new WindowSession();
+    { Input.start(session); }                                      /* touches from the host */
 
     WindowManager() { super(GrantAll.INSTANCE); }
 
