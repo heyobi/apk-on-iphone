@@ -33,7 +33,7 @@ static void *taps(void *arg)
     float x, y;
     int n;
     while (sscanf(s, "%f,%f%n", &x, &y, &n) == 2) {
-        sleep(4);
+        sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
         fprintf(stderr, "[aoiproc] tap %.0f,%.0f\n", x, y);
         aoi_proc_touch(arg, 0, x, y);
         { struct timespec ts = { 0, 120000000 }; nanosleep(&ts, NULL); }   /* a finger stays ~0.1 s */
