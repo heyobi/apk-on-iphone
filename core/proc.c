@@ -27,6 +27,7 @@
 #define HIGH_START  (4ULL << 30)
 #define IS_ERR(v)   ((v) >= (uint64_t)-4096)
 #define STACK_TOP   (GUEST_SPACE - (1ULL << 30))
+#define SIGTRAMP    STACK_TOP                   /* one page: rt_sigreturn, the vDSO's role */
 #define STACK_SIZE  (8ULL << 20)
 #define PAGE        AOI_VM_PAGE
 #define GUEST_PID   1000
@@ -440,6 +441,14 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     if (IS_ERR(aoi_vm_map(&p->vm, STACK_TOP - STACK_SIZE, STACK_SIZE, AOI_PROT_R | AOI_PROT_W, 1)))
         return "cannot map the stack";
     note_map(p, STACK_TOP - STACK_SIZE, STACK_SIZE, 0, "[stack]");
+    {   /* The kernel returns from a handler without SA_RESTORER (bionic never sets it on
+         * arm64) through the vDSO's __kernel_rt_sigreturn; this page stands in for it. */
+        static const uint8_t tramp[8] = { 0x68, 0x11, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4 };   /* mov x8, #139; svc #0 */
+        if (IS_ERR(aoi_vm_map(&p->vm, SIGTRAMP, PAGE, AOI_PROT_R | AOI_PROT_X, 1)) ||
+            !aoi_vm_write(&p->vm, SIGTRAMP, tramp, sizeof tramp, 0))
+            return "cannot map the signal trampoline";
+        note_map(p, SIGTRAMP, PAGE, 0, "[vdso]");
+    }
     sp = STACK_TOP;
     execfn = push_str(p, &sp, path);
     platform = push_str(p, &sp, "aarch64");
@@ -561,7 +570,7 @@ static int sig_deliver(struct aoi_proc *p, int sig, const uint8_t *info, uint64_
     c->x[1] = frame;
     c->x[2] = frame + SF_UC;
     c->x[29] = frame + SF_RECORD;
-    c->x[30] = act[1] & SA_RESTORER_ ? act[2] : 0;
+    c->x[30] = act[1] & SA_RESTORER_ ? act[2] : SIGTRAMP;
     c->sp = frame;
     c->pc = act[0];
     c->excl_valid = 0;
@@ -673,6 +682,15 @@ static int sig_fault(struct aoi_proc *p)
             for (k = 0; k < 64; k += 4) fprintf(p->trace, " %08x", (unsigned)u32(obj + k));
             fprintf(p->trace, "\n");
         }
+#ifdef AOI_DEBUG
+        {
+            extern uint64_t *aoi_pcring;
+            uint64_t q;
+            if (aoi_pcring)                                        /* the last 40 pcs */
+                for (q = p->cpu.steps > 40 ? p->cpu.steps - 40 : 0; q < p->cpu.steps; q++)
+                    fprintf(p->trace, "[pc] %s\n", aoi_proc_where(p, aoi_pcring[q & 1023], w, sizeof w));
+        }
+#endif
         {                                                          /* frame-pointer backtrace */
             uint64_t fp = p->cpu.x[29], fr[2];
             for (k = 0; k < 24 && fp && aoi_vm_read(&p->vm, fp, fr, 16, AOI_PROT_R); k++, fp = fr[0])
@@ -1292,7 +1310,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                 uint64_t api[3];
                 if (!get(p, a2, api, 24)) { r = err(L_EFAULT); break; }
                 if (api[0] != 0xaa) { r = err(L_EINVAL); break; }
-                api[1] = 1u << 7 | 1u << 5 | 1u << 10;             /* SIGBUS, MISSING_SHMEM, MINOR_SHMEM */
+                api[1] = 1u << 7;                                  /* SIGBUS mode only: no shmem, no minor faults */
                 api[2] = 1ULL << 0x3f | 1ULL << 0 | 1ULL << 1;     /* API, REGISTER, UNREGISTER */
                 r = put(p, a2, api, 24) ? 0 : err(L_EFAULT);
             } else {
@@ -1342,7 +1360,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_madvise:
-        if (a2 == 4) {                                             /* MADV_DONTNEED: reads back as zero */
+        if (a2 == 4 || a2 == 9) {                                  /* MADV_DONTNEED / MADV_REMOVE: reads back as zero */
             uint64_t i;
             if (mapped(p, a0, a1))
                 for (i = 0; i < up(a1, PAGE); i += PAGE)
@@ -1444,6 +1462,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (a2 && !put(p, a2, p->sigact[a0], 32)) { r = err(L_EFAULT); break; }
         if (a1 && (a0 == 9 || a0 == 19)) { r = err(L_EINVAL); break; }
         if (a1 && !get(p, a1, p->sigact[a0], 32)) { r = err(L_EFAULT); break; }
+        if (a1 && p->trace)
+            fprintf(p->trace, "[sig] sigaction(%d): handler %#llx flags %#llx restorer %#llx\n", (int)a0,
+                    (unsigned long long)p->sigact[a0][0], (unsigned long long)p->sigact[a0][1], (unsigned long long)p->sigact[a0][2]);
         r = 0;
         break;
     case NR_rt_sigreturn:

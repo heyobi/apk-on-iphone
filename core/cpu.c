@@ -1,6 +1,18 @@
 #define _POSIX_C_SOURCE 200809L
 #include "cpu_impl.h"
 
+#ifdef AOI_DEBUG
+/* Debug build (make build/aoiproc-debug): AOI_WATCH=value logs every store of that
+ * 32-bit value, AOI_PCRING keeps the last 1024 pcs for the SIGSEGV trace. */
+uint32_t aoi_watch_val;
+uint64_t *aoi_pcring;
+void (*aoi_watch_fn)(struct aoi_cpu *c, uint64_t a, uint64_t v, int len);
+void aoi_watch_hit(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
+{
+    if (aoi_watch_fn) aoi_watch_fn(c, a, v, len);
+}
+#endif
+
 #include <string.h>
 #include <time.h>
 
@@ -136,6 +148,9 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             c->pc = c->x[30];
             continue;
         }
+#ifdef AOI_DEBUG
+        if (aoi_pcring) aoi_pcring[c->steps & 1023] = c->pc;
+#endif
         insn = (uint32_t)fetch(c, c->pc);
         if (c->stop != AOI_RUN) break;
         c->steps++;

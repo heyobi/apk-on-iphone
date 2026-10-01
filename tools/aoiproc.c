@@ -7,7 +7,7 @@
  * (one sample per 100k-instruction time slice, grouped by library).
  * Debug environment: AOI_UFFD=1 offers userfaultfd (ART: CMC GC + boot image),
  * AOI_STOP_AT=N stops after N instructions, AOI_DUMP=addr,len,file saves guest
- * memory at the end. */
+ * memory at the end; build/aoiproc-debug adds AOI_WATCH and AOI_PCRING (core/cpu.c). */
 #include "../core/proc.h"
 #ifdef AOI_ORACLE
 #include "../core/oracle.h"
@@ -20,6 +20,20 @@
 #include <time.h>
 
 static struct aoi_proc proc;
+
+#ifdef AOI_DEBUG
+extern uint32_t aoi_watch_val;
+extern void (*aoi_watch_fn)(struct aoi_cpu *c, uint64_t a, uint64_t v, int len);
+static struct aoi_proc *watch_proc;
+static void watch_print(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
+{
+    char w[256], w2[256];
+    fprintf(stderr, "[watch] %llu: store%d %#llx <- %#llx at %s lr %s\n", (unsigned long long)c->steps, len,
+            (unsigned long long)a, (unsigned long long)v, aoi_proc_where(watch_proc, c->pc, w, sizeof w),
+            aoi_proc_where(watch_proc, c->x[30], w2, sizeof w2));
+}
+
+#endif
 
 int main(int argc, char **argv)
 {
@@ -50,6 +64,10 @@ int main(int argc, char **argv)
         return 1;
     }
     if (trace) proc.trace = stderr;
+#ifdef AOI_DEBUG
+    { extern uint64_t *aoi_pcring; if (getenv("AOI_PCRING")) aoi_pcring = calloc(1024, 8); }
+    if (getenv("AOI_WATCH")) { aoi_watch_val = (uint32_t)strtoul(getenv("AOI_WATCH"), NULL, 0); watch_proc = &proc; aoi_watch_fn = watch_print; }
+#endif
     proc.uffd = getenv("AOI_UFFD") && *getenv("AOI_UFFD") == '1';
 #ifdef AOI_ORACLE
     if ((err = aoi_oracle_attach(&proc.cpu))) { fprintf(stderr, "oracle: %s\n", err); return 1; }

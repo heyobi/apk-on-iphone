@@ -138,28 +138,36 @@ delivers tgkill/kill to any thread (a sleeping or futex-waiting target returns
 EINTR), and applies default actions. `tests/signals.c` (in `make test`) checks the
 fault → handler → edited context → sigreturn path, self-tgkill and masking.
 
-**Boot image under CMC (open bug, off by default).** `AOI_UFFD=1 aoiproc …` makes
-userfaultfd(2) succeed and answer the UFFDIO_API handshake (SIGBUS, MISSING_SHMEM,
-MINOR_SHMEM); nothing else of userfaultfd is implemented yet. ART then picks the CMC GC
-and loads the full boot image (15 components at 0x70000000, oat files exactly at the
-addresses the image headers name, LZ4 blocks decompressed correctly, no relocation
-with `-Xnorelocate`). CMC *without* the image works (hello, 1.66 s host). **With** the
-image ART dies early in class initialisation (right after `android.system.OsConstants`):
-`Class::FindInterfaceMethod` / `Class::FindClassMethod` get a `java.lang.String` from
-the boot-framework image where a `Class` belongs, i.e. a type lookup through a DexCache
-returns a string. Same with `-Xint`, so it is not the AOT code. Ruled out: CPU
-semantics (the Unicorn oracle, MAX model with LSE, ran 131 M instructions of this exact
-run with no difference), mapping layout (a replay of every mmap/munmap/mprotect finds no
-MAP_FIXED over a live page except vdex over its own placeholder), relocation, madvise,
-threads. Next suspects: the DexCache native arrays and ART's linear-alloc arena pool
-under CMC (`GcVisitedArenaPool`), and any syscall whose result ART trusts for the
-image's lazily allocated arrays. Until that is found, userfaultfd stays ENOSYS by
-default, so ART keeps the CC GC, runs imageless and `make android-test` passes.
-`aoiproc -t` now prints a frame-pointer backtrace on each guest SIGSEGV.
+**Boot image under CMC: works (opt-in, `AOI_UFFD=1`).** With userfaultfd offered
+(SIGBUS mode in the UFFDIO_API handshake; nothing else of userfaultfd yet) ART picks the
+CMC GC, maps all 15 boot image components at 0x70000000 with their oat files, and runs
+the hello dex: **222 M instructions, 3.7 s host, 150 MiB of chunks** (full BCP; imageless
+with the full BCP was 248 M). `make android-test` checks both paths. Two emulation bugs
+were in the way, both found with the debug build's store watch (`AOI_WATCH`) and pc ring:
+
+- **madvise(MADV_REMOVE) was a no-op.** CMC's linear-alloc arena pool frees arenas with
+  MADV_REMOVE and relies on reading zeros afterwards; we left the old bytes, so a reused
+  arena handed DexCache type slots that still held `String` references from the
+  boot-framework image (`Class::FindClassMethod` got a String as `this`). Now zeroed like
+  MADV_DONTNEED.
+- **No vDSO sigreturn.** bionic on arm64 installs handlers *without* SA_RESTORER: the
+  kernel returns through the vDSO's `__kernel_rt_sigreturn`. Every handler that
+  returned normally (ART's implicit null checks → NullPointerException) jumped to 0. A
+  one-page `[vdso]` with `mov x8, #139; svc #0` now plays that role.
+
+Where the 222 M go (`aoiproc -p`): 30 % liblz4 (decompressing the images), 29 % libart,
+20 % libartbase, 10 % linker64. Storing the images uncompressed in the root would remove
+the LZ4 third. The image only pays off with the full BCP (framework classes for real
+apps); for the bare hello the six core jars imageless stay cheapest (81 M), which is
+what the phone runs. userfaultfd stays off by default until compaction works: a GC that
+compacts needs UFFDIO_REGISTER/COPY/ZEROPAGE and MREMAP_DONTUNMAP, none implemented yet.
+`aoiproc -t` prints a frame-pointer backtrace on each guest SIGSEGV and every
+sigaction a guest installs.
 
 **Next, in order:**
-1. Find the boot-image type-confusion bug above, then the rest of userfaultfd
-   (REGISTER/COPY/ZEROPAGE/CONTINUE) + MREMAP_DONTUNMAP for CMC compaction, then measure.
+1. userfaultfd for CMC compaction: per-page "missing" state in the VM (access → guest
+   SIGBUS), UFFDIO_REGISTER/COPY/ZEROPAGE, MREMAP_DONTUNMAP; a dex that allocates enough
+   to force a GC as the test. Then uncompressed boot images and a full-BCP measurement.
 2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);

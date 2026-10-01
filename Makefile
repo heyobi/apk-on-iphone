@@ -80,6 +80,10 @@ difftest: build/libstep1.so
 build/aoiproc: tools/aoiproc.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) -lm
 
+# Debug knobs in the hot paths (AOI_WATCH, AOI_PCRING): off in every other build.
+build/aoiproc-debug: tools/aoiproc.c $(CORE) core/*.h | build
+	$(CC) $(CFLAGS) -DAOI_DEBUG -o $@ tools/aoiproc.c $(CORE) -lm
+
 android-test: build/aoiproc
 	sh tests/run_android.sh
 

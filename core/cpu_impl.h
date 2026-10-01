@@ -40,10 +40,18 @@ static inline uint64_t rd(struct aoi_cpu *c, uint64_t a, int len)
     return v;
 }
 
+#ifdef AOI_DEBUG
+extern uint32_t aoi_watch_val;
+void aoi_watch_hit(struct aoi_cpu *c, uint64_t a, uint64_t v, int len);
+#endif
 static inline void wr(struct aoi_cpu *c, uint64_t a, uint64_t v, int len)
 {
     uint8_t *p = gptr(c, a, len, AOI_PROT_W), tmp[8];
     int i;
+#ifdef AOI_DEBUG
+    if (aoi_watch_val && len >= 4 && ((uint32_t)v == aoi_watch_val || (len == 8 && (uint32_t)(v >> 32) == aoi_watch_val)))
+        aoi_watch_hit(c, a, v, len);
+#endif
     if (c->trace && c->nwlog < 4) { c->wlog_addr[c->nwlog] = a; c->wlog_len[c->nwlog++] = len; }
     if (!p) {
         for (i = 0; i < len; i++) tmp[i] = (uint8_t)(v >> (8 * i));

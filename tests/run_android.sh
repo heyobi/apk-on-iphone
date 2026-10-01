@@ -33,4 +33,11 @@ python3 "$DIR/tests/mkdex.py" "$R/data/local/tmp/hello.dex"
 # shellcheck disable=SC2086
 check "ART hello dex" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
     -cp /data/local/tmp/hello.dex Hello
+# The same with userfaultfd offered: ART then takes the CMC GC and maps the boot
+# image (15 components, AOT code for every boot class) instead of running imageless.
+export AOI_UFFD=1
+# shellcheck disable=SC2086
+check "ART hello, boot image + CMC" "Merhaba from ART" $ENV /apex/com.android.art/bin/dalvikvm64 -Xverify:none \
+    -cp /data/local/tmp/hello.dex Hello
+unset AOI_UFFD
 exit $fail
