@@ -35,9 +35,16 @@ struct conn {
     uint32_t count;
 };
 
+#define LAYERS 256
+
+/* A layer: a name, an id, its handle (the IBinder apps pass in transactions). */
+struct layer { int used; uint32_t handle; int32_t id; char name[96]; };
+
 struct aoi_sf {
-    uint32_t handle;
+    uint32_t handle, client;                    /* ISurfaceComposer, the one ISurfaceComposerClient */
     struct conn c[CONNS];
+    struct layer l[LAYERS];
+    int32_t next_layer_id;
     int64_t vsync_id;
 };
 
@@ -110,6 +117,53 @@ static void connection(struct aoi_proc *p, void *self, uint32_t code, struct aoi
     }
 }
 
+/* ---------- layers: ISurfaceComposerClient ---------- */
+
+/* A layer handle has no interface of its own (SurfaceFlinger's LayerHandle is a bare
+ * BBinder); transactions name layers by it. */
+static void layer_handle(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
+{
+    (void)p; (void)self; (void)code; (void)req; (void)rep;
+}
+
+static void client(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
+{
+    struct aoi_sf *sf = self;
+    switch (code) {
+    case 1: {                                                  /* createSurface(name, flags, parent, metadata) */
+        char name[96];
+        uint32_t flags, start;
+        int k;
+        struct layer *ly;
+        aoi_rstr16(req, name, sizeof name);
+        flags = aoi_r32(req);
+        for (k = 0; k < LAYERS && sf->l[k].used; k++) {}
+        if (k == LAYERS) { rep->status = -12; return; }
+        ly = &sf->l[k];
+        memset(ly, 0, sizeof *ly);
+        ly->used = 1;
+        ly->id = ++sf->next_layer_id;
+        snprintf(ly->name, sizeof ly->name, "%s#%d", name, ly->id);
+        ly->handle = aoi_binder_native(p, NULL, "", layer_handle, ly);
+        if (!ly->handle) { ly->used = 0; rep->status = -12; return; }
+        if (p->trace) fprintf(p->trace, "[sf] layer %d \"%s\" flags %#x, handle %u\n", ly->id, ly->name, flags, ly->handle);
+        ok(rep);
+        aoi_p32(rep, 1);                                       /* non-null CreateSurfaceResult */
+        start = rep->n;
+        aoi_p32(rep, 0);                                       /* structured parcelable: its size, then fields */
+        aoi_phandle(rep, ly->handle);                          /*   handle */
+        aoi_p32(rep, (uint32_t)ly->id);                        /*   layerId */
+        aoi_pstr16(rep, ly->name);                             /*   layerName */
+        aoi_p32(rep, 0);                                       /*   transformHint */
+        { uint32_t size = rep->n - start; memcpy(rep->d + start, &size, 4); }
+        break;
+    }
+    default:
+        if (p->trace) fprintf(p->trace, "[sf] ISurfaceComposerClient call %u not implemented\n", code);
+        break;
+    }
+}
+
 /* ---------- ISurfaceComposer ---------- */
 
 static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
@@ -133,6 +187,12 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
         aoi_phandle(rep, h);
         break;
     }
+    case 3:                                                    /* createConnection() -> ISurfaceComposerClient */
+        if (!sf->client) sf->client = aoi_binder_native(p, NULL, "android.gui.ISurfaceComposerClient", client, sf);
+        if (!sf->client) { rep->status = -12; return; }
+        ok(rep);
+        aoi_phandle(rep, sf->client);
+        break;
     case 6:                                                    /* getPhysicalDisplayIds() -> long[] */
         ok(rep);
         aoi_p32(rep, 1);

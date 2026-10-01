@@ -84,4 +84,10 @@ final class PackageManager extends IPackageManager.Stub {
 
     @Override public ProviderInfo resolveContentProvider(String name, long flags, int userId) { return null; }
     @Override public ParceledListSlice getSystemAvailableFeatures() { return new ParceledListSlice(new ArrayList()); }
+    @Override public ParceledListSlice queryProperty(String name, int type) { return new ParceledListSlice(new ArrayList()); }
+
+    @Override
+    public android.content.pm.PackageManager.Property getPropertyAsUser(String name, String pkg, String cls, int userId) {
+        return null;                                               /* <property> tags are not read yet */
+    }
 }

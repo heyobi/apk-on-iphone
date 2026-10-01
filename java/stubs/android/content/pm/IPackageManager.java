@@ -29,6 +29,9 @@ public interface IPackageManager {
             throws RemoteException;
     ProviderInfo resolveContentProvider(String name, long flags, int userId) throws RemoteException;
     ParceledListSlice getSystemAvailableFeatures() throws RemoteException;
+    ParceledListSlice queryProperty(String propertyName, int componentType) throws RemoteException;
+    PackageManager.Property getPropertyAsUser(String propertyName, String packageName, String className, int userId)
+            throws RemoteException;
 
     abstract class Stub extends Binder implements IPackageManager {
         public Stub(android.os.PermissionEnforcer enforcer) {}

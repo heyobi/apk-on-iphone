@@ -310,10 +310,23 @@ the CPU) — the buffer path they need (layers, gralloc buffers SurfaceFlinger c
 is the same one a later GL-forwarding driver will use. **Qalculate's
 `MainActivity.onCreate` runs** (the app's own code) and stops at `window`.
 
+**MainActivity is resumed.** With `window` (IWindowManager + a WindowSession: windows get
+a real InputChannel pair, full-screen frames, a configuration with window bounds, a BLAST
+layer from our SurfaceFlinger on relayout), `input_method` (no IME yet: NO_IME),
+PackageManager.queryProperty, SurfaceFlinger's createConnection + ISurfaceComposerClient
+.createSurface (each layer its own native handle, a structured CreateSurfaceResult) and
+socketpair/sendto/recvfrom/sockopts in core/proc.c, the trace reads "window added:
+…/MainActivity" and "activity resumed". It then stops on NEON in libhwui (Skia):
+`tools/isawords.py` + `build/isacheck` over the rendering libraries (libhwui, minikin,
+harfbuzz, freetype, codecs, libgui/libui; 498 k distinct words) list 4,501 encodings in
+~60 mnemonics we do not execute yet — saturating/rounding/narrowing NEON, FP16
+conversions, reciprocal estimates, by-element multiplies, ld/st2-4 lanes.
+
 **Next, in order:**
-1. `window` (IWindowManager + IWindowSession in Java: addToDisplay, relayout with a
-   SurfaceControl from our SurfaceFlinger), then layers and gralloc buffers in core/sf.c,
-   then the first frame copied to the iPhone's screen.
+1. Those NEON encodings (isacheck to 0 missing, Unicorn-checked).
+2. gralloc: a native allocator service (`android.hardware.graphics.allocator.IAllocator/
+   default`) and a guest mapper library (`mapper.aoi.so`, stable-C AIMapper v5) over
+   host-shared memory; SurfaceFlinger's transactions; the first frame on the iPhone.
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.
