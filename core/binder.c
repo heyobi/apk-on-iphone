@@ -30,6 +30,8 @@
 #define BR_DEAD_REPLY       0x00007205u
 #define BR_TRANSACTION_COMPLETE 0x00007206u
 #define BR_NOOP             0x0000720cu
+#define BR_INCREFS          0x80107207u                        /* {ptr, cookie}: the owner takes a weak ref */
+#define BR_ACQUIRE          0x80107208u                        /* {ptr, cookie}: ... and a strong one */
 #define TF_ONE_WAY          0x01u
 
 #define BINDER_WRITE_READ   0xc0306201u
@@ -50,9 +52,17 @@
 /* Per guest thread: BR_* words waiting to be read, and whether it is a looper. */
 struct bthread { int tid, looper; uint32_t n; uint8_t q[512]; };
 
+/* A service registered with addService: the flat_binder_object it was given. All
+ * services live in this process, so getService hands back the very same object
+ * (type BINDER, the guest's own pointer and cookie): libbinder then resolves it to
+ * the local BBinder, and Java gets its own Binder object back, no driver involved. */
+struct service { char name[96]; uint32_t type, flags; uint64_t binder, cookie; int32_t stability; };
+
 struct aoi_binder {
     uint64_t buf, buflen, next;     /* the guest's receive mapping, bump allocator in it */
     struct bthread th[AOI_PROC_THREADS];
+    struct service svc[128];
+    int nsvc;
 };
 
 static struct aoi_binder *state(struct aoi_proc *p)
@@ -93,7 +103,7 @@ static void push32(struct bthread *t, uint32_t v) { push(t, &v, 4); }
 
 /* ---------- parcels ---------- */
 
-struct parcel { uint8_t d[1024]; uint32_t n; };
+struct parcel { uint8_t d[1024]; uint32_t n; uint64_t obj[4]; int nobj; uint64_t hold[2]; };
 
 static void p32(struct parcel *pc, uint32_t v)
 {
@@ -127,12 +137,22 @@ static void str16_at(const uint8_t *d, uint32_t n, uint32_t off, char *out, size
     out[i] = 0;
 }
 
-/* servicemanager (handle 0): the reply to `code` with request `req`. */
-static void servicemanager(struct aoi_proc *p, uint32_t code, const uint8_t *req, uint32_t n, struct parcel *rep)
+static struct service *find(struct aoi_binder *b, const char *name)
+{
+    int i;
+    for (i = 0; i < b->nsvc; i++) if (!strcmp(b->svc[i].name, name)) return &b->svc[i];
+    return NULL;
+}
+
+/* servicemanager (handle 0): the reply to `code` with request `req`, whose first
+ * object (if any) sits at byte offset obj0. */
+static void servicemanager(struct aoi_proc *p, struct aoi_binder *b, uint32_t code, const uint8_t *req, uint32_t n,
+                           int64_t obj0, struct parcel *rep)
 {
     char iface[96], name[128];
     uint32_t ilen = 0;
-    rep->n = 0;
+    struct service *sv;
+    rep->n = 0; rep->nobj = 0; rep->hold[0] = rep->hold[1] = 0;
     if (code == PING_TRANSACTION) return;                      /* empty reply: alive */
     if (code == INTERFACE_TRANSACTION) { pstr16(rep, "android.os.IServiceManager"); return; }
     if (code >> 24 == '_') return;                             /* other meta transactions: nothing */
@@ -140,10 +160,34 @@ static void servicemanager(struct aoi_proc *p, uint32_t code, const uint8_t *req
     str16_at(req, n, 12, iface, sizeof iface);
     if (n >= 16) { memcpy(&ilen, req + 12, 4); ilen = 16 + ((2 * (ilen + 1) + 3) & ~3u); }
     str16_at(req, n, ilen, name, sizeof name);
-    if (p->trace) fprintf(p->trace, "[binder] servicemanager call %u (%s) \"%s\": no such service\n", code, iface, name);
+    sv = find(b, name);
+    if (code == 3 && obj0 >= 0 && obj0 + 28 <= (int64_t)n) {  /* addService(name, binder, ...) */
+        if (!sv && b->nsvc < (int)(sizeof b->svc / sizeof b->svc[0])) sv = &b->svc[b->nsvc++];
+        if (sv) {
+            /* the kernel holds a node it gives out: weak + strong refs on the owner's
+             * object, which keep e.g. a Java service's native JavaBBinder alive */
+            memcpy(&rep->hold[0], req + obj0 + 8, 8); memcpy(&rep->hold[1], req + obj0 + 16, 8);
+            snprintf(sv->name, sizeof sv->name, "%s", name);
+            memcpy(&sv->type, req + obj0, 4); memcpy(&sv->flags, req + obj0 + 4, 4);
+            memcpy(&sv->binder, req + obj0 + 8, 8); memcpy(&sv->cookie, req + obj0 + 16, 8);
+            memcpy(&sv->stability, req + obj0 + 24, 4);
+            if (p->trace)
+                fprintf(p->trace, "[binder] addService \"%s\": object at %lld: type %#x flags %#x binder %#llx cookie %#llx stability %d\n",
+                        name, (long long)obj0, sv->type, sv->flags, (unsigned long long)sv->binder,
+                        (unsigned long long)sv->cookie, sv->stability);
+        }
+    }
+    if (p->trace)
+        fprintf(p->trace, "[binder] servicemanager call %u (%s) \"%s\"%s\n", code, iface, name,
+                code == 3 ? ": registered" : (code == 1 || code == 2) ? (sv ? ": found" : ": no such service") : "");
     p32(rep, 0);                                               /* Status: no exception */
     switch (code) {
-    case 1: case 2: pnullbinder(rep); break;                   /* getService / checkService: null */
+    case 1: case 2:                                            /* getService / checkService */
+        if (!sv) { pnullbinder(rep); break; }
+        rep->obj[rep->nobj++] = rep->n;
+        p32(rep, sv->type); p32(rep, sv->flags); p64(rep, sv->binder); p64(rep, sv->cookie);
+        p32(rep, (uint32_t)sv->stability);
+        break;
     case 3: case 5: case 6: break;                             /* addService, (un)registerForNotifications */
     case 7: p32(rep, 0); break;                                /* isDeclared: false */
     case 4: case 8: case 10: p32(rep, 0); break;               /* listServices, getDeclaredInstances, getUpdatableNames: [] */
@@ -174,9 +218,10 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
         else if (cmd == BC_EXIT_LOOPER) t->looper = 0;
         else if (cmd == BC_TRANSACTION || cmd == BC_TRANSACTION_SG) {
             uint32_t handle, code, flags;
-            uint64_t dsize, dptr;
+            uint64_t dsize, dptr, osize, optr, o0 = 0;
             memcpy(&handle, pay, 4); memcpy(&code, pay + 16, 4); memcpy(&flags, pay + 20, 4);
-            memcpy(&dsize, pay + 32, 8); memcpy(&dptr, pay + 48, 8);
+            memcpy(&dsize, pay + 32, 8); memcpy(&osize, pay + 40, 8); memcpy(&dptr, pay + 48, 8); memcpy(&optr, pay + 56, 8);
+            if (osize < 8 || !gread(p, optr, &o0, 8)) o0 = ~0ULL;
             push32(t, BR_TRANSACTION_COMPLETE);
             if (flags & TF_ONE_WAY) continue;
             if (handle != 0 || !b->buf) {                      /* nobody else exists */
@@ -190,15 +235,24 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
                 uint64_t at, tr[8];
                 uint32_t rn = dsize < sizeof req ? (uint32_t)dsize : sizeof req;
                 if (!gread(p, dptr, req, rn)) rn = 0;
-                servicemanager(p, code, req, rn, &rep);
-                if (b->next + rep.n + 8 > b->buflen) b->next = 0;
-                at = b->buf + b->next;
-                b->next += (rep.n + 15) & ~7u;
+                servicemanager(p, b, code, req, rn, o0 == ~0ULL ? -1 : (int64_t)o0, &rep);
+                {                                              /* data, then the object offsets */
+                    uint32_t dn = (rep.n + 7) & ~7u, on = 8u * (uint32_t)rep.nobj;
+                    if (b->next + dn + on + 8 > b->buflen) b->next = 0;
+                    at = b->buf + b->next;
+                    b->next += dn + on + 8;
+                    if (on && !aoi_vm_write(&p->vm, at + dn, rep.obj, on, 0)) { push32(t, BR_DEAD_REPLY); continue; }
+                }
                 /* the receive buffer is read-only to the guest; the driver writes it anyway */
                 if (!aoi_vm_write(&p->vm, at, rep.d, rep.n, 0)) { push32(t, BR_DEAD_REPLY); continue; }
                 memset(tr, 0, sizeof tr);                      /* binder_transaction_data */
-                tr[4] = rep.n;                                 /* data_size; offsets_size 0 */
+                tr[4] = rep.n;                                 /* data_size */
+                tr[5] = 8u * (uint32_t)rep.nobj;               /* offsets_size */
                 tr[6] = at; tr[7] = at + ((rep.n + 7) & ~7u);  /* buffer, offsets */
+                if (rep.hold[1]) {
+                    push32(t, BR_INCREFS); push(t, rep.hold, 16);
+                    push32(t, BR_ACQUIRE); push(t, rep.hold, 16);
+                }
                 push32(t, BR_REPLY);
                 push(t, tr, sizeof tr);
             }

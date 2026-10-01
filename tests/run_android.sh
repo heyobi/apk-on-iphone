@@ -53,5 +53,12 @@ SCP=$(awk '$2=="SYSTEMSERVERCLASSPATH" {printf "-e %s=%s", $2, $3}' "$R/data/sys
 # shellcheck disable=SC2086
 check "app_process64 (framework runtime, binder)" "Merhaba from ART" $ENV $SCP -e CLASSPATH=/data/local/tmp/hello.dex \
     /system/bin/app_process64 /system/bin Hello
+# Our own Java (java/src, built by tools/javadex.sh) in the app process: a service
+# registered with servicemanager comes back as the same local object.
+if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local/tmp/aoi.dex" >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    check "in-process services (Java binder, servicemanager)" "servicemanager: local binder ok" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ServiceTest
+else echo "SKIP android: in-process services (no javac)"; fi
 unset AOI_UFFD
 exit $fail

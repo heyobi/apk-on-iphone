@@ -249,10 +249,26 @@ host's poll(2) with no wait for pipes and files, and a wait with nothing ready s
 wall. (Fixed on the way: binder replies were written with the guest's protection, but the
 receive buffer is read-only to the guest, so every non-empty reply became DEAD_REPLY.)
 
+**System services will be Java, in the app process.** Building framework Parcelables
+(ApplicationInfo, Configuration, …) by hand in C would be fragile and tied to one
+Android version; instead our services are Java classes (`java/src`) loaded into the app
+process, subclassing the framework's own `I…Manager.Stub`s, so they can use the framework
+to build those objects. The servicemanager in core/binder.c keeps the flat_binder_object
+`addService` gave it and returns that same object from `getService`: libbinder resolves
+it to the local BBinder and Java gets its own Binder back — every call is a plain Java
+call, no parcel crosses the driver. As the kernel does for a node it holds, it sends the
+owner BR_INCREFS + BR_ACQUIRE (without them the native JavaBBinder was freed after
+addService and getService returned a dangling pointer). Toolchain: `tools/javadex.sh`
+compiles `java/src` with javac (Java 8 level) against hand-written stubs of the hidden
+framework classes in `java/stubs` (compile-only), then dx (dalvik-dx from Maven Central,
+pinned; d8 lives on the unreachable dl.google.com). `aoi.ServiceTest` in
+`make android-test`: "servicemanager: local binder ok".
+
 **Next, in order:**
-1. An in-process **ActivityManager** (and then package, window, …) behind a real binder
-   handle: attachApplication → bindApplication with the APK's ApplicationInfo →
-   the app's Application and launcher Activity (AIM ADR 0013 style native services).
+1. `aoi.Main`: register an ActivityManager (IActivityManager.Stub subclass, only the
+   calls apps make) and the other services an app asks for, then hand over to
+   ActivityThread.main; attachApplication → bindApplication with the APK's
+   ApplicationInfo → the app's Application and launcher Activity.
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.
