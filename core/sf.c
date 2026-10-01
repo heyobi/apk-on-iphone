@@ -268,7 +268,8 @@ static void release(struct aoi_proc *p, struct aoi_sf *sf)
     memset(&pc, 0, sizeof pc);
     aoi_p32(&pc, 0); aoi_p32(&pc, 0xffffffffu); aoi_p32(&pc, 0x53595354u);   /* interface token */
     aoi_pstr16(&pc, "android.gui.ITransactionComposerListener");
-    aoi_p64(&pc, sf->shown.gb); aoi_p64(&pc, sf->shown.number);              /* ReleaseCallbackId */
+    aoi_p32(&pc, 1);                                                           /* non-null ReleaseCallbackId: */
+    aoi_p64(&pc, sf->shown.gb); aoi_p64(&pc, sf->shown.number);              /*   buffer id, frame number */
     aoi_p32(&pc, 4); aoi_p32(&pc, 0); aoi_p32(&pc, 0);                         /* Fence: no fd */
     aoi_p32(&pc, 1);                                                           /* currentMaxAcquiredBufferCount */
     aoi_binder_send(p, sf->shown.ptr, sf->shown.cookie, 2, &pc);              /* ON_RELEASE_BUFFER */
