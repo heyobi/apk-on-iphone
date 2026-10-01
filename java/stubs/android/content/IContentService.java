@@ -48,6 +48,6 @@ public interface IContentService {
     void unregisterContentObserver(android.database.IContentObserver a0) throws RemoteException;
 
     abstract class Stub extends Binder implements IContentService {
-        public Stub() {}
+        public Stub(android.os.PermissionEnforcer enforcer) {}
     }
 }

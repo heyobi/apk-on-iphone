@@ -5,6 +5,8 @@ import android.content.IContentService;
 /** "content": no sync adapters, no observers delivered yet (registerContentObserver
  *  must not fail: Settings and the app's own providers use it). */
 final class ContentService extends IContentService.Stub {
+    ContentService() { super(GrantAll.INSTANCE); }
+
     @Override public android.content.SyncAdapterType[] getSyncAdapterTypes() { return null; }
     @Override public android.content.SyncAdapterType[] getSyncAdapterTypesAsUser(int a0) { return null; }
     @Override public android.content.SyncStatusInfo getSyncStatus(android.accounts.Account a0, java.lang.String a1, android.content.ComponentName a2) { return null; }
