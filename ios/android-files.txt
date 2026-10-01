@@ -5,6 +5,7 @@
 # Includes files written by tools/android-setup.sh. Made from the AOSP 14 GSI pinned in
 # tools/fetch-android.sh with tools/tracefiles.py over aoiproc -t traces; regenerate
 # when that changes. aoi.dex and mapper.aoi.so are built by the workflow.
+# The programs aoiproc execs itself (app_process64, linker64) are not in traces: listed by hand.
 /apex/apex-info-list.xml
 /apex/com.android.adservices/javalib/framework-adservices.jar
 /apex/com.android.adservices/javalib/framework-sdksandbox.jar
@@ -119,6 +120,7 @@
 ~/system/apex/com.android.wifi.capex
 /system/bin/[
 /system/bin/acpi
+/system/bin/app_process64
 /system/bin/base64
 /system/bin/basename
 /system/bin/blockdev

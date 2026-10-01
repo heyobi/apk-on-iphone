@@ -4,7 +4,8 @@ for tools/mini-root.sh (one guest path per line, sorted). Symlinks on the way ar
 listed too (mini-root.sh keeps them as links), with what they point to. Left out:
 what the app or our build writes at run time (/data/app, /data/data, /data/user*,
 aoi.dex, mapper.aoi.so), /dev and /proc. A file only ever opened with O_PATH (looked
-at, never read: the .apex packages) is listed as "~path": mini-root.sh makes it empty."""
+at, never read: the .apex packages) is listed as "~path": mini-root.sh makes it empty. The program aoiproc execs (and its
+interpreter) is loaded without an open: add it by hand."""
 import os
 import re
 import sys
