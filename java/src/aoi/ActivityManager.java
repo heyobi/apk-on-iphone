@@ -21,11 +21,13 @@ import java.util.HashMap;
 final class ActivityManager extends IActivityManager.Stub {
     private final ApplicationInfo app;
     private final ActivityInfo launcher;
+    private final ArrayList providers = new ArrayList();          /* the app's own, installed at bind */
     IApplicationThread thread;
 
-    ActivityManager(ApplicationInfo app, ActivityInfo launcher) {
-        this.app = app;
-        this.launcher = launcher;
+    ActivityManager(App a) {
+        this.app = a.info;
+        this.launcher = a.launcher;
+        for (android.content.pm.PackageParser.Provider p : a.pkg.providers) providers.add(p.info);
     }
 
     /** ActivityThread.attach(): the app is up; tell it which application it runs. */
@@ -34,7 +36,7 @@ final class ActivityManager extends IActivityManager.Stub {
         thread = t;
         System.out.println("aoi: attachApplication, binding " + app.packageName);
         Configuration config = phone();
-        t.bindApplication(app.packageName, app, null, null, false, ProviderInfoList.fromList(new ArrayList()),
+        t.bindApplication(app.packageName, app, null, null, false, ProviderInfoList.fromList(providers),
                 null, null, null, null, null, 0,
                 false, false, false, false, config, CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO,
                 new HashMap<String, Object>(), new Bundle(), "unknown", null, null, new long[0], null, 0, 0);
@@ -126,10 +128,29 @@ final class ActivityManager extends IActivityManager.Stub {
     @Override public void finishReceiver(IBinder who, int code, String data, Bundle map, boolean abort, int flags) {}
 
     /* ---- content providers: none outside the app ---- */
+    private android.app.ContentProviderHolder settings;
+
+    /** Providers outside the app: only "settings" (the app's own are installed in-process
+     *  from bindApplication's provider list). */
     @Override
     public android.app.ContentProviderHolder getContentProvider(IApplicationThread caller, String pkg, String name,
             int userId, boolean stable) {
-        return null;
+        if (!"settings".equals(name)) return null;
+        if (settings == null) {
+            android.content.pm.ProviderInfo pi = new android.content.pm.ProviderInfo();
+            pi.authority = "settings";
+            pi.name = "aoi.SettingsProvider";
+            pi.packageName = "com.android.providers.settings";
+            pi.applicationInfo = app;
+            pi.exported = true;
+            SettingsProvider sp = new SettingsProvider();
+            sp.attachInfo(android.app.ActivityThread.currentApplication(), pi);
+            settings = new android.app.ContentProviderHolder(pi);
+            settings.info = pi;
+            settings.provider = sp.getIContentProvider();
+            settings.noReleaseNeeded = true;
+        }
+        return settings;
     }
 
     @Override public void publishContentProviders(IApplicationThread caller, java.util.List providers) {}

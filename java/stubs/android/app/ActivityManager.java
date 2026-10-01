@@ -8,4 +8,7 @@ public class ActivityManager {
 
     public static class RunningAppProcessInfo {
     }
+
+    public static class TaskDescription {
+    }
 }

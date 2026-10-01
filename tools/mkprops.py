@@ -128,7 +128,8 @@ def main():
     # What a device's vendor partition (absent from a GSI) would say; build.prop wins.
     props = {b"ro.product.cpu.abi": b"arm64-v8a", b"ro.product.cpu.abilist": b"arm64-v8a",
              b"ro.product.cpu.abilist64": b"arm64-v8a", b"ro.product.cpu.abilist32": b"",
-             b"ro.zygote": b"zygote64"}
+             b"ro.zygote": b"zygote64",
+             b"servicemanager.ready": b"true"}       # set by servicemanager on a device (ours is in core/binder.c)
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

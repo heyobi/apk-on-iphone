@@ -56,7 +56,10 @@ final class PackageManager extends IPackageManager.Stub {
     }
 
     @Override public ServiceInfo getServiceInfo(ComponentName c, long flags, int userId) { return null; }
-    @Override public ProviderInfo getProviderInfo(ComponentName c, long flags, int userId) { return null; }
+    @Override
+    public ProviderInfo getProviderInfo(ComponentName c, long flags, int userId) {
+        return ours(c.getPackageName()) ? app.provider(c.getClassName()) : null;
+    }
     @Override public ActivityInfo getReceiverInfo(ComponentName c, long flags, int userId) { return null; }
     @Override public boolean hasSystemFeature(String name, int version) { return false; }
     @Override public int getComponentEnabledSetting(ComponentName c, int userId) { return 0; }   /* DEFAULT */

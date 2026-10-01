@@ -13,11 +13,17 @@ public class PackageParser {
         public int mVersionCode;
         public ApplicationInfo applicationInfo;
         public final ArrayList<Activity> activities = null;
+        public final ArrayList<Provider> providers = null;
     }
 
     public static final class Activity {
         public ActivityInfo info;
         public ArrayList<ActivityIntentInfo> intents;           /* declared on Component */
+    }
+
+    public static final class Provider {
+        public ProviderInfo info;
+        public android.os.Bundle metaData;                      /* declared on Component */
     }
 
     public static final class ActivityIntentInfo {

@@ -280,10 +280,27 @@ permissions). Missing ones are reported by the AbstractMethodError they raise. L
 AIDL stubs of permission-annotated interfaces need our own PermissionEnforcer (the
 default wants system_server's context); a Configuration must carry a locale.
 
+Since then (same loop: run, read the AbstractMethodError or NPE, add the call):
+`activity_task` (IActivityTaskManager + an ActivityClientController for lifecycle
+reports, display 0, one task), `user` (user 0, unlocked, unrestricted), a **settings
+provider** (`aoi.SettingsProvider`, a real ContentProvider answering
+`call("GET_global"/"GET_secure"/"GET_system")` from phone defaults — Settings does not
+tolerate a missing one; handed out by getContentProvider("settings")), and the app's
+**own content providers** passed to bindApplication, so androidx.startup's
+InitializationProvider runs its initializers (PackageManager.getProviderInfo returns
+the manifest meta-data it reads). CPU: `shll{2}` (ART's compaction uses it; checked
+against Unicorn). Property `servicemanager.ready=true` (libbinder's C++ client waits on
+it). Where it stands: inside `Activity.attach`/the initializers, native code waits for
+**SurfaceFlinger** (`SurfaceFlingerAIDL`): Choreographer's vsync comes from its display
+event connection. framework.jar has no Java binding of android.gui.ISurfaceComposer, so
+our SurfaceFlinger must be native.
+
 **Next, in order:**
-1. `activity_task` (IActivityTaskManager + IActivityClientController) and `window`
-   (IWindowManager, IWindowSession): the activity gets its window; then the first frame
-   through a Surface we draw on the iPhone.
+1. **SurfaceFlinger in core/** behind a real binder handle (C, the C++ AIDL parcel
+   format): ISurfaceComposer.createDisplayEventConnection + IDisplayEventConnection
+   (a socketpair carried as a binder fd object; vsync events written at 60 Hz when
+   requested), display info calls; then `window` (IWindowManager/IWindowSession in Java)
+   and buffers: the first frame drawn on the iPhone.
 2. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
    framework jars, oat and vdex files; a device test of CMC), since real APKs need
    framework classes.

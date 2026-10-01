@@ -330,6 +330,13 @@ static int two_misc(struct aoi_cpu *c, uint32_t insn)
         setv(c, d, r, 1);
         return 1;
     }
+    if (op == 0x13 && u) {                            /* shll{2}: widen, shift left by the element size */
+        if (size == 3) return 0;
+        for (i = 0; i < 8 / esz; i++)
+            setlane(r, i, 2 * esz, lane(a, i + (q ? 8 / esz : 0), esz) << (8 * esz));
+        setv(c, d, r, 1);
+        return 1;
+    }
     if (op >= 0x0c && op != 0x12) {                   /* FP forms: size = a:sz */
         int dbl = size & 1, fesz = dbl ? 8 : 4, key = u << 6 | (size >> 1) << 5 | op;
         uint64_t z;

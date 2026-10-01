@@ -40,7 +40,9 @@ public final class Main {
                 + (launcher != null ? launcher.name : "none") + ", targetSdk " + ai.targetSdkVersion);
         App app = new App(pkg, ai, launcher);
         ServiceManager.addService("package", new PackageManager(app));
-        ServiceManager.addService("activity", new ActivityManager(ai, launcher));
+        ServiceManager.addService("activity", new ActivityManager(app));
+        ServiceManager.addService("activity_task", new ActivityTaskManager(app));
+        ServiceManager.addService("user", new UserManager());
         ActivityThread.main(new String[0]);
     }
 }
