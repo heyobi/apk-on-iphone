@@ -169,6 +169,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             uint64_t r = c->syscall ? c->syscall(c) : aoi_linux_syscall(c);
             if (c->stop == AOI_RUN) c->x[0] = r;
             else if (c->stop == AOI_STOP_YIELD) { c->x[0] = r; c->pc = next; break; }
+            else if (c->stop == AOI_STOP_NEWPC) { c->stop = AOI_RUN; continue; }
         } else if ((insn & 0xffffffe0u) == 0xd53bd040u) {          /* mrs xN, tpidr_el0 */
             setX(c, insn & 31, c->tpidr);
         } else if ((insn & 0xffffffe0u) == 0xd53b00e0u) {          /* mrs xN, dczid_el0 */

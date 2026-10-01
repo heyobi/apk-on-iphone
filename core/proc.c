@@ -497,6 +497,173 @@ void aoi_proc_free(struct aoi_proc *p)
     aoi_vm_free(&p->vm);
 }
 
+/* ---------- signals ---------- */
+
+/* Linux arm64 rt_sigframe: siginfo (128) then ucontext { flags, link, stack_t,
+ * sigmask, padding, mcontext @176 { fault_address, x0-x30, sp, pc, pstate,
+ * __reserved @288 [4096]: fpsimd_context record, then a null record } }, and a
+ * frame record {x29, x30} after it so unwinders can walk through the handler. */
+#define SF_UC        128
+#define SF_MC        (SF_UC + 176)
+#define SF_FP        (SF_MC + 288)
+#define SF_RECORD    (SF_MC + 288 + 4096)
+#define SF_SIZE      (SF_RECORD + 16)
+#define FPSIMD_MAGIC 0x46508001u
+#define SA_RESTORER_ 0x04000000u
+#define SA_ONSTACK_  0x08000000u
+#define SA_NODEFER_  0x40000000u
+#define SA_RESETHAND_ 0x80000000u
+#define SIGBIT(s)    ((uint64_t)1 << ((s) - 1))
+#define UNBLOCKABLE  (SIGBIT(9) | SIGBIT(19))       /* SIGKILL, SIGSTOP */
+
+static void put64(uint8_t *b, size_t off, uint64_t v) { memcpy(b + off, &v, 8); }
+static void put32(uint8_t *b, size_t off, uint32_t v) { memcpy(b + off, &v, 4); }
+
+/* Default action of a signal nobody handles: 1 = ignore, 0 = terminate. */
+static int default_ignored(int sig) { return sig == 17 || sig == 18 || sig == 23 || sig == 28; }
+
+/* Builds a signal frame on the running thread's stack (or its altstack) and
+ * points it at the handler. info: 128 bytes of siginfo prepared by the caller. */
+static int sig_deliver(struct aoi_proc *p, int sig, const uint8_t *info, uint64_t fault_addr)
+{
+    struct aoi_thread *t = &p->th[p->cur];
+    struct aoi_cpu *c = &p->cpu;
+    uint64_t *act = p->sigact[sig], sp = c->sp, frame;
+    static uint8_t f[SF_SIZE];
+    int on_alt = t->altstack[2] && sp >= t->altstack[0] && sp < t->altstack[0] + t->altstack[2], i;
+
+    if ((act[1] & SA_ONSTACK_) && !(t->altstack[1] & 2) && t->altstack[2] && !on_alt) {
+        sp = t->altstack[0] + t->altstack[2];
+        on_alt = 1;
+    }
+    frame = (sp - SF_SIZE) & ~(uint64_t)15;
+    memset(f, 0, sizeof f);
+    memcpy(f, info, 128);
+    put64(f, SF_UC + 16, t->altstack[0]);
+    put32(f, SF_UC + 24, (uint32_t)(on_alt ? 1 : (t->altstack[1] & 2 ? 2 : 0)));
+    put64(f, SF_UC + 32, t->altstack[2]);
+    put64(f, SF_UC + 40, t->sigmask);
+    put64(f, SF_MC, fault_addr);
+    for (i = 0; i < 31; i++) put64(f, SF_MC + 8 + 8 * (size_t)i, c->x[i]);
+    put64(f, SF_MC + 256, c->sp);
+    put64(f, SF_MC + 264, c->pc);
+    put64(f, SF_MC + 272, (uint64_t)c->n << 31 | (uint64_t)c->z << 30 | (uint64_t)c->c << 29 | (uint64_t)c->v << 28);
+    put32(f, SF_FP, FPSIMD_MAGIC);
+    put32(f, SF_FP + 4, 528);
+    put32(f, SF_FP + 8, c->fpsr);
+    put32(f, SF_FP + 12, c->fpcr);
+    memcpy(f + SF_FP + 16, c->vreg, 512);
+    put64(f, SF_RECORD, c->x[29]);
+    put64(f, SF_RECORD + 8, c->x[30]);
+    if (!put(p, frame, f, SF_SIZE)) return 0;                      /* no stack: the thread is lost */
+
+    c->x[0] = (uint64_t)sig;
+    c->x[1] = frame;
+    c->x[2] = frame + SF_UC;
+    c->x[29] = frame + SF_RECORD;
+    c->x[30] = act[1] & SA_RESTORER_ ? act[2] : 0;
+    c->sp = frame;
+    c->pc = act[0];
+    c->excl_valid = 0;
+    t->sigmask |= act[3] & ~UNBLOCKABLE;
+    if (!(act[1] & SA_NODEFER_)) t->sigmask |= SIGBIT(sig);
+    if (act[1] & SA_RESETHAND_) act[0] = 0;
+    if (p->trace) fprintf(p->trace, "[sig] %d delivered to %d, handler %#llx\n", sig, t->tid, (unsigned long long)act[0]);
+    return 1;
+}
+
+/* rt_sigreturn: restore the context saved by sig_deliver (as possibly edited by the handler). */
+static int sig_return(struct aoi_proc *p)
+{
+    struct aoi_cpu *c = &p->cpu;
+    static uint8_t f[SF_SIZE];
+    uint64_t pstate, mask;
+    uint32_t magic, size;
+    int i;
+    if (!get(p, c->sp, f, SF_RECORD)) return 0;
+    for (i = 0; i < 31; i++) c->x[i] = u64(f + SF_MC + 8 + 8 * (size_t)i);
+    c->sp = u64(f + SF_MC + 256);
+    c->pc = u64(f + SF_MC + 264);
+    pstate = u64(f + SF_MC + 272);
+    c->n = (int)(pstate >> 31 & 1); c->z = (int)(pstate >> 30 & 1); c->c = (int)(pstate >> 29 & 1); c->v = (int)(pstate >> 28 & 1);
+    magic = u32(f + SF_FP); size = u32(f + SF_FP + 4);
+    if (magic == FPSIMD_MAGIC && size >= 528) {
+        c->fpsr = u32(f + SF_FP + 8); c->fpcr = u32(f + SF_FP + 12);
+        memcpy(c->vreg, f + SF_FP + 16, 512);
+    }
+    mask = u64(f + SF_UC + 40);
+    p->th[p->cur].sigmask = mask & ~UNBLOCKABLE;
+    c->excl_valid = 0;
+    return 1;
+}
+
+/* Delivers the first pending, unblocked signal of the running thread, if any.
+ * Returns 0 if a signal's default action ends the process (cpu.stop set). */
+static int sig_pending(struct aoi_proc *p)
+{
+    struct aoi_thread *t = &p->th[p->cur];
+    uint64_t ready = t->pending & ~t->sigmask;
+    int sig;
+    uint8_t info[128];
+    if (!ready) return 1;
+    sig = __builtin_ctzll(ready) + 1;
+    t->pending &= ~SIGBIT(sig);
+    if (p->sigact[sig][0] == 1 || (p->sigact[sig][0] == 0 && default_ignored(sig))) return 1;
+    if (p->sigact[sig][0] == 0) {
+        fprintf(stderr, "[aoiproc] signal %d (default action: terminate)\n", sig);
+        p->cpu.exit_code = 128 + sig;
+        p->cpu.stop = AOI_STOP_EXIT;
+        return 0;
+    }
+    memset(info, 0, sizeof info);
+    put32(info, 0, (uint32_t)sig);
+    put32(info, 8, (uint32_t)-6);                                  /* SI_TKILL */
+    put32(info, 16, GUEST_PID);
+    if (!sig_deliver(p, sig, info, 0)) { p->cpu.stop = AOI_STOP_FAULT; return 0; }
+    return 1;
+}
+
+/* Sends sig to thread index i: wakes it from a futex wait or sleep (-EINTR) if
+ * it will run a handler. Returns 0 if the default action ends the process. */
+static int sig_send(struct aoi_proc *p, int i, int sig)
+{
+    struct aoi_thread *t = &p->th[i];
+    uint64_t h = p->sigact[sig][0];
+    if (h == 1 || (h == 0 && default_ignored(sig))) return 1;
+    if (h == 0) {
+        fprintf(stderr, "[aoiproc] signal %d to thread %d (default action: terminate)\n", sig, t->tid);
+        p->cpu.exit_code = 128 + sig;
+        p->cpu.stop = AOI_STOP_EXIT;
+        p->thread_exit = 0;
+        return 0;
+    }
+    t->pending |= SIGBIT(sig);
+    if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && !(t->sigmask & SIGBIT(sig))) {
+        uint64_t eintr = (uint64_t)-(int64_t)L_EINTR;
+        t->state = AOI_T_RUN;
+        if (i == p->cur) p->cpu.x[0] = eintr; else t->cpu.x[0] = eintr;
+    }
+    return 1;
+}
+
+/* A CPU fault becomes SIGSEGV if the guest handles it. Returns 1 if delivered. */
+static int sig_fault(struct aoi_proc *p)
+{
+    uint8_t info[128];
+    uint64_t a = p->cpu.fault_addr & 0x00ffffffffffffffULL;
+    int mapped_page = a < p->vm.size && p->vm.prot[a / AOI_VM_PAGE];
+    uint64_t h = p->sigact[11][0];
+    if (h == 0 || h == 1) return 0;                                /* no handler: stop and report */
+    memset(info, 0, sizeof info);
+    put32(info, 0, 11);
+    put32(info, 8, mapped_page ? 2 : 1);                           /* SEGV_ACCERR / SEGV_MAPERR */
+    put64(info, 16, p->cpu.fault_addr);
+    p->th[p->cur].sigmask &= ~SIGBIT(11);                          /* a synchronous fault is never blocked */
+    if (!sig_deliver(p, 11, info, p->cpu.fault_addr)) return 0;
+    p->cpu.stop = AOI_RUN;
+    return 1;
+}
+
 /* ---------- green threads ---------- */
 
 #define SLICE 100000                /* guest instructions per turn */
@@ -591,7 +758,9 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         uint64_t end = p->cpu.steps + SLICE;
         enum aoi_stop st;
         if (max_steps && end > max_steps) end = max_steps;
+        if (!sig_pending(p)) return p->cpu.stop;
         st = aoi_cpu_run(&p->cpu, end);
+        if (st == AOI_STOP_FAULT && sig_fault(p)) continue;
         if (p->samples && p->nsamples < p->maxsamples) p->samples[p->nsamples++] = p->cpu.pc;
         if (st == AOI_STOP_EXIT && p->thread_exit) {
             p->thread_exit = 0;
@@ -614,7 +783,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
+    NR_getcwd = 17, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_connect = 203, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
     NR_readlinkat = 78, NR_newfstatat = 79, NR_fstat = 80, NR_exit = 93, NR_exit_group = 94,
@@ -699,7 +868,7 @@ static int proc_file(struct aoi_proc *p, const char *g)
                    "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nThreads:\t1\nVmSize:\t%llu kB\nVmRSS:\t%llu kB\n"
                    "SigQ:\t0/0\nSigPnd:\t0000000000000000\nSigBlk:\t%016llx\n",
                 (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK >> 10),
-                (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK >> 10), (unsigned long long)p->sigmask);
+                (unsigned long long)(p->vm.nchunks * AOI_VM_CHUNK >> 10), (unsigned long long)p->th[p->cur].sigmask);
     } else if (!strcmp(f, "maps")) {                               /* runs of equal protection */
         uint64_t a = 0, n = p->vm.size / AOI_VM_PAGE;
         while (a < n) {
@@ -1230,56 +1399,69 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_rt_sigaction:
         if (a0 < 1 || a0 > 64) { r = err(L_EINVAL); break; }
         if (a2 && !put(p, a2, p->sigact[a0], 32)) { r = err(L_EFAULT); break; }
+        if (a1 && (a0 == 9 || a0 == 19)) { r = err(L_EINVAL); break; }
         if (a1 && !get(p, a1, p->sigact[a0], 32)) { r = err(L_EFAULT); break; }
         r = 0;
         break;
+    case NR_rt_sigreturn:
+        if (!sig_return(p)) { c->stop = AOI_STOP_FAULT; c->fault_addr = c->sp; r = 0; break; }
+        c->stop = AOI_STOP_NEWPC;
+        r = 0;
+        break;
     case NR_rt_sigprocmask: {
-        uint64_t old = p->sigmask, set;
+        uint64_t old = p->th[p->cur].sigmask, set, *m = &p->th[p->cur].sigmask;
         if (a1) {
             uint8_t s8[8];
             if (!get(p, a1, s8, 8)) { r = err(L_EFAULT); break; }
             set = u64(s8);
-            if (a0 == 0) p->sigmask |= set; else if (a0 == 1) p->sigmask &= ~set; else if (a0 == 2) p->sigmask = set;
+            if (a0 == 0) *m |= set; else if (a0 == 1) *m &= ~set; else if (a0 == 2) *m = set;
             else { r = err(L_EINVAL); break; }
+            *m &= ~UNBLOCKABLE;
+            if (p->th[p->cur].pending & ~*m) c->stop = AOI_STOP_YIELD;  /* now deliverable: on return */
         }
         r = a2 && !put(p, a2, &old, 8) ? err(L_EFAULT) : 0;
         break;
     }
     case NR_sigaltstack:
-        if (a1 && !put(p, a1, p->altstack, 24)) { r = err(L_EFAULT); break; }
-        if (a0 && !get(p, a0, p->altstack, 24)) { r = err(L_EFAULT); break; }
+        {
+            struct aoi_thread *t = &p->th[p->cur];
+            uint64_t old[3];
+            old[0] = t->altstack[0]; old[2] = t->altstack[2];
+            old[1] = !t->altstack[2] ? 2 : (p->cpu.sp >= t->altstack[0] && p->cpu.sp < t->altstack[0] + t->altstack[2]);
+            if (a1 && !put(p, a1, old, 24)) { r = err(L_EFAULT); break; }
+            if (a0 && !get(p, a0, t->altstack, 24)) { r = err(L_EFAULT); break; }
+            if (a0 && (t->altstack[1] & 2)) t->altstack[2] = 0;           /* SS_DISABLE */
+        }
         r = 0;
         break;
     case NR_kill: case NR_tkill: case NR_tgkill: {
-        uint64_t sig = nr == NR_tgkill ? a2 : a1;
+        int sig = (int)(nr == NR_tgkill ? a2 : a1), i;
         uint64_t target = nr == NR_tgkill ? a1 : a0;
-        if (!sig) { r = 0; break; }
-        if (nr != NR_kill && target != (uint64_t)p->th[p->cur].tid) {   /* to another thread */
-            int i;
-            for (i = 0; i < AOI_PROC_THREADS; i++) {
-                struct aoi_thread *t = &p->th[i];
-                if (t->state == AOI_T_SLEEP && t->tid == (int)target && (t->sigwait_mask >> (sig - 1) & 1)) {
-                    uint8_t info[128];                             /* it sits in sigwait for this signal */
-                    memset(info, 0, sizeof info);
-                    info[0] = (uint8_t)sig;
-                    if (t->sigwait_info) put(p, t->sigwait_info, info, sizeof info);
-                    t->sigwait_mask = 0;
-                    t->state = AOI_T_RUN;
-                    t->cpu.x[0] = sig;
-                    r = 0;
-                    break;
-                }
-            }
-            if (i < AOI_PROC_THREADS) break;
-            /* otherwise: asynchronous signals are not delivered yet */
-            if (p->trace) fprintf(p->trace, "[sys] signal %llu to thread %llu dropped\n", (unsigned long long)sig, (unsigned long long)target);
-            r = 0;
-            break;
+        if (sig < 0 || sig > 64) { r = err(L_EINVAL); break; }
+        if (nr == NR_kill) {                                       /* the process: any thread takes it */
+            if (target != GUEST_PID && target != 0 && (int64_t)target != -1) { r = err(L_ESRCH); break; }
+            target = (uint64_t)p->th[p->cur].tid;
         }
-        fprintf(stderr, "[aoiproc] guest raised signal %llu\n", (unsigned long long)sig);
-        c->exit_code = 128 + (int)sig;
-        c->stop = AOI_STOP_EXIT;
+        for (i = 0; i < AOI_PROC_THREADS; i++)
+            if (p->th[i].state != AOI_T_FREE && p->th[i].tid == (int)target) break;
+        if (i == AOI_PROC_THREADS) { r = err(L_ESRCH); break; }
         r = 0;
+        if (!sig) break;
+        {
+            struct aoi_thread *t = &p->th[i];                     /* waiting in sigwait for it? */
+            if (t->state == AOI_T_SLEEP && (t->sigwait_mask & SIGBIT(sig))) {
+                uint8_t info[128];
+                memset(info, 0, sizeof info);
+                info[0] = (uint8_t)sig;
+                if (t->sigwait_info) put(p, t->sigwait_info, info, sizeof info);
+                t->sigwait_mask = 0;
+                t->state = AOI_T_RUN;
+                if (i == p->cur) p->cpu.x[0] = (uint64_t)sig; else t->cpu.x[0] = (uint64_t)sig;
+                break;
+            }
+        }
+        if (!sig_send(p, i, sig)) break;                           /* default action: the process ends */
+        if (i == p->cur) c->stop = AOI_STOP_YIELD;                 /* to itself: delivered on return */
         break;
     }
     case NR_prctl:

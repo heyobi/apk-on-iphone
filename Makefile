@@ -17,13 +17,14 @@ build/test_scan: tests/test_scan.c $(CORE) core/*.h | build
 build/fixture.elf: tests/fixture.S | build
 	$(AARCH64) -o $@ $<
 
-test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc
+test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf
 	./build/test_vm
 	./build/test_scan build/fixture.elf
 	./build/apkscan build/fixture.elf
 	sh tests/run_guest.sh
 	$(MAKE) build/libstep1.so
 	$(PYTHON) tests/difftest.py 300
+	./build/aoiproc build /signals.elf
 	sh tests/run_android.sh
 
 build:
@@ -78,3 +79,7 @@ build/aoiproc: tools/aoiproc.c $(CORE) core/*.h | build
 
 android-test: build/aoiproc
 	sh tests/run_android.sh
+
+# Signal delivery (SIGSEGV from a fault, sigreturn, tgkill, masks) through core/proc.c.
+build/signals.elf: tests/signals.c | build
+	clang --target=aarch64-linux-gnu -nostdlib -static -ffreestanding -fno-stack-protector -fuse-ld=lld -O1 -o $@ $<

@@ -46,6 +46,9 @@ struct aoi_thread {
     uint32_t futex_bitset;
     int64_t deadline;               /* monotonic ns to give up waiting / sleeping; 0 = never */
     uint64_t clear_tid;             /* CLONE_CHILD_CLEARTID / set_tid_address */
+    uint64_t sigmask;               /* blocked signals (bit sig-1) */
+    uint64_t pending;               /* signals waiting to be delivered to this thread */
+    uint64_t altstack[3];           /* sigaltstack: sp, flags, size */
     uint64_t sigwait_mask;          /* AOI_T_SLEEP in rt_sigtimedwait: signals that end it */
     uint64_t sigwait_info;          /* its siginfo_t pointer, or 0 */
 };
@@ -60,9 +63,7 @@ struct aoi_proc {
     char cmdline[AOI_PATH];         /* argv joined by NULs (/proc/self/cmdline) */
     size_t cmdline_len;
     struct aoi_proc_fd fd[AOI_PROC_FDS];
-    uint64_t sigact[65][4];         /* rt_sigaction records, kept so oact reads back */
-    uint64_t sigmask;
-    uint64_t altstack[3];
+    uint64_t sigact[65][4];         /* rt_sigaction: handler, flags, restorer, mask */
     uint64_t brk;
     uint64_t stack_start;           /* initial sp (/proc/self/stat startstack) */
     FILE *trace;                    /* strace-style log, or NULL */

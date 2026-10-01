@@ -130,15 +130,20 @@ longer linked at start. ART hello: **85 M instructions, 1.7 s** on the host (fro
 The bundled root (`ios/android-files.txt`, from `aoiproc -t` traces) is 73 MB; the
 workflow builds aoiproc on the macOS runner and runs android-setup.sh there.
 
+**Guest signals (done):** core/proc.c builds Linux arm64 signal frames (siginfo,
+ucontext with x0-x30/sp/pc/pstate, fpsimd record, frame record), honours altstacks,
+SA_RESTORER/NODEFER/RESETHAND and per-thread masks, implements rt_sigreturn, turns
+CPU faults into SIGSEGV (MAPERR/ACCERR, si_addr) when the guest has a handler,
+delivers tgkill/kill to any thread (a sleeping or futex-waiting target returns
+EINTR), and applies default actions. `tests/signals.c` (in `make test`) checks the
+fault → handler → edited context → sigreturn path, self-tgkill and masking.
+
 **Next, in order:**
-1. Guest signals: rt_sigaction handlers, sigframe + rt_sigreturn, synchronous
-   SIGSEGV/SIGBUS from CPU faults, tgkill to other threads.
-2. userfaultfd (SIGBUS mode) + MREMAP_DONTUNMAP → CMC GC → boot image → measure.
-3. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
-4. Bundle ART into the iOS app and measure the same hello on the phone.
+1. userfaultfd (SIGBUS mode) + MREMAP_DONTUNMAP → CMC GC → boot image → measure.
+2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);
-asynchronous signals are not delivered (only to a thread in sigwait); sockets other
+signals are delivered at time-slice and syscall boundaries; sockets other
 than logd refuse to connect; file mappings are private copies (MAP_SHARED of a file
 does not write back); uid 0; no fork/execve yet.
 
