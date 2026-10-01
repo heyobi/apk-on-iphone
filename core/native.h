@@ -20,11 +20,12 @@ struct aoi_native_layout {
 /* Reads the PT_LOAD layout. Returns NULL or an error. */
 const char *aoi_native_layout(const void *so, size_t size, struct aoi_native_layout *out);
 
-/* Copies the segments to `base` (span bytes, writable, zeroed) and applies the
- * RELA relocations with imports from `resolve`. On a missing import, returns an
- * error and points *missing at its name. */
-const char *aoi_native_link(const void *so, size_t size, uint8_t *base, aoi_native_resolve resolve,
-                            void *ctx, const char **missing);
+/* Copies the segments into `buf` (span bytes, writable, zeroed) and applies the
+ * RELA relocations as if the image were at `load` (often load == buf; on iOS 26
+ * TXM devices the code is written through a separate alias). Imports come from
+ * `resolve`. On a missing import, returns an error and points *missing at it. */
+const char *aoi_native_link(const void *so, size_t size, uint8_t *buf, uint8_t *load,
+                            aoi_native_resolve resolve, void *ctx, const char **missing);
 
 /* Address of an exported symbol in a linked image, NULL if absent. */
 void *aoi_native_sym(const void *so, size_t size, uint8_t *base, const char *name);

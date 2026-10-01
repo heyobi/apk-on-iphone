@@ -87,18 +87,18 @@ int aoi_jit_probe(int strategy, aoi_log_fn log, void *ctx)
 {
     static const uint32_t code[2] = { 0x52800540u, 0xd65f03c0u };   /* mov w0, #42; ret */
     const size_t page = 0x4000;
-    const char *err = NULL;
-    uint8_t *m = aoi_jit_reserve(strategy, 2 * page, &err);
+    struct aoi_jit_mem m;
+    const char *err;
     int r;
-    if (!m) { LOG("  %s: %s", aoi_jit_name(strategy), err); return 0; }
-    memcpy(m, code, sizeof code);
-    if ((err = aoi_jit_seal(strategy, m, page, 2 * page))) {
+    if ((err = aoi_jit_reserve(strategy, 2 * page, &m))) { LOG("  %s: %s", aoi_jit_name(strategy), err); return 0; }
+    memcpy(m.buf, code, sizeof code);
+    if ((err = aoi_jit_seal(&m, page))) {
         LOG("  %s: %s", aoi_jit_name(strategy), err);
-        aoi_jit_release(strategy, m, 2 * page);
+        aoi_jit_release(&m);
         return 0;
     }
-    r = ((probe_fn)(uintptr_t)m)();
-    aoi_jit_release(strategy, m, 2 * page);
+    r = ((probe_fn)(uintptr_t)m.load)();
+    aoi_jit_release(&m);
     LOG("  %s: returned %d %s", aoi_jit_name(strategy), r, r == 42 ? "(works)" : "(WRONG)");
     return r == 42;
 }
@@ -139,8 +139,8 @@ char *aoi_gmp_native(const void *so, size_t size, int strategy, unsigned long n,
                      double *secs, aoi_log_fn log, void *ctx)
 {
     struct aoi_native_layout lay;
+    struct aoi_jit_mem m;
     const char *err, *missing = NULL;
-    uint8_t *base;
     void *fi, *ff, *fg;
     char *s, *out;
     struct mpz z;
@@ -148,23 +148,19 @@ char *aoi_gmp_native(const void *so, size_t size, int strategy, unsigned long n,
 
     if ((err = aoi_native_layout(so, size, &lay))) { LOG("native: %s", err); return NULL; }
     if (!lay.text_ok) { LOG("native: code and data share a page; cannot protect them separately"); return NULL; }
-    if (!(base = aoi_jit_reserve(strategy, lay.span, &err))) { LOG("native: %s", err); return NULL; }
-    if ((err = aoi_native_link(so, size, base, resolve, NULL, &missing))) {
+    if ((err = aoi_jit_reserve(strategy, lay.span, &m))) { LOG("native: %s", err); return NULL; }
+    if ((err = aoi_native_link(so, size, m.buf, m.load, resolve, NULL, &missing))) {
         LOG("native: %s%s%s", err, missing ? ": " : "", missing ? missing : "");
-        aoi_jit_release(strategy, base, lay.span);
+        aoi_jit_release(&m);
         return NULL;
     }
-    fi = aoi_native_sym(so, size, base, "__gmpz_init");
-    ff = aoi_native_sym(so, size, base, "__gmpz_fac_ui");
-    fg = aoi_native_sym(so, size, base, "__gmpz_get_str");
-    LOG("native: libgmp.so linked at %p (%" PRIu64 " KB, code %" PRIu64 " KB)", (void *)base, lay.span >> 10, lay.text_end >> 10);
-    if (!fi || !ff || !fg) { LOG("native: GMP symbols not found"); aoi_jit_release(strategy, base, lay.span); return NULL; }
-    if (!execute) { aoi_jit_release(strategy, base, lay.span); return NULL; }
-    if ((err = aoi_jit_seal(strategy, base, lay.text_end, lay.span))) {
-        LOG("native: %s", err);
-        aoi_jit_release(strategy, base, lay.span);
-        return NULL;
-    }
+    fi = aoi_native_sym(so, size, m.load, "__gmpz_init");
+    ff = aoi_native_sym(so, size, m.load, "__gmpz_fac_ui");
+    fg = aoi_native_sym(so, size, m.load, "__gmpz_get_str");
+    LOG("native: libgmp.so linked for %p (%" PRIu64 " KB, code %" PRIu64 " KB)", (void *)m.load, lay.span >> 10, lay.text_end >> 10);
+    if (!fi || !ff || !fg) { LOG("native: GMP symbols not found"); aoi_jit_release(&m); return NULL; }
+    if (!execute) { aoi_jit_release(&m); return NULL; }
+    if ((err = aoi_jit_seal(&m, lay.text_end))) { LOG("native: %s", err); aoi_jit_release(&m); return NULL; }
     t0 = now();
     ((mpz_init_fn)(uintptr_t)fi)(&z);
     ((mpz_fac_fn)(uintptr_t)ff)(&z, n);

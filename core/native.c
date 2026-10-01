@@ -51,7 +51,7 @@ static int dynsym(const uint8_t *d, size_t size, uint64_t *symtab, uint64_t *nsy
     return 0;
 }
 
-static const char *rela(const uint8_t *d, uint8_t *base, uint64_t off, uint64_t sz, uint64_t symtab,
+static const char *rela(const uint8_t *d, uint8_t *buf, uint8_t *base, uint64_t off, uint64_t sz, uint64_t symtab,
                         uint64_t strtab, aoi_native_resolve resolve, void *ctx, const char **missing)
 {
     uint64_t i;
@@ -74,13 +74,13 @@ static const char *rela(const uint8_t *d, uint8_t *base, uint64_t off, uint64_t 
         case R_AARCH64_ABS64: case R_AARCH64_GLOB_DAT: case R_AARCH64_JUMP_SLOT: val = S + (uint64_t)addend; break;
         default: return "unsupported relocation type";
         }
-        memcpy(base + where, &val, 8);
+        memcpy(buf + where, &val, 8);
     }
     return NULL;
 }
 
-const char *aoi_native_link(const void *so, size_t size, uint8_t *base, aoi_native_resolve resolve,
-                            void *ctx, const char **missing)
+const char *aoi_native_link(const void *so, size_t size, uint8_t *buf, uint8_t *base,
+                            aoi_native_resolve resolve, void *ctx, const char **missing)
 {
     struct aoi_elf elf;
     const uint8_t *d = so;
@@ -93,7 +93,7 @@ const char *aoi_native_link(const void *so, size_t size, uint8_t *base, aoi_nati
     *missing = NULL;
     if ((err = aoi_elf_parse(&elf, so, size))) return err;
     for (k = 0; k < elf.nseg; k++)
-        memcpy(base + elf.seg[k].vaddr, d + elf.seg[k].offset, elf.seg[k].filesz);
+        memcpy(buf + elf.seg[k].vaddr, d + elf.seg[k].offset, elf.seg[k].filesz);
     if (!dynsym(d, size, &symtab, &nsyms, &strtab)) return "no .dynsym";
     for (i = 0; i < phnum; i++) {
         const uint8_t *ph = d + u64(d + 32) + i * u16(d + 54);
@@ -105,8 +105,8 @@ const char *aoi_native_link(const void *so, size_t size, uint8_t *base, aoi_nati
         else if (tag == 23) jmprel = val; else if (tag == 2) pltrelsz = val;
         else if (tag == 0) break;
     }
-    if (rela_off && (err = rela(d, base, rela_off, relasz, symtab, strtab, resolve, ctx, missing))) return err;
-    if (jmprel && (err = rela(d, base, jmprel, pltrelsz, symtab, strtab, resolve, ctx, missing))) return err;
+    if (rela_off && (err = rela(d, buf, base, rela_off, relasz, symtab, strtab, resolve, ctx, missing))) return err;
+    if (jmprel && (err = rela(d, buf, base, jmprel, pltrelsz, symtab, strtab, resolve, ctx, missing))) return err;
     (void)nsyms;
     return NULL;
 }

@@ -11,6 +11,8 @@
 
 static NSString *const kProbing = @"aoi.probing";        // strategy being probed (crash marker)
 static NSString *const kBad = @"aoi.badStrategies";      // strategies that crashed the app before
+static const int kTxmInit = 100;                          // crash-marker value for the TXM handshake
+static const size_t kTxmPool = 64u << 20;                 // executable pool requested from StikDebug
 
 @interface VC : UIViewController <UIDocumentPickerDelegate>
 @property(nonatomic, strong) UITextView *logView;
@@ -44,7 +46,8 @@ static int list_cb(const char *name, size_t len, void *ctx);
     self.nField.placeholder = @"n (n! hesaplanir)";
 
     UIStackView *row1 = [self row:@[ [self button:@"APK seç" action:@selector(pick)], self.nField ]];
-    UIStackView *row2 = [self row:@[ [self button:@"Hepsini çalıştır" action:@selector(runAll)],
+    UIStackView *row2 = [self row:@[ [self button:@"JIT al" action:@selector(requestJIT)],
+                                     [self button:@"Hepsini çalıştır" action:@selector(runAll)],
                                      [self button:@"Logu kopyala" action:@selector(copyLog)] ]];
     UIStackView *row3 = [self row:@[ [self button:@"1 Yorumlayıcı" action:@selector(runInterp)],
                                      [self button:@"2 JIT yokla" action:@selector(runProbe)],
@@ -70,6 +73,55 @@ static int list_cb(const char *name, size_t len, void *ctx);
     ]];
 
     [self deviceInfo];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive)
+                                               name:UIApplicationDidBecomeActiveNotification object:nil];
+    dispatch_async(self.work, ^{ [self ensureTXM]; });
+}
+
+// ---- JIT acquisition ----
+
+- (NSString *)strategyName:(int)s { return s == kTxmInit ? @"TXM hazırlığı (StikDebug script)" : @(aoi_jit_name(s)); }
+
+- (BOOL)isBad:(int)s { return [[NSUserDefaults.standardUserDefaults arrayForKey:kBad] containsObject:@(s)]; }
+
+- (void)requestJIT {
+    if (aoi_jit_debugged() && (!aoi_jit_txm_likely() || aoi_jit_txm_ready())) { [self append:@"JIT zaten açık."]; return; }
+    NSURLComponents *c = [NSURLComponents new];
+    c.scheme = @"stikdebug";
+    c.host = @"enable-jit";
+    NSMutableArray *q = [NSMutableArray arrayWithObjects:
+        [NSURLQueryItem queryItemWithName:@"bundle-id" value:NSBundle.mainBundle.bundleIdentifier],
+        [NSURLQueryItem queryItemWithName:@"pid" value:[NSString stringWithFormat:@"%d", getpid()]], nil];
+    if (aoi_jit_txm_likely()) {
+        [q addObject:[NSURLQueryItem queryItemWithName:@"script-name" value:@"universal.js"]];
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:kBad];   /* a fresh, correct attach: retry everything */
+    }
+    c.queryItems = q;
+    [self append:[NSString stringWithFormat:@"StikDebug açılıyor: %@", c.URL.absoluteString]];
+    [UIApplication.sharedApplication openURL:c.URL options:@{} completionHandler:^(BOOL ok) {
+        if (!ok) [self append:@"StikDebug açılamadı (kurulu mu?)."];
+    }];
+}
+
+- (void)becameActive { dispatch_async(self.work, ^{ [self ensureTXM]; }); }
+
+/* Waits briefly for CS_DEBUGGED; on TXM devices then does the region handshake once. */
+- (void)ensureTXM {
+    for (int i = 0; i < 40 && !aoi_jit_debugged(); i++) usleep(250000);
+    if (!aoi_jit_debugged()) return;
+    if (!aoi_jit_txm_likely() || aoi_jit_txm_ready()) return;
+    if ([self isBad:kTxmInit]) {
+        [self append:@"TXM hazırlığı daha önce çöktü: uygulamayı 'JIT al' ile (universal script) yeniden açın."];
+        return;
+    }
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d setObject:@(kTxmInit) forKey:kProbing];
+    [d synchronize];
+    const char *err = aoi_jit_txm_init(kTxmPool);
+    [d removeObjectForKey:kProbing];
+    [d synchronize];
+    [self append:err ? [NSString stringWithFormat:@"TXM hazırlığı başarısız: %s", err]
+                     : [NSString stringWithFormat:@"TXM: %zu MB çalıştırılabilir alan hazır ✅", kTxmPool >> 20]];
 }
 
 - (UIButton *)button:(NSString *)t action:(SEL)a {
@@ -105,7 +157,8 @@ static int list_cb(const char *name, size_t len, void *ctx);
     size_t len = sizeof machine;
     sysctlbyname("hw.machine", machine, &len, NULL, 0);
     [self append:[NSString stringWithFormat:@"Cihaz: %s, iOS %@", machine, UIDevice.currentDevice.systemVersion]];
-    [self append:[NSString stringWithFormat:@"JIT (CS_DEBUGGED): %@", aoi_jit_debugged() ? @"VAR" : @"YOK - StikDebug ile açın"]];
+    [self append:[NSString stringWithFormat:@"JIT (CS_DEBUGGED): %@", aoi_jit_debugged() ? @"VAR" : @"YOK - 'JIT al' ile StikDebug'ı açın"]];
+    [self append:[NSString stringWithFormat:@"TXM (iOS 26+ yeni JIT kuralı): %@", aoi_jit_txm_likely() ? @"bu cihazda var" : @"yok"]];
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     NSNumber *crashed = [d objectForKey:kProbing];
     if (crashed) {
@@ -113,8 +166,8 @@ static int list_cb(const char *name, size_t len, void *ctx);
         [bad addObject:crashed];
         [d setObject:bad forKey:kBad];
         [d removeObjectForKey:kProbing];
-        [self append:[NSString stringWithFormat:@"Önceki çalıştırmada '%s' uygulamayı kapattı; artık atlanıyor.",
-                      aoi_jit_name(crashed.intValue)]];
+        [self append:[NSString stringWithFormat:@"Önceki çalıştırmada '%@' uygulamayı kapattı; artık atlanıyor.",
+                      [self strategyName:crashed.intValue]]];
     }
     [self append:@"APK seçin (ör. Qalculate), sonra 'Hepsini çalıştır'."];
 }
@@ -183,8 +236,14 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     NSArray *bad = [d arrayForKey:kBad] ?: @[];
     int first = -1;
     [self append:@"[2] JIT yöntemleri:"];
-    if (!aoi_jit_debugged()) { [self append:@"  CS_DEBUGGED yok: kodu çalıştırmak uygulamayı öldürür, deneme atlandı."]; return -1; }
+    if (!aoi_jit_debugged()) { [self append:@"  CS_DEBUGGED yok: önce 'JIT al'. (Denemek uygulamayı öldürürdü, atlandı.)"]; return -1; }
+    BOOL txm = aoi_jit_txm_likely();
+    if (txm) {
+        [self ensureTXM];
+        [self append:@"  TXM cihazı: yalnızca StikDebug havuzu denenir (eski yöntemler bu cihazda çalışmaz)."];
+    }
     for (int s = 0; s < AOI_JIT_COUNT; s++) {
+        if ((s == AOI_JIT_TXM) != txm) continue;
         if ([bad containsObject:@(s)]) { [self append:[NSString stringWithFormat:@"  %s: daha önce çöktü, atlandı", aoi_jit_name(s)]]; continue; }
         [d setObject:@(s) forKey:kProbing];
         [d synchronize];
