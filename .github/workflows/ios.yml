@@ -1,0 +1,44 @@
+# Builds an unsigned .ipa of the iOS test app (ios/). Sideload it with
+# SideStore / AltStore / Sideloadly, which sign it with your own Apple ID.
+name: iOS IPA
+
+on:
+  push:
+    paths: [ "core/**", "ios/**", ".github/workflows/ios.yml" ]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app binary
+        run: |
+          set -eu
+          APP=build/Payload/ApkOnIphone.app
+          mkdir -p "$APP"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
+            -O2 -g0 -Wall -fobjc-arc -std=gnu11 \
+            -o "$APP/ApkOnIphone" \
+            ios/main.m ios/gmptest.c ios/jitmem.c \
+            core/apk.c core/native.c core/elf.c core/scan.c core/cpu.c core/simd.c \
+            core/linux.c core/load.c core/dl.c core/bionic.c \
+            -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -lz
+          cp ios/Info.plist "$APP/Info.plist"
+          plutil -lint "$APP/Info.plist"
+          codesign --force --sign - --timestamp=none "$APP"
+          file "$APP/ApkOnIphone"
+
+      - name: Package IPA
+        run: |
+          cd build
+          zip -qry ApkOnIphone.ipa Payload
+          ls -la ApkOnIphone.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ApkOnIphone-ipa
+          path: build/ApkOnIphone.ipa
+          if-no-files-found: error

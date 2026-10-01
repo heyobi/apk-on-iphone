@@ -51,3 +51,8 @@ build/gmpdemo-check: tools/gmpdemo.c $(CORE) core/oracle.c core/*.h | build
 
 build/isacheck: tools/isacheck.c $(CORE) core/oracle.c core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/isacheck.c $(CORE) $(ORACLE)
+
+# The iOS app's test sequence on the host (links natively but never executes off iOS).
+IOS_SRC := ios/gmptest.c ios/jitmem.c core/apk.c core/native.c
+build/iostest: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h | build
+	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) -lm -lz -ldl
