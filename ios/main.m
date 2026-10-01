@@ -230,13 +230,23 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     });
 }
 
-- (void)hideScreen { [self.screen removeFromSuperview]; }
+- (void)hideScreen {
+    [self.screen removeFromSuperview];
+    [self setNeedsStatusBarAppearanceUpdate];
+    [self setNeedsUpdateOfHomeIndicatorAutoHidden];
+}
+
+/* The app's own status bar is in its frames: iOS's would cover it. */
+- (BOOL)prefersStatusBarHidden { return self.screen.superview != nil; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return self.screen.superview != nil; }
 
 - (void)showFrame:(UIImage *)img {
     self.screen.image = img;
     if (!self.screen.superview) {
         self.screen.frame = self.view.bounds;
         [self.view addSubview:self.screen];
+        [self setNeedsStatusBarAppearanceUpdate];
+        [self setNeedsUpdateOfHomeIndicatorAutoHidden];
     }
 }
 

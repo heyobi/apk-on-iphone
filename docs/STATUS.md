@@ -363,6 +363,13 @@ also found the boot image's arm64/*.vdex links (stat'ed, so the trace only shows
 targets; tracefiles.py now adds links next to listed files) and a missing `content`
 service (aoi.ContentService: registerContentObserver and friends, no sync).
 
+**Qalculate runs on the iPhone (v0.13.49, iPhone 16 Pro, iOS 27.0.1, no JIT):** the
+app's real UI on the phone's screen, touches reach its keys, and its own engine
+(libqalculate, interpreted) computes: "9985" ↵ gives 9.985 × 10³ in the history.
+Keys repeated while held ("9855555999…"): an interpreted tap lasts longer than the
+400 ms long-press timeout in the app's time; v0.13.50 sets long_press_timeout to 5 s
+(core settings in bindApplication). 0.14 hides iOS's status bar over the app's frames.
+
 **First run on the iPhone (v0.13.48, iPhone 16 Pro):** the app's process starts, binds
 the application and runs its content providers in 13 s (1.04 G instructions), 588 MB
 peak; then createDisplayEventConnection fails: Darwin has no SOCK_SEQPACKET. Message
