@@ -166,6 +166,15 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (c->trace) c->trace(c, 1);
             continue;
         }
+        /* ---- the rest: start the chain at the instruction's group (op0, bits 28-25), so
+         * a load or a register op is not first compared with every branch and system
+         * pattern; sections before a group's label hold none of its encodings ---- */
+        switch (insn >> 25 & 0xf) {
+        case 8: case 9: goto dp_imm;                               /* data processing, immediate */
+        case 4: case 6: case 12: case 14: goto ldst;               /* loads and stores */
+        case 5: case 13: goto dp_reg;                              /* data processing, register */
+        default: break;                                            /* branches, system, the rest */
+        }
         /* ---- branches ---- */
         if ((insn & 0xfc000000u) == 0x14000000u) {                 /* b */
             next = c->pc + (sextn(insn & 0x3ffffff, 26) << 2);
@@ -230,7 +239,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                 for (k = 0; k < 64 && c->stop == AOI_RUN; k += 8) wr(c, a + k, 0, 8);
             }
         /* ---- moves (wide immediate) ---- */
-        } else if ((insn & 0x1f800000u) == 0x12800000u && ((insn >> 29) & 3) != 1) { /* movn/movz/movk */
+        } else dp_imm: if ((insn & 0x1f800000u) == 0x12800000u && ((insn >> 29) & 3) != 1) { /* movn/movz/movk */
             int is64 = insn >> 31, opc = (insn >> 29) & 3, sh = ((insn >> 21) & 3) * 16;
             uint64_t imm = (uint64_t)((insn >> 5) & 0xffff) << sh, r;
             int rd_ = insn & 31;
@@ -263,7 +272,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (opc == 3) { c->z = r == 0; c->n = (int)(r >> (is64 ? 63 : 31)) & 1; c->c = 0; c->v = 0; }
             if (rd_ == 31 && opc != 3) c->sp = r; else setX(c, rd_, r);
         /* ---- add/sub shifted register ---- */
-        } else if ((insn & 0x1f200000u) == 0x0b000000u) {          /* add/sub/adds/subs reg */
+        } else dp_reg: if ((insn & 0x1f200000u) == 0x0b000000u) {  /* add/sub/adds/subs reg */
             int is64 = insn >> 31, sub = (insn >> 30) & 1, setf = (insn >> 29) & 1;
             int shift = (insn >> 22) & 3, imm6 = (insn >> 10) & 0x3f;
             int rm = (insn >> 16) & 31, rn = (insn >> 5) & 31, rd_ = insn & 31;
@@ -294,7 +303,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (opc == 3) { c->z = r == 0; c->n = (int)(r >> (is64 ? 63 : 31)) & 1; c->c = 0; c->v = 0; }
             setX(c, rd_, r);
         /* ---- SIMD&FP load/store (V bit set): q/d/s/h/b registers ---- */
-        } else if ((insn & 0x3e000000u) == 0x2c000000u) {          /* stp/ldp s/d/q */
+        } else ldst: if ((insn & 0x3e000000u) == 0x2c000000u) {    /* stp/ldp s/d/q */
             int opc = insn >> 30, load = (insn >> 22) & 1, mode = (insn >> 23) & 3;
             int rt = insn & 31, rn = (insn >> 5) & 31, rt2 = (insn >> 10) & 31;
             int scale = 2 + opc, bytes = 1 << scale;
