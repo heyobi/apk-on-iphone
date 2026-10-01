@@ -52,6 +52,10 @@ host call instead of one per page (scudo's reservation was 500k mmaps, 0.9 s).
 3. Processes and threads (`clone`, `pipe2`, `wait4`, signals): mksh pipelines and
    ART's own threads need them (roadmap step 2).
 
+**Open risk, checked first:** iOS limits a process's virtual address space. Whether a
+64 GiB reservation works on the iPhone is measured by app 0.6's launch probe
+(docs/IOS.md); until that reads OK, core/proc.c is proven on Linux hosts only.
+
 Known simplifications: one thread, `futex` never blocks; signals are recorded but
 never delivered; `socket` is ENOSYS (logd is absent, so logs go nowhere); file
 mappings are private copies; uid 0.

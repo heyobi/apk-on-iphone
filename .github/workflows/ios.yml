@@ -26,7 +26,7 @@ jobs:
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
             -O2 -g0 -Wall -fobjc-arc -std=gnu11 \
             -o "$APP/ApkOnIphone" \
-            ios/main.m ios/gmptest.c \
+            ios/main.m ios/gmptest.c ios/vmprobe.c \
             core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
             core/linux.c core/load.c core/dl.c core/bionic.c \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -lz

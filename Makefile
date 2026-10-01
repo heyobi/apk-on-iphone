@@ -58,7 +58,7 @@ build/isacheck: tools/isacheck.c $(CORE) core/oracle.c core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/isacheck.c $(CORE) $(ORACLE)
 
 # The iOS app's test sequence on the host.
-IOS_SRC := ios/gmptest.c core/apk.c
+IOS_SRC := ios/gmptest.c ios/vmprobe.c core/apk.c
 build/iostest: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) -lm -lz
 

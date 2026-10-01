@@ -1,6 +1,7 @@
 /* iostest: run the iOS app's test sequence on the host. usage: iostest app.apk [n] */
 #include "../core/apk.h"
 #include "../ios/gmptest.h"
+#include "../ios/vmprobe.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,7 @@ int main(int argc, char **argv)
     char *r;
     double t = 0;
 
+    aoi_vm_probe(out, NULL);
     if (argc < 2) { fprintf(stderr, "usage: %s app.apk [n]\n", argv[0]); return 2; }
     if (!(f = fopen(argv[1], "rb")) || fseek(f, 0, SEEK_END) || (n = ftell(f)) <= 0 || fseek(f, 0, SEEK_SET) ||
         !(apk = malloc((size_t)n)) || fread(apk, 1, (size_t)n, f) != (size_t)n) { perror(argv[1]); return 1; }

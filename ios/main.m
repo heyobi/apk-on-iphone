@@ -7,6 +7,7 @@
 
 #include "../core/apk.h"
 #include "gmptest.h"
+#include "vmprobe.h"
 
 @interface VC : UIViewController <UIDocumentPickerDelegate>
 @property(nonatomic, strong) UITextView *logView;
@@ -64,6 +65,8 @@ static int list_cb(const char *name, size_t len, void *ctx);
     sysctlbyname("hw.machine", machine, &len, NULL, 0);
     [self append:[NSString stringWithFormat:@"Cihaz: %s, iOS %@", machine, UIDevice.currentDevice.systemVersion]];
     [self append:@"Qalculate APK'sını seçin, sonra 'Çalıştır'."];
+    [self append:@"Adres alanı testi (Android programları için gereken 64 GiB) ..."];
+    dispatch_async(self.work, ^{ aoi_vm_probe(log_cb, (__bridge void *)self); });
 }
 
 - (UIButton *)button:(NSString *)t action:(SEL)a {
@@ -134,12 +137,17 @@ static int list_cb(const char *name, size_t len, void *ctx) {
     unsigned long n = strtoul(self.nField.text.UTF8String, NULL, 10);
     if (!n) n = 20000;
     dispatch_async(self.work, ^{
-        double t = 0;
-        [self append:[NSString stringWithFormat:@"Yorumlayıcı: Android libgmp.so ile %lu! ...", n]];
-        char *r = aoi_gmp_interp(lib.bytes, lib.length, n, &t, log_cb, (__bridge void *)self);
-        if (!r) { [self append:@"başarısız"]; return; }
-        [self append:[NSString stringWithFormat:@"%lu! = %.20s… (%zu basamak), %.3f s", n, r, strlen(r), t]];
-        free(r);
+        double best = 0;
+        [self append:[NSString stringWithFormat:@"Yorumlayıcı: Android libgmp.so ile %lu!, 3 tur ...", n]];
+        for (int round = 1; round <= 3; round++) {
+            double t = 0;
+            char *r = aoi_gmp_interp(lib.bytes, lib.length, n, &t, log_cb, (__bridge void *)self);
+            if (!r) { [self append:@"başarısız"]; return; }
+            if (round == 1) [self append:[NSString stringWithFormat:@"%lu! = %.20s… (%zu basamak)", n, r, strlen(r)]];
+            if (best == 0 || t < best) best = t;
+            free(r);
+        }
+        [self append:[NSString stringWithFormat:@"en iyi tur: %.3f s", best]];
     });
 }
 
