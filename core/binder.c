@@ -78,6 +78,7 @@ static struct aoi_binder *state(struct aoi_proc *p)
     if (!p->binder && (p->binder = calloc(1, sizeof *p->binder))) {
         p->binder->nnat = 1;
         aoi_sf_init(p);                                        /* native services exist from the start */
+        aoi_gralloc_init(p);
     }
     return p->binder;
 }
@@ -179,7 +180,7 @@ static void servicemanager(struct aoi_proc *p, struct aoi_binder *b, uint32_t co
         aoi_p32(rep, (uint32_t)sv->stability);
         break;
     case 3: case 5: case 6: break;                             /* addService, (un)registerForNotifications */
-    case 7: aoi_p32(rep, 0); break;                            /* isDeclared: false */
+    case 7: aoi_p32(rep, sv != NULL); break;                   /* isDeclared: the services we have */
     case 4: case 8: case 10: aoi_p32(rep, 0); break;           /* listServices, getDeclaredInstances, getUpdatableNames: [] */
     case 9: aoi_p32(rep, 0xffffffffu); break;                  /* updatableViaApex: null string */
     case 11: aoi_p32(rep, 0); break;                           /* getConnectionInfo: null parcelable */
@@ -343,6 +344,7 @@ void aoi_binder_mapped(struct aoi_proc *p, uint64_t addr, uint64_t len)
 void aoi_binder_free(struct aoi_proc *p)
 {
     aoi_sf_free(p);
+    aoi_gralloc_free(p);
     free(p->binder);
     p->binder = NULL;
 }

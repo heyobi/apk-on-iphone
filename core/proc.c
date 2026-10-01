@@ -7,6 +7,7 @@
 #define _DARWIN_C_SOURCE
 #include "proc.h"
 #include "binder.h"
+#include "gralloc.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -959,6 +960,18 @@ static void note_map(struct aoi_proc *p, uint64_t start, uint64_t len, uint64_t 
         memcpy(m->path, path, n);
         m->path[n] = 0;
     }
+}
+
+uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name)
+{
+    uint64_t a = aoi_vm_map(&p->vm, 0, up(len, PAGE), AOI_PROT_R | AOI_PROT_W, 0);
+    if (!IS_ERR(a)) note_map(p, a, len, 0, name);
+    return a;
+}
+
+void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len)
+{
+    aoi_vm_unmap(&p->vm, addr, up(len, PAGE));
 }
 
 const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t n)
@@ -2090,6 +2103,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = put(p, a0, si, sizeof si) ? 0 : err(L_EFAULT);
         break;
     }
+    case AOI_SYS_GRALLOC:                                          /* guest/mapper.c: buffer references */
+        r = aoi_gralloc_syscall(p, a0, a1);
+        break;
     case NR_getrandom: {
         int u = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
         int64_t k = u < 0 ? -L_EIO : xfer(p, u, a0, a1, 1, -1);

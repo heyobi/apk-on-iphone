@@ -33,4 +33,18 @@ void aoi_sf_init(struct aoi_proc *p);
 void aoi_sf_tick(struct aoi_proc *p);
 void aoi_sf_free(struct aoi_proc *p);
 
+/* gralloc (core/gralloc.c): the allocator service, and the buffers it handed out. */
+struct aoi_gbuf {
+    int used, refs;
+    uint32_t id, width, height, stride, size;   /* stride in pixels; size: pixel bytes */
+    int32_t format, bpp;
+    uint64_t usage, addr, len;                  /* guest memory: pixels, then the metadata page */
+};
+void aoi_gralloc_init(struct aoi_proc *p);
+void aoi_gralloc_free(struct aoi_proc *p);
+struct aoi_gbuf *aoi_gralloc_find(struct aoi_proc *p, uint32_t id);
+void aoi_gralloc_retain(struct aoi_proc *p, uint32_t id);
+void aoi_gralloc_release(struct aoi_proc *p, uint32_t id);
+uint64_t aoi_gralloc_syscall(struct aoi_proc *p, uint64_t op, uint64_t id);    /* AOI_SYS_GRALLOC */
+
 #endif

@@ -9,6 +9,8 @@
 #      public NDK libraries stay visible to apps but are loaded when first
 #      needed, not at runtime start (libhwui, libgui, libpdfium... cost
 #      150 M instructions of linking for an ART hello world otherwise)
+#   5. /vendor/lib64/hw/mapper.aoi.so, our gralloc mapper (build/mapper.aoi.so,
+#      guest/mapper.c), where libui looks for it (the sphal namespace)
 # Idempotent; prints the aoiproc -e options for dalvikvm on stdout.
 set -eu
 R=$1
@@ -24,5 +26,9 @@ PL="$R/system/etc/public.libraries.txt"
 if [ -f "$PL" ] && [ ! -f "$PL.orig" ]; then
     cp "$PL" "$PL.orig"
     awk '/^#/ || NF == 0 { print; next } { print $1, "nopreload" }' "$PL.orig" > "$PL"
+fi
+if [ -f "$DIR/build/mapper.aoi.so" ]; then
+    mkdir -p "$R/vendor/lib64/hw"
+    cp "$DIR/build/mapper.aoi.so" "$R/vendor/lib64/hw/mapper.aoi.so"
 fi
 awk '$2=="BOOTCLASSPATH" || $2=="DEX2OATBOOTCLASSPATH" {printf "-e %s=%s ", $2, $3}' "$R/data/system/environ/classpath"

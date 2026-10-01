@@ -21,7 +21,22 @@ final class ActivityClientController extends IActivityClientController.Stub {
     private static void log(String what) { System.out.println("aoi: activity " + what); }
 
     @Override public void activityIdle(IBinder t, Configuration c, boolean stopProfiling) { log("idle"); }
-    @Override public void activityResumed(IBinder t, boolean splash) { log("resumed"); }
+    @Override public void activityResumed(IBinder t, boolean splash) {
+        log("resumed");
+        try {                                                      /* what the app sees of its screen (reflection: */
+            Class<?> at = Class.forName("android.app.ActivityThread");   /* no Activity stub) */
+            Object a = at.getMethod("getActivity", IBinder.class).invoke(at.getMethod("currentActivityThread").invoke(null), t);
+            Object res = a.getClass().getMethod("getResources").invoke(a);
+            System.out.println("aoi: metrics " + res.getClass().getMethod("getDisplayMetrics").invoke(res));
+            System.out.println("aoi: config " + res.getClass().getMethod("getConfiguration").invoke(res));
+            Object wm = a.getClass().getMethod("getWindowManager").invoke(a);
+            Object m = wm.getClass().getMethod("getCurrentWindowMetrics").invoke(wm);
+            System.out.println("aoi: window " + m.getClass().getMethod("getBounds").invoke(m) + " "
+                    + m.getClass().getMethod("getWindowInsets").invoke(m));
+        } catch (Throwable e) {
+            System.out.println("aoi: metrics: " + e);
+        }
+    }
     @Override public void activityTopResumedStateLost() {}
     @Override public void activityRefreshed(IBinder t) {}
     @Override public void activityPaused(IBinder t) { log("paused"); }

@@ -83,6 +83,7 @@ struct aoi_proc {
     int nuffd_reg;
     struct aoi_binder *binder;      /* in-process binder driver state (core/binder.c), or NULL */
     struct aoi_sf *sf;              /* SurfaceFlinger state (core/sf.c), or NULL */
+    struct aoi_gralloc *gralloc;    /* graphics buffers (core/gralloc.c), or NULL */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;
@@ -110,5 +111,10 @@ const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t 
 /* A host fd becomes a guest fd of the given kind (AOI_FD_PIPE: read/write and
  * readiness through the host, non-blocking underneath). The guest fd, or -1. */
 int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind);
+
+/* Read-write anonymous guest memory for a host-side service (gralloc buffers), named
+ * `name` in crash reports: its address, or an error value (>= -4096). */
+uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name);
+void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len);
 
 #endif

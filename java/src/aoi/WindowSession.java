@@ -27,17 +27,8 @@ final class WindowSession extends IWindowSession.Stub {
 
     private static Rect screen() { return new Rect(0, 0, DisplayManager.WIDTH, DisplayManager.HEIGHT); }
 
-    /** The configuration a window sees: the phone's, with window bounds = the screen. */
-    static Configuration windowConfig() {
-        Configuration c = ActivityManager.phone();
-        c.windowConfiguration.setBounds(screen());
-        c.windowConfiguration.setAppBounds(screen());
-        c.windowConfiguration.setMaxBounds(screen());
-        c.windowConfiguration.setWindowingMode(1);                 /* FULLSCREEN */
-        c.windowConfiguration.setRotation(0);
-        c.windowConfiguration.setDisplayRotation(0);
-        return c;
-    }
+    /** The configuration a window sees: the phone's (its window bounds are the screen). */
+    static Configuration windowConfig() { return ActivityManager.phone(); }
 
     @Override
     public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs, int visibility, int layerStack,

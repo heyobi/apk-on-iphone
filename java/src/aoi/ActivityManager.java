@@ -56,6 +56,13 @@ final class ActivityManager extends IActivityManager.Stub {
         c.touchscreen = 3;                                         /* TOUCHSCREEN_FINGER */
         c.keyboard = 1; c.navigation = 1;                          /* NOKEYS, NONAV */
         c.fontScale = 1f;
+        android.graphics.Rect screen = new android.graphics.Rect(0, 0, DisplayManager.WIDTH, DisplayManager.HEIGHT);
+        c.windowConfiguration.setBounds(screen);                   /* one full-screen task and window: */
+        c.windowConfiguration.setAppBounds(screen);                /* WindowMetrics and Compose's size */
+        c.windowConfiguration.setMaxBounds(screen);                /* come from these, not from the dp */
+        c.windowConfiguration.setWindowingMode(1);                 /* FULLSCREEN */
+        c.windowConfiguration.setRotation(0);
+        c.windowConfiguration.setDisplayRotation(0);
         return c;
     }
 

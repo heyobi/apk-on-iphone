@@ -329,6 +329,22 @@ isacheck over the rendering libraries: **0 missing, 0 WRONG** of 497,719 distinc
 difftest WRONG 0 (new class `mrs/msr nzcv`, which harfbuzz uses). The app now runs
 through text layout (libhwui, minikin, harfbuzz) and asks for **gralloc** next.
 
+**Past layout, toward the first frame.** The window configuration now carries the
+screen bounds (they were 0 x 0: Qalculate's keypad grid computed negative cell sizes);
+the activity metrics are logged at resume. New, not yet seen working end to end:
+- `core/gralloc.c`: the allocator AIDL service `IAllocator/default` (V2; codes from the
+  guest's allocator-V2-ndk.so: allocate2 = 2, isSupported = 3, suffix = 4). Buffers are
+  guest memory mapped by the host plus a metadata page; the native_handle is a
+  placeholder fd and 13 ints (`core/gralloc.h`). servicemanager's isDeclared now says
+  yes for registered names.
+- `guest/mapper.c` -> `build/mapper.aoi.so`: a freestanding AIMapper v5 (raw syscalls,
+  a private syscall for buffer references), installed by tools/android-setup.sh in
+  /vendor/lib64/hw (the sphal namespace).
+- `core/sf.c`: the legacy `SurfaceFlinger` (android.ui.ISurfaceComposer) service;
+  setTransactionState (code 8, one-way) finds the queued buffer (flattened 'GB01', or
+  the client's buffer-cache id) and keeps it as the frame on screen; `AOI_SF_DUMP=x.ppm`
+  writes it out. Also getLatestVsyncEventData and getMaxAcquiredBufferCount.
+
 **Next, in order:**
 1. gralloc: a native allocator service (`android.hardware.graphics.allocator.IAllocator/
    default`) and a guest mapper library (`mapper.aoi.so`, stable-C AIMapper v5) over
@@ -421,15 +437,17 @@ none occur in Qalculate; other apps will tell (isacheck).
 - `core/load.c` — static-ELF loader + initial stack (for the `aoirun` path).
 - `tools/gmpdemo.c` — the end-to-end demo: APK library → linked → GMP computes.
 
-## The bigger roadmap (unchanged)
+## The bigger roadmap
 
-1. **(done)** interpret a real native lib from an APK. ← we are here, minus get_str.
-2. **(CPU done for this app)** NEON/FP + atomics. Next: bionic shim + libc++ so libqalculate's math runs → compute "2+2" and big
-   expressions through Qalculate's real engine, headless.
-3. bionic proper + dynamic linker for a full lib set; then ART (the dex runtime)
-   for the Java/Kotlin half; then a UI surface (Compose → Metal).
-4. On-device: reuse Madeira's dual-mapped JIT (StikDebug) for a fast backend;
-   keep the interpreter as the App-Store-safe path (compile it to Wasm).
+1. **(done)** interpret a real native lib from an APK.
+2. **(done)** NEON/FP + atomics: every instruction word of Qalculate's libraries and of
+   the rendering libraries runs, Unicorn-checked.
+3. **(in progress, last part)** Android's own linker64 + bionic, ART, the framework in
+   the app process with native services — done up to a resumed activity; now the
+   UI surface: gralloc buffers, SurfaceFlinger frames, then the frame on the iPhone,
+   touch and the keyboard.
+4. Speed: the WebKit JIT route (docs/RESEARCH.md, "Route"); the interpreter stays the
+   path that runs everywhere.
 
 ## Distribution note
 

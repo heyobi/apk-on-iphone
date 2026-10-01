@@ -10,6 +10,7 @@
  * DisplayEventReceiver::Event records (216 bytes in this build) at 60 Hz. */
 #define _POSIX_C_SOURCE 200809L
 #include "binder.h"
+#include "gralloc.h"
 #include "proc.h"
 
 #include <fcntl.h>
@@ -40,8 +41,15 @@ struct conn {
 /* A layer: a name, an id, its handle (the IBinder apps pass in transactions). */
 struct layer { int used; uint32_t handle; int32_t id; char name[96]; };
 
+#define CACHED 64
+
 struct aoi_sf {
     uint32_t handle, client;                    /* ISurfaceComposer, the one ISurfaceComposerClient */
+    uint32_t legacy;                            /* "SurfaceFlinger": android.ui.ISurfaceComposer */
+    uint32_t frame;                             /* the gralloc buffer on screen (we hold a reference), or 0 */
+    uint64_t frames;                            /* how many were queued */
+    struct { uint64_t gb; uint32_t id; } cache[CACHED];   /* GraphicBuffer id -> gralloc id (client buffer cache) */
+    int ncache;
     struct conn c[CONNS];
     struct layer l[LAYERS];
     int32_t next_layer_id;
@@ -111,6 +119,19 @@ static void connection(struct aoi_proc *p, void *self, uint32_t code, struct aoi
         if (!c->oneshot) { c->oneshot = 1; c->next = t + PERIOD_NS - t % PERIOD_NS; }
         ok(rep);
         break;
+    case 4: {                                                  /* getLatestVsyncEventData() -> ParcelableVsyncEventData */
+        int64_t base = t - t % PERIOD_NS, i;
+        ok(rep);
+        aoi_p32(rep, 1);                                       /* non-null */
+        aoi_p64(rep, PERIOD_NS);                               /* frameInterval */
+        aoi_p32(rep, 0); aoi_p32(rep, 1);                      /* preferredFrameTimelineIndex, frameTimelinesLength */
+        for (i = 0; i < 7; i++) {                              /* kFrameTimelinesCapacity entries */
+            aoi_p64(rep, (uint64_t)(((struct aoi_sf *)p->sf)->vsync_id + i));
+            aoi_p64(rep, (uint64_t)(base + (i + 1) * PERIOD_NS));
+            aoi_p64(rep, (uint64_t)(base + (i + 2) * PERIOD_NS));
+        }
+        break;
+    }
     default:
         if (p->trace) fprintf(p->trace, "[sf] IDisplayEventConnection call %u not implemented\n", code);
         break;
@@ -193,6 +214,10 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
         ok(rep);
         aoi_phandle(rep, sf->client);
         break;
+    case 65:                                                   /* getMaxAcquiredBufferCount() -> int */
+        ok(rep);
+        aoi_p32(rep, 1);                                       /* the app may hold 1 + this many */
+        break;
     case 6:                                                    /* getPhysicalDisplayIds() -> long[] */
         ok(rep);
         aoi_p32(rep, 1);
@@ -203,6 +228,88 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
             fprintf(p->trace, "[sf] ISurfaceComposer.%s (%u) not implemented\n",
                     code < sizeof composer_names / sizeof *composer_names && composer_names[code] ? composer_names[code] : "?",
                     code);
+        break;
+    }
+}
+
+/* ---------- frames: the legacy ISurfaceComposer's setTransactionState ---------- */
+
+/* The newest frame as a PPM file at $AOI_SF_DUMP (host debugging). */
+static void dump(struct aoi_proc *p, const struct aoi_gbuf *b)
+{
+    const char *path = getenv("AOI_SF_DUMP");
+    FILE *f;
+    uint8_t *row;
+    uint32_t y, x;
+    if (!path || !*path || b->bpp != 4 || !(f = fopen(path, "wb"))) return;
+    row = malloc((size_t)b->stride * 4);
+    fprintf(f, "P6\n%u %u\n255\n", b->width, b->height);
+    for (y = 0; row && y < b->height; y++) {
+        if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, row, (uint64_t)b->stride * 4, 0)) break;
+        for (x = 0; x < b->width; x++) {
+            uint8_t *px = row + 4 * x, rgb[3];
+            if (b->format == 5) { rgb[0] = px[2]; rgb[1] = px[1]; rgb[2] = px[0]; }   /* BGRA */
+            else { rgb[0] = px[0]; rgb[1] = px[1]; rgb[2] = px[2]; }
+            fwrite(rgb, 1, 3, f);
+        }
+    }
+    free(row);
+    fclose(f);
+}
+
+static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id)
+{
+    struct aoi_gbuf *b = aoi_gralloc_find(p, id);
+    if (!b) return;
+    aoi_gralloc_retain(p, id);                                 /* on screen: ours until the next one */
+    if (sf->frame) aoi_gralloc_release(p, sf->frame);
+    sf->frame = id;
+    sf->frames++;
+    if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u)\n", (unsigned long long)sf->frames, id, b->width, b->height);
+    dump(p, b);
+}
+
+/* setTransactionState carries layer_state_t records whose layout changes with every
+ * release; we only need the buffer. A new buffer travels flattened: 'GB01', 12 words
+ * (width, height, stride, format, layers, usage, id hi/lo, generation, fds, ints,
+ * usage hi), then its native_handle ints, ours (gralloc.h). A buffer the client has
+ * cached travels as its cache token (a local binder) and the GraphicBuffer id. */
+static void transaction_state(struct aoi_proc *p, struct aoi_sf *sf, struct aoi_reader *r)
+{
+    uint32_t o, w, shown = 0;
+    for (o = r->pos & ~3u; o + 4 <= r->n; o += 4) {
+        memcpy(&w, r->d + o, 4);
+        if (w == 0x47423031u && o + 4 * (13 + AOI_GB_INTS) <= r->n) {           /* 'GB01' */
+            uint32_t v[13 + AOI_GB_INTS];
+            memcpy(v, r->d + o, sizeof v);
+            if (v[11] == AOI_GB_INTS && v[13 + AOI_GB_I_MAGIC] == AOI_GB_MAGIC) {
+                uint64_t gb = (uint64_t)v[7] << 32 | v[8];
+                int k;
+                for (k = 0; k < sf->ncache && sf->cache[k].gb != gb; k++) {}
+                if (k == sf->ncache) { if (sf->ncache < CACHED) sf->ncache++; else k = (int)(gb % CACHED); }
+                sf->cache[k].gb = gb; sf->cache[k].id = v[13 + AOI_GB_I_ID];
+                shown = v[13 + AOI_GB_I_ID];
+            }
+        } else if (w == AOI_BINDER_TYPE_BINDER && o + 36 <= r->n && !shown) {   /* cache token, then the id */
+            uint64_t gb;
+            int k;
+            memcpy(&gb, r->d + o + 28, 8);
+            for (k = 0; k < sf->ncache; k++) if (sf->cache[k].gb == gb && gb) { shown = sf->cache[k].id; break; }
+        }
+    }
+    if (shown) show(p, sf, shown);
+}
+
+static void legacy(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
+{
+    struct aoi_sf *sf = self;
+    switch (code) {
+    case 8:                                                    /* SET_TRANSACTION_STATE (one-way) */
+        transaction_state(p, sf, req);
+        rep->status = 0;
+        break;
+    default:
+        if (p->trace) fprintf(p->trace, "[sf] android.ui.ISurfaceComposer call %u not implemented\n", code);
         break;
     }
 }
@@ -252,6 +359,7 @@ void aoi_sf_init(struct aoi_proc *p)
     if (!sf) return;
     p->sf = sf;
     sf->handle = aoi_binder_native(p, "SurfaceFlingerAIDL", "android.gui.ISurfaceComposer", composer, sf);
+    sf->legacy = aoi_binder_native(p, "SurfaceFlinger", "android.ui.ISurfaceComposer", legacy, sf);
 }
 
 void aoi_sf_free(struct aoi_proc *p)

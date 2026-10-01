@@ -4,7 +4,7 @@ PYTHON  ?= python3
 CFLAGS  ?= -O2 -g -Wall -Wextra -std=c11
 AARCH64 := clang --target=aarch64-linux-gnu -nostdlib -static -fuse-ld=lld
 
-CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c
+CORE := core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c
 
 all: build/apkscan
 
@@ -85,8 +85,14 @@ build/aoiproc: tools/aoiproc.c $(CORE) core/*.h | build
 build/aoiproc-debug: tools/aoiproc.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -DAOI_DEBUG -o $@ tools/aoiproc.c $(CORE) -lm
 
-android-test: build/aoiproc
+android-test: build/aoiproc build/mapper.aoi.so
 	sh tests/run_android.sh
+
+# The gralloc mapper libui loads in the guest (core/gralloc.c names it): guest code,
+# installed into a root as /vendor/lib64/hw/mapper.aoi.so.
+build/mapper.aoi.so: guest/mapper.c core/gralloc.h | build
+	clang --target=aarch64-linux-android29 -shared -nostdlib -ffreestanding -fno-stack-protector -fPIC -O2 \
+	    -fvisibility=hidden -fuse-ld=lld -Wl,--hash-style=both -Wl,-soname,mapper.aoi.so -Wall -Wextra -o $@ guest/mapper.c
 
 # Signal delivery (SIGSEGV from a fault, sigreturn, tgkill, masks) through core/proc.c.
 build/signals.elf: tests/signals.c | build
