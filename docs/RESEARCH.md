@@ -72,6 +72,32 @@ ATL is GPL-3.0+. Fine for sideloading if this project is GPL-3 too. App Store
 distribution of other people's GPL code is contested (App Store terms vs GPL §10, VLC 2011),
 but the App Store is closed to this project anyway (JIT / 4.7).
 
+## AIM up close (cloned 2026-10-01, commit e6c6f03)
+
+Decision taken: **route B** (sideload, native code via JIT, best compatibility), built on
+AIM rather than ATL. What the code and docs say:
+
+- Architecture (`ARCHITECTURE.md`, ADR 0012): the original Android 16 arm64 userspace runs
+  unmodified; `svc #0`, x18 and TPIDR_EL0 sites are **rewritten once per file into a cache**
+  (`linux-translate`) — the same fix our `apkscan` sites need. Syscall layer, binder as a
+  library, a versioned host-call ABI for HALs, GLES driver forwarding to ANGLE. Rust
+  (~490 files), Apache-2.0.
+- **As shipped it does not fit an iPhone:** every Android process is a Darwin process;
+  fork is done Cygwin-style with `posix_spawn` + Mach memory-entry snapshots
+  (`docs/fork.md`). iOS apps cannot spawn processes. Measured on an M2 Pro
+  (`docs/perf-baseline.md`): **72 processes / 4.4 GB RSS at boot, 126 / ~8 GB idle,
+  ~40-50 s boot.**
+- **ADR 0013 (accepted 2026-09-29) points exactly where an iPhone needs it:** keep only the
+  app's own process original (ART + boot image, framework.jar, bionic, linker, the app's
+  .so files) and replace the system services one by one with native implementations of
+  their AIDL interfaces, registered under the original names, "until no Android system has
+  to boot" — "Wine is fast because it does not run Windows". `crates/aim-services` already
+  has ~21k lines of these (clipboard, notifications, location, settings, statusbar, …).
+
+So the iPhone design is: **one iOS process = the original app process (AIM ADR 0013 style)
++ native services as in-process threads + binder in-process.** No zygote, no SystemServer,
+no SurfaceFlinger boot. ATL's GPL `api-impl` is not needed on this route.
+
 ## What this means for the plan
 
 1. **Execution model per platform:** interpreter everywhere (works on any iOS, slow);
@@ -81,8 +107,9 @@ but the App Store is closed to this project anyway (JIT / 4.7).
    syscall layer (AIM's ADR-0012 route). It reuses everything built so far, avoids the
    4 GiB patch in the interpreter, and is the same binary later run natively under JIT.
    Cost: dex code is interpreted by an interpreted ART → slow until the JIT backend exists.
-3. **Framework: fork ATL's `api-impl`** with a new UIKit/Metal backend; first target the
-   libGDX game (GLSurfaceView + ANGLE), Compose later.
+3. **Framework: the original framework.jar in the app process, native services**
+   (AIM ADR 0013), single iOS process; first target the libGDX game (GLSurfaceView +
+   ANGLE), Compose later. ATL's `api-impl` only as a fallback.
 4. **Next concrete step:** get a stock arm64 `libart.so` + `dalvikvm` (AOSP / AIM's build)
    and see how far it gets on `aoirun` — the same "measure first" loop that worked for
    the CPU: run it, list the missing syscalls and libc symbols, add them.
