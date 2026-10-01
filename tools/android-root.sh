@@ -40,3 +40,6 @@ rm -rf "$TMP"
 for part in product system_ext; do
     [ -e "$OUT/$part" ] || [ ! -d "$OUT/system/$part" ] || ln -s "/system/$part" "$OUT/$part"
 done
+# boot images stored uncompressed: ART maps them instead of LZ4-decompressing
+# ~25 MB at every start (a third of the boot-image start in the interpreter)
+python3 "$(dirname "$0")/uncompress-art.py" "$OUT"

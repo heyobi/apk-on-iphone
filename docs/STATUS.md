@@ -183,9 +183,15 @@ the file, mapped MAP_PRIVATE into the chunk (demand-paged, copy-on-write); edges
 anything past EOF are still read (a host mapping past EOF would SIGBUS the emulator).
 CC GC dex: 155 → 120 MB RSS.
 
-Where the 222 M go (`aoiproc -p`): 30 % liblz4 (decompressing the images), 29 % libart,
-20 % libartbase, 10 % linker64. Storing the images uncompressed in the root would remove
-the LZ4 third. The image only pays off with the full BCP (framework classes for real
+**Uncompressed boot images.** `tools/uncompress-art.py` (run by android-root.sh) rewrites
+each `.art` as its in-memory layout (header with no blocks, objects, then the bitmap at
+the next page): ART maps the file instead of decompressing it. Hello with the boot image:
+**222 M → 156 M instructions, 3.8 → 2.6 s** (the images grow from 8 to 29 MB on disk).
+What is left (`aoiproc -p`, sampled): 28 % libartbase, nearly all one loop: libziparchive
+zero-fills its 64 KB end-of-central-directory buffer byte by byte (~330 k instructions per
+zip open, and ART opens the BCP jars ~120 times); 7 % BoringSSL's FIPS integrity test
+(an HMAC of libcrypto's own text at load). Both are guest code: only a faster
+interpreter makes them cheaper. The image only pays off with the full BCP (framework classes for real
 apps); for the bare hello the six core jars imageless stay cheapest (81 M), which is
 what the phone runs. userfaultfd stays opt-in for now: the phone ships only the core
 jars (no boot image to gain), and CMC on the device is untested.
@@ -193,8 +199,9 @@ jars (no boot image to gain), and CMC on the device is untested.
 sigaction a guest installs.
 
 **Next, in order:**
-1. Uncompressed boot images in the root (LZ4 is 30 % of the image start), then decide
-   whether the phone gets the full BCP + boot image + CMC (bundle size, device test).
+1. Decide whether the phone gets the full BCP + boot image + CMC (bundle size: the
+   framework jars, oat and vdex files; a device test of CMC), since real APKs need
+   framework classes.
 2. fork/execve/pipe2/wait4 for mksh pipelines (roadmap step 2).
 
 Known simplifications: green threads (one host thread runs all guest threads);
