@@ -53,7 +53,7 @@ final class ActivityManager extends IActivityManager.Stub {
     }
 
     /** What the app is told about the device: the iPhone's portrait screen (393 x 852 dp
-     *  at 3x, DisplayManager), English, normal UI mode, touch, no keyboard. */
+     *  at 2x, DisplayManager), English, normal UI mode, touch, no keyboard. */
     static Configuration phone() {
         Configuration c = new Configuration();
         c.setToDefaults();

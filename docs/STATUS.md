@@ -378,6 +378,13 @@ framework is AOT-compiled in the boot image, the APK is not. Next: dex2oat the A
 interpreter now (MAP_SHARED writes reach the vdex/odex; `verify` takes 18 s / 1 G
 instructions on the host).
 
+**The APK compiled ahead of time** (dex2oat `speed`, 12.7 G instructions / 3.7 min on
+the host, once per APK; ios/androidtest.c runs it before the first launch into
+/data/app/apk/oat/arm64/): first frame after 2.08 G instructions (was ~3-4 G), a frame
+after a tap ~135 M (was ~400 M); libart falls to 2.6 % of a frame and libhwui (Skia's
+software rasterizer) is 88.7 %. So the display is now 2x (786 x 1704 px at 320 dpi,
+393 x 852 dp as before): 2.25 times fewer pixels to rasterize.
+
 **First run on the iPhone (v0.13.48, iPhone 16 Pro):** the app's process starts, binds
 the application and runs its content providers in 13 s (1.04 G instructions), 588 MB
 peak; then createDisplayEventConnection fails: Darwin has no SOCK_SEQPACKET. Message

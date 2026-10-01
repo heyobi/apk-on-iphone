@@ -6,10 +6,12 @@ import android.hardware.display.IDisplayManagerCallback;
 import android.view.Display;
 import android.view.DisplayInfo;
 
-/** One display, 0: the iPhone's screen as Android sees it — 1179 x 2556 pixels at
- *  480 dpi (393 x 852 dp, the iPhone's points at 3x), 60 Hz, on. */
+/** One display, 0: the iPhone's screen as Android sees it — 393 x 852 dp, the iPhone's
+ *  points, at 2x: 786 x 1704 pixels, 320 dpi, 60 Hz, on. (The phone's panel is 3x, but
+ *  every frame is drawn in software and Skia's rasterizing is ~90 % of a frame: 2x is
+ *  2.25 times fewer pixels; the iPhone scales the frames up.) */
 final class DisplayManager extends IDisplayManager.Stub {
-    static final int WIDTH = 1179, HEIGHT = 2556, DPI = 480;
+    static final int WIDTH = 786, HEIGHT = 1704, DPI = 320;
     static final float HZ = 60f;
 
     DisplayManager() { super(GrantAll.INSTANCE); }
