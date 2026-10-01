@@ -47,6 +47,7 @@ struct aoi_sf {
     uint32_t handle, client;                    /* ISurfaceComposer, the one ISurfaceComposerClient */
     uint32_t legacy;                            /* "SurfaceFlinger": android.ui.ISurfaceComposer */
     uint32_t frame;                             /* the gralloc buffer on screen (we hold a reference), or 0 */
+    struct { uint64_t gb, number, ptr, cookie; } shown;   /* its GraphicBuffer id, frame number, release listener */
     uint64_t frames;                            /* how many were queued */
     struct { uint64_t gb; uint32_t id; } cache[CACHED];   /* GraphicBuffer id -> gralloc id (client buffer cache) */
     int ncache;
@@ -257,15 +258,36 @@ static void dump(struct aoi_proc *p, const struct aoi_gbuf *b)
     fclose(f);
 }
 
-static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id)
+/* ITransactionCompletedListener.onReleaseBuffer(ReleaseCallbackId{buffer id, frame
+ * number}, no fence, max acquired 1), one-way: the app's BLASTBufferQueue may reuse
+ * the buffer. As SurfaceFlinger does when the next buffer replaces it. */
+static void release(struct aoi_proc *p, struct aoi_sf *sf)
+{
+    struct aoi_parcel pc;
+    if (!sf->shown.ptr) return;
+    memset(&pc, 0, sizeof pc);
+    aoi_p32(&pc, 0); aoi_p32(&pc, 0xffffffffu); aoi_p32(&pc, 0x53595354u);   /* interface token */
+    aoi_pstr16(&pc, "android.gui.ITransactionComposerListener");
+    aoi_p64(&pc, sf->shown.gb); aoi_p64(&pc, sf->shown.number);              /* ReleaseCallbackId */
+    aoi_p32(&pc, 4); aoi_p32(&pc, 0); aoi_p32(&pc, 0);                         /* Fence: no fd */
+    aoi_p32(&pc, 1);                                                           /* currentMaxAcquiredBufferCount */
+    aoi_binder_send(p, sf->shown.ptr, sf->shown.cookie, 2, &pc);              /* ON_RELEASE_BUFFER */
+    sf->shown.ptr = 0;
+}
+
+static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id, uint64_t gb, uint64_t number, uint64_t ptr,
+                 uint64_t cookie)
 {
     struct aoi_gbuf *b = aoi_gralloc_find(p, id);
     if (!b) return;
+    release(p, sf);
     aoi_gralloc_retain(p, id);                                 /* on screen: ours until the next one */
     if (sf->frame) aoi_gralloc_release(p, sf->frame);
     sf->frame = id;
+    sf->shown.gb = gb; sf->shown.number = number; sf->shown.ptr = ptr; sf->shown.cookie = cookie;
     sf->frames++;
-    if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u)\n", (unsigned long long)sf->frames, id, b->width, b->height);
+    if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u), frame number %llu\n", (unsigned long long)sf->frames,
+                          id, b->width, b->height, (unsigned long long)number);
     dump(p, b);
     if (p->frame && b->bpp == 4) {                             /* the host shows it: packed rows */
         uint8_t *px = malloc((size_t)b->width * b->height * 4);
@@ -279,34 +301,47 @@ static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id)
 }
 
 /* setTransactionState carries layer_state_t records whose layout changes with every
- * release; we only need the buffer. A new buffer travels flattened: 'GB01', 12 words
+ * release; we look for the buffer. A new one travels flattened: 'GB01', 12 words
  * (width, height, stride, format, layers, usage, id hi/lo, generation, fds, ints,
- * usage hi), then its native_handle ints, ours (gralloc.h). A buffer the client has
- * cached travels as its cache token (a local binder) and the GraphicBuffer id. */
+ * usage hi), then its native_handle ints, ours (gralloc.h). Then BufferData goes on
+ * (LayerState.cpp): fence, frameNumber, releaseBufferListener, releaseBufferEndpoint,
+ * cachedBuffer.token, cachedBuffer.id; binders are 28 bytes (flat object + stability).
+ * The client caches buffers, so a known one travels as that cache token and id only:
+ * the token's id names the buffer, and frameNumber and the listener sit at fixed
+ * distances before it. */
 static void transaction_state(struct aoi_proc *p, struct aoi_sf *sf, struct aoi_reader *r)
 {
-    uint32_t o, w, shown = 0;
-    for (o = r->pos & ~3u; o + 4 <= r->n; o += 4) {
+    uint32_t o, w, id = 0;
+    uint64_t gb = 0, number = 0, ptr = 0, cookie = 0;
+    for (o = r->pos & ~3u; o + 4 <= r->n; o += 4) {           /* new buffers: learn their ids */
         memcpy(&w, r->d + o, 4);
         if (w == 0x47423031u && o + 4 * (13 + AOI_GB_INTS) <= r->n) {           /* 'GB01' */
             uint32_t v[13 + AOI_GB_INTS];
-            memcpy(v, r->d + o, sizeof v);
-            if (v[11] == AOI_GB_INTS && v[13 + AOI_GB_I_MAGIC] == AOI_GB_MAGIC) {
-                uint64_t gb = (uint64_t)v[7] << 32 | v[8];
-                int k;
-                for (k = 0; k < sf->ncache && sf->cache[k].gb != gb; k++) {}
-                if (k == sf->ncache) { if (sf->ncache < CACHED) sf->ncache++; else k = (int)(gb % CACHED); }
-                sf->cache[k].gb = gb; sf->cache[k].id = v[13 + AOI_GB_I_ID];
-                shown = v[13 + AOI_GB_I_ID];
-            }
-        } else if (w == AOI_BINDER_TYPE_BINDER && o + 36 <= r->n && !shown) {   /* cache token, then the id */
-            uint64_t gb;
             int k;
-            memcpy(&gb, r->d + o + 28, 8);
-            for (k = 0; k < sf->ncache; k++) if (sf->cache[k].gb == gb && gb) { shown = sf->cache[k].id; break; }
+            memcpy(v, r->d + o, sizeof v);
+            if (v[11] != AOI_GB_INTS || v[13 + AOI_GB_I_MAGIC] != AOI_GB_MAGIC) continue;
+            gb = (uint64_t)v[7] << 32 | v[8];
+            for (k = 0; k < sf->ncache && sf->cache[k].gb != gb; k++) {}
+            if (k == sf->ncache) { if (sf->ncache < CACHED) sf->ncache++; else k = (int)(gb % CACHED); }
+            sf->cache[k].gb = gb; sf->cache[k].id = v[13 + AOI_GB_I_ID];
+            id = v[13 + AOI_GB_I_ID];
         }
     }
-    if (shown) show(p, sf, shown);
+    for (o = r->pos & ~3u; o + 36 <= r->n; o += 4) {          /* the cache token and what precedes it */
+        uint64_t t;
+        int k;
+        memcpy(&w, r->d + o, 4);
+        if (w != AOI_BINDER_TYPE_BINDER || o < 64) continue;
+        memcpy(&t, r->d + o + 28, 8);
+        for (k = 0; k < sf->ncache && !(t && sf->cache[k].gb == t); k++) {}
+        if (k == sf->ncache) continue;
+        gb = t; id = sf->cache[k].id;
+        memcpy(&number, r->d + o - 64, 8);
+        memcpy(&w, r->d + o - 56, 4);
+        if (w == AOI_BINDER_TYPE_BINDER) { memcpy(&ptr, r->d + o - 48, 8); memcpy(&cookie, r->d + o - 40, 8); }
+        break;
+    }
+    if (id) show(p, sf, id, gb, number, ptr, cookie);
 }
 
 static void legacy(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)

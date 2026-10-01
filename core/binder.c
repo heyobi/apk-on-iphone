@@ -30,6 +30,7 @@
 #define BC_ENTER_LOOPER     0x0000630cu
 #define BC_REGISTER_LOOPER  0x0000630bu
 #define BC_EXIT_LOOPER      0x0000630du
+#define BR_TRANSACTION      0x80407202u
 #define BR_REPLY            0x80407203u
 #define BR_DEAD_REPLY       0x00007205u
 #define BR_TRANSACTION_COMPLETE 0x00007206u
@@ -220,6 +221,37 @@ static void reply(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, s
     tr[6] = at; tr[7] = at + dn;                               /* buffer, offsets */
     push32(t, BR_REPLY);
     push(t, tr, sizeof tr);
+}
+
+/* A one-way call from the host to a local object of the guest (ptr, cookie as its
+ * flat_binder_object gave them): queued as BR_TRANSACTION for a looper thread, which
+ * picks it up when its read runs again. 0, or -1 if no looper or no buffer. */
+int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t code, const struct aoi_parcel *data)
+{
+    struct aoi_binder *b = p->binder;
+    struct bthread *t = NULL;
+    uint64_t at, tr[8];
+    uint32_t dn, on;
+    int i;
+    if (!b || !b->buf || !ptr) return -1;
+    for (i = 0; i < AOI_PROC_THREADS; i++)
+        if (b->th[i].tid && b->th[i].looper && b->th[i].n + 4 + 64 <= sizeof b->th[i].q) { t = &b->th[i]; break; }
+    if (!t) return -1;
+    dn = (data->n + 7) & ~7u; on = 8u * (uint32_t)data->nobj;
+    if (b->next + dn + on + 8 > b->buflen) b->next = 0;
+    at = b->buf + b->next;
+    b->next += dn + on + 8;
+    if (!aoi_vm_write(&p->vm, at, data->d, data->n, 0) || (on && !aoi_vm_write(&p->vm, at + dn, data->obj, on, 0)))
+        return -1;
+    memset(tr, 0, sizeof tr);
+    tr[0] = ptr; tr[1] = cookie;
+    tr[2] = code | (uint64_t)TF_ONE_WAY << 32;                 /* code, flags */
+    tr[4] = data->n; tr[5] = on;
+    tr[6] = at; tr[7] = at + dn;
+    push32(t, BR_TRANSACTION);
+    push(t, tr, sizeof tr);
+    if (p->trace) fprintf(p->trace, "[binder] host call %u to %#llx for tid %d\n", code, (unsigned long long)ptr, t->tid);
+    return 0;
 }
 
 static void transaction(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, const uint8_t *pay)

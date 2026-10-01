@@ -28,6 +28,10 @@ typedef void (*aoi_native_fn)(struct aoi_proc *p, void *self, uint32_t code, str
  * or 0 if the table is full. */
 uint32_t aoi_binder_native(struct aoi_proc *p, const char *name, const char *iface, aoi_native_fn fn, void *self);
 
+/* A one-way call into a local object of the guest (its flat_binder_object's binder
+ * and cookie), e.g. SurfaceFlinger releasing a buffer: 0, or -1 if it cannot be sent. */
+int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t code, const struct aoi_parcel *data);
+
 /* SurfaceFlinger (core/sf.c): registered when binder starts; tick() sends due vsync events. */
 void aoi_sf_init(struct aoi_proc *p);
 void aoi_sf_tick(struct aoi_proc *p);
