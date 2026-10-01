@@ -13,7 +13,7 @@ different result. Encodings the interpreter rejects (AOI_STOP_UNDEF) are counted
 per class, not failed: an unimplemented instruction stops visibly, it never runs
 wrong.
 """
-import ctypes, os, random, sys
+import ctypes, os, random, struct, sys
 
 try:
     from unicorn import (Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_ERR_INSN_INVALID, UC_ERR_EXCEPTION,
@@ -61,6 +61,34 @@ CLASSES = [
     ("ld/st imm9",      0x38000000, 0x3b200000),
     ("ld/st pair",      0x28000000, 0x3a000000),
     ("ld literal",      0x18000000, 0x3b000000),
+    ("simd ld/st uimm12",0x3d000000, 0x3f000000),
+    ("simd ld/st imm9", 0x3c000000, 0x3f200000),
+    ("simd ld/st regoff",0x3c200800, 0x3f200c00),
+    ("simd ld literal", 0x1c000000, 0x3f000000),
+    ("simd ld/st pair", 0x2c000000, 0x3e000000),
+    ("simd ld/st multi",0x0c000000, 0xbf000000),
+    ("simd ld/st single",0x0d000000, 0xbf000000),
+    ("simd mod imm",    0x0f000400, 0x9ff80400),
+    ("simd shift imm",  0x0f000400, 0x9f800400),
+    ("simd scalar shift",0x5f000400, 0xdf800400),
+    ("simd 3-same",     0x0e200400, 0x9f200400),
+    ("simd scalar 3-same",0x5e200400, 0xdf200400),
+    ("simd 2-reg misc", 0x0e200800, 0x9f3e0c00),
+    ("simd scalar 2-misc",0x5e200800, 0xdf3e0c00),
+    ("simd across lanes",0x0e300800, 0x9f3e0c00),
+    ("simd 3-different",0x0e200000, 0x9f200c00),
+    ("simd copy",       0x0e000400, 0x9fe08400),
+    ("simd scalar copy",0x5e000400, 0xffe08400),
+    ("simd permute",    0x0e000800, 0xbf208c00),
+    ("simd ext",        0x2e000000, 0xbfe08400),
+    ("fp <-> int",      0x1e200000, 0x5f20fc00),
+    ("fp 1-source",     0x1e204000, 0xff207c00),
+    ("fp compare",      0x1e202000, 0xff203c00),
+    ("fp immediate",    0x1e201000, 0xff201fe0),
+    ("fp ccmp",         0x1e200400, 0xff200c00),
+    ("fp 2-source",     0x1e200800, 0xff200c00),
+    ("fp csel",         0x1e200c00, 0xff200c00),
+    ("fp 3-source",     0x1f000000, 0xff000000),
 ]
 
 
@@ -72,6 +100,8 @@ def unpredictable(insn):
         if insn >> 22 & 1 and rt == rt2:
             return True
         return wb and rn != 31 and rn in (rt, rt2)
+    if insn & 0x3e000000 == 0x2c000000 and insn >> 22 & 1:                # simd ldp
+        return rt == rt2
     if insn & 0x3b200000 == 0x38000000 and insn >> 10 & 1:                # ld/st imm9 writeback
         return rn != 31 and rn == rt
     return False
@@ -94,9 +124,20 @@ def rand_state(rng):
     pc = CODE + rng.randrange(0, 0x400) * 4
     nzcv = rng.getrandbits(4) << 28
     tpidr = rng.getrandbits(64)
-    return regs + [sp, pc, nzcv, tpidr]
+    vregs = []
+    for _ in range(64):
+        k = rng.random()
+        if k < 0.2:    # small doubles, so FP ops see ordinary values too
+            vregs.append(struct.unpack("<Q", struct.pack("<d", rng.uniform(-1e6, 1e6)))[0])
+        elif k < 0.3:
+            vregs.append(rng.choice([0, 0x3ff0000000000000, 0x7ff0000000000000, 0x7ff8000000000000,
+                                     0x8000000000000000, 0x3f8000003f800000]))
+        else:
+            vregs.append(rng.getrandbits(64))
+    return regs + [sp, pc, nzcv, tpidr] + vregs + [0]
 
 
+UC_Q = [getattr(A, "UC_ARM64_REG_Q%d" % i) for i in range(32)]
 UC_X = [getattr(A, "UC_ARM64_REG_X%d" % i) for i in range(29)] + [A.UC_ARM64_REG_X29, A.UC_ARM64_REG_X30]
 
 
@@ -111,6 +152,9 @@ def run_unicorn(insn, st, mem):
     uc.reg_write(A.UC_ARM64_REG_SP, st[31])
     uc.reg_write(A.UC_ARM64_REG_NZCV, st[33])
     uc.reg_write(A.UC_ARM64_REG_TPIDR_EL0, st[34])
+    for i in range(32):
+        uc.reg_write(UC_Q[i], st[35 + 2 * i] | st[36 + 2 * i] << 64)
+    uc.reg_write(A.UC_ARM64_REG_FPSR, st[99])
     try:
         uc.emu_start(st[32], 0, count=1)
     except UcError as e:
@@ -123,11 +167,15 @@ def run_unicorn(insn, st, mem):
     out = [uc.reg_read(r) for r in UC_X] + [uc.reg_read(A.UC_ARM64_REG_SP), uc.reg_read(A.UC_ARM64_REG_PC),
                                             uc.reg_read(A.UC_ARM64_REG_NZCV) & 0xf0000000,
                                             uc.reg_read(A.UC_ARM64_REG_TPIDR_EL0)]
+    for i in range(32):
+        q = uc.reg_read(UC_Q[i])
+        out += [q & (1 << 64) - 1, q >> 64]
+    out.append(uc.reg_read(A.UC_ARM64_REG_FPSR))
     return "ok", out, bytes(uc.mem_read(MEM, MEMSZ))
 
 
 def run_aoi(insn, st, mem):
-    arr = (ctypes.c_uint64 * 35)(*st)
+    arr = (ctypes.c_uint64 * 100)(*st)
     buf = ctypes.create_string_buffer(bytes(mem), MEMSZ)
     fa = ctypes.c_uint64()
     r = lib.aoi_step1(insn, arr, buf, MEM, MEMSZ, ctypes.byref(fa))
@@ -138,11 +186,12 @@ def run_aoi(insn, st, mem):
     return "ok", list(arr), buf.raw
 
 
-NAMES = ["x%d" % i for i in range(31)] + ["sp", "pc", "nzcv", "tpidr"]
+NAMES = (["x%d" % i for i in range(31)] + ["sp", "pc", "nzcv", "tpidr"] +
+         ["v%d.%s" % (i, h) for i in range(32) for h in ("lo", "hi")] + ["fpsr"])
 
 
 def diff(a, b):
-    return ", ".join("%s aoi=%#x uc=%#x" % (NAMES[i], a[i], b[i]) for i in range(35) if a[i] != b[i])
+    return ", ".join("%s aoi=%#x uc=%#x" % (NAMES[i], a[i], b[i]) for i in range(len(a)) if a[i] != b[i])
 
 
 def disasm(insn):

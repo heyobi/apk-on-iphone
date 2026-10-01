@@ -35,3 +35,15 @@ What it says:
 So the per-app patching is small. The real work is the platform around it: bionic
 (`libc`, `libm`, `libdl`, `liblog`), the dynamic linker, ART with JNI, and — for this app —
 Jetpack Compose's rendering stack, which is the largest single piece.
+
+## cube.run (libGDX game, 1 dex of 7 MB, 1 arm64-v8a library)
+
+| library | instructions | `svc #0` | `mrs tpidr_el0` | x18 shadow stack |
+|---|---:|---:|---:|---:|
+| libgdx.so | 40,260 | 0 | 40 | 0 |
+
+Native code is small: libGDX's JNI glue (buffers, matrices, pixmaps). It imports
+only plain libc/libm (`malloc`, `memcpy`, `pow`, `ldexp`, `strtol`,
+`__stack_chk_fail` and a few more), and the 40 thread-pointer reads are
+stack-protector canaries. The game logic is all in `classes.dex`, so this app
+waits on ART and a GLES surface, not on more native-code work.

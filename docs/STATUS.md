@@ -6,17 +6,17 @@ A **no-JIT AArch64 interpreter** loads real Android `.so` files from an APK, lin
 them, and runs their code on any host — no iPhone, no JIT.
 
 - `make test` — the interpreter runs a freestanding aarch64-linux ELF correctly at
-  -O0 and -O1, plus a tpidr_el0 round-trip. All green.
-- `make build/gmpdemo && ./build/gmpdemo <libgmp.so> 50` — loads the **real
-  `libgmp.so` from the Qalculate APK** (arm64-v8a), binds its 34 libc imports to a
-  small host shim, and computes **50!** with GMP's own code:
-  `__gmpz_init` and `__gmpz_fac_ui` complete (the factorial itself runs — millions
-  of real GMP instructions through our CPU). Only the final decimal formatting
-  (`__gmpz_get_str`) hit a fault, very likely caused by the decode bugs fixed below
-  (not yet re-run: see "Start here").
+  -O0 and -O1, a tpidr_el0 round-trip, and the instruction-level differential test
+  against Unicorn (below). All green.
+- `make build/gmpdemo && ./build/gmpdemo <libgmp.so> N` — loads the **real
+  `libgmp.so` from the Qalculate APK** (arm64-v8a), binds its libc imports to a
+  small host shim, and computes **N!** end to end with GMP's own code, including its
+  NEON paths (`mpn_popcount`, q-register copies). Checked against Python for N = 0,
+  1, 20, 21, 100, 1000, 1626, 3000, 10000 and 30000. 30000! (121,288 digits) takes
+  53 million guest instructions.
 
 This is the core proof: a widely-used Android native library executes unmodified
-in our interpreter.
+in our interpreter and produces correct results.
 
 ## The interpreter is now checked against a reference CPU
 
@@ -47,17 +47,46 @@ bug. All of them are fixed now, and ~130k random instructions match:
   `ccmp`/`ccmn`, `extr`/`ror`, `ldr` literal, `rev16`. Unallocated encodings
   in the implemented classes are now rejected rather than executed.
 
+### Second round: NEON and FP (`core/simd.c`)
+
+The 32x128-bit V register file, all SIMD&FP loads/stores (single, pair,
+literal, `ld1`-`ld4`/`st1`-`st4` multiple and single-lane, `ld1r`), and the
+Advanced SIMD integer groups: modified immediate (`movi`/`mvni`/`orr`/`bic`/
+vector `fmov`), three-same (logic, add/sub, compares, min/max, mul/mla,
+pairwise), two-reg misc (`rev*`, `cnt`, `not`, `rbit`, `[su]addlp`,
+`[su]adalp`, `clz`/`cls`, compares with zero, `abs`/`neg`, `xtn`, vector
+`fabs`/`fneg`), shifts by immediate (`[su]shr`, `[su]sra`, rounding forms,
+`shl`, `sli`, `sri`, `shrn`, `[su]shll`), three-different (`[su]addl/w`,
+`[su]subl/w`, `[su]mull`, `[su]mlal/sl`, `[su]abdl/abal`, `addhn`/`subhn`),
+across lanes (`addv`, `[su]addlv`, `[su]maxv`/`minv`), copy (`dup`, `ins`,
+`umov`, `smov`), `zip`/`uzp`/`trn` and `ext`. Scalar FP (single and double):
+`fmov` (all forms), `fadd`/`fsub`/`fmul`/`fdiv`/`fnmul`, `fmax`/`fmin`(`nm`),
+`fmadd` family, `fsqrt`, `fabs`/`fneg`, `fcvt` s<->d, `frint*`, `fcmp(e)`,
+`fccmp(e)`, `fcsel`, `scvtf`/`ucvtf`, `fcvt[nzpma][su]`.
+
+FP uses host IEEE arithmetic for rounding but AArch64 rules where hosts
+differ (NaN propagation order, positive default NaN, signed-zero max/min,
+saturating conversions, tininess before rounding), and keeps FPSR's
+exception bits. The fuzzer also caught `sdiv INT_MIN, -1` trapping the host
+(SIGFPE); it now wraps as on Arm.
+
+The last `gmpdemo` failure (from 1626! up) was the demo's own fixed
+4096-byte output buffer, not the interpreter; it is now sized with GMP's
+`mpz_sizeinbase`.
+
 ## Start here next session
 
-1. **Re-run `gmpdemo` on the Qalculate `libgmp.so`.** The APK was a chat upload
-   and is not in the repo (F-Droid downloads are blocked from the container).
-   Expect `50!` to print correctly now; if it still fails, the fault is new
-   information, not the old bug.
-2. Extend `difftest.py` CLASSES as each new class is implemented. Any class the
-   interpreter runs must show `WRONG 0`.
-3. Then roadmap item 2: the SIMD&FP register file (start with q/d/s loads and
-   stores, `fmov`, `dup`/`movi`, since compilers use q registers for memcpy-like
-   copies), and atomics (`ldxr`/`stxr`, LSE `ldadd`/`swp`/`cas`).
+1. **libqalculate**: load the Qalculate set (`libc++_shared`, `libgmp`,
+   `libmpfr`, `libxml2`, `libiconv`, `libqalculate`) and evaluate "2+2"
+   headless. Needs C++ runtime pieces in the shim (`__cxa_*`, `operator new`,
+   locale/pthread stubs) and whatever new instructions show up; add every
+   new class to `tests/difftest.py`.
+2. Still missing in the CPU: vector FP arithmetic (`fadd v.2d`...), FP16,
+   saturating integer SIMD (`sqadd`...), `pmull`, crc32, atomics
+   (`ldxr`/`stxr`, LSE `ldadd`/`swp`/`cas`), which bionic locks need.
+3. Then the libGDX path (cube.run, see MEASUREMENTS.md): `libgdx.so` is
+   small and its imports are plain libc/libm, but the game itself is
+   Java, so it needs ART first.
 
 ## Architecture recap (what each file is)
 
@@ -69,14 +98,15 @@ bug. All of them are fixed now, and ~130k random instructions match:
   imports to loaded libs / host shim / a named-stop slot.
 - `core/bionic.c` — host implementations of the libc functions .so files import
   (malloc/memcpy/strlen/localeconv/stdio pointers, …). Grown as needed.
+- `core/simd.c` — Advanced SIMD (NEON) and scalar FP for the interpreter.
 - `core/linux.c` — Linux syscall layer (write/writev/exit so far).
 - `core/load.c` — static-ELF loader + initial stack (for the `aoirun` path).
 - `tools/gmpdemo.c` — the end-to-end demo: APK library → linked → GMP computes.
 
 ## The bigger roadmap (unchanged)
 
-1. **(done)** interpret a real native lib from an APK. ← we are here, minus get_str.
-2. NEON/FP + atomics, so libqalculate's math runs → compute "2+2" and big
+1. **(done)** interpret a real native lib from an APK: GMP computes 30000! correctly.
+2. **(NEON/FP base done; atomics next)** NEON/FP + atomics, so libqalculate's math runs → compute "2+2" and big
    expressions through Qalculate's real engine, headless.
 3. bionic proper + dynamic linker for a full lib set; then ART (the dex runtime)
    for the Java/Kotlin half; then a UI surface (Compose → Metal).

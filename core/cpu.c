@@ -126,6 +126,21 @@ static int ldst(struct aoi_cpu *c, int size, int opc, int rt, uint64_t a, int pr
     return 1;
 }
 
+/* SIMD&FP load/store of 1<<lg bytes (lg 0..4) into/from Vt. A load zeroes the
+ * rest of the 128-bit register. */
+static void ldst_v(struct aoi_cpu *c, int lg, int load, int rt, uint64_t a)
+{
+    int bytes = 1 << lg;
+    if (load) {
+        uint64_t lo = rd(c, a, bytes > 8 ? 8 : bytes), hi = bytes > 8 ? rd(c, a + 8, 8) : 0;
+        if (c->stop != AOI_RUN) return;
+        c->vreg[rt][0] = lo; c->vreg[rt][1] = hi;
+    } else {
+        wr(c, a, c->vreg[rt][0], bytes > 8 ? 8 : bytes);
+        if (bytes > 8) wr(c, a + 8, c->vreg[rt][1], 8);
+    }
+}
+
 /* Rm extended per option (UXTB..SXTX) and shifted left by sh: add/sub extended and
  * register-offset addressing. */
 static uint64_t extend_reg(uint64_t v, int option, int sh)
@@ -142,7 +157,7 @@ static uint64_t extend_reg(uint64_t v, int option, int sh)
     return v << sh;
 }
 
-static int cond_holds(struct aoi_cpu *c, unsigned cond)
+int aoi_cond_holds(struct aoi_cpu *c, unsigned cond)
 {
     int r;
     switch (cond >> 1) {
@@ -193,7 +208,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         } else if ((insn & 0xfffffc1fu) == 0xd65f0000u) {          /* ret */
             next = X(c, (insn >> 5) & 31);
         } else if ((insn & 0xff000010u) == 0x54000000u) {          /* b.cond */
-            if (cond_holds(c, insn & 0xf)) next = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
+            if (aoi_cond_holds(c, insn & 0xf)) next = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
         } else if ((insn & 0x7e000000u) == 0x34000000u) {          /* cbz/cbnz */
             int is64 = insn >> 31, nz = (insn >> 24) & 1;
             uint64_t v = X(c, insn & 31); if (!is64) v &= 0xffffffffu;
@@ -274,7 +289,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             int is64 = insn >> 31, sub = (insn >> 30) & 1, imm = (insn >> 11) & 1;
             int rn = (insn >> 5) & 31, cond = (insn >> 12) & 0xf;
             uint64_t b = imm ? (insn >> 16) & 31 : X(c, (insn >> 16) & 31);
-            if (cond_holds(c, (unsigned)cond)) addflags(c, X(c, rn), sub ? ~b : b, sub, is64, 1);
+            if (aoi_cond_holds(c, (unsigned)cond)) addflags(c, X(c, rn), sub ? ~b : b, sub, is64, 1);
             else { c->n = insn >> 3 & 1; c->z = insn >> 2 & 1; c->c = insn >> 1 & 1; c->v = insn & 1; }
         /* ---- logical shifted register ---- */
         } else if ((insn & 0x1f000000u) == 0x0a000000u &&
@@ -294,9 +309,52 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) r &= 0xffffffffu;
             if (opc == 3) setflags_logic(c, r, is64);
             setX(c, rd_, r);
-        /* ---- load/store: SIMD&FP register file not implemented yet ---- */
+        /* ---- load/store: SIMD&FP registers (b/h/s/d/q), single and pair ---- */
+        } else if ((insn & 0x3f000000u) == 0x3d000000u || (insn & 0x3f200000u) == 0x3c000000u ||
+                   (insn & 0x3f200c00u) == 0x3c200800u) {             /* uimm12 / imm9 / reg offset */
+            int size = insn >> 30, opc = (insn >> 22) & 3, rn = (insn >> 5) & 31, rt = insn & 31;
+            int lg = size | (opc & 2) << 1, mode = (insn >> 10) & 3;
+            uint64_t base = rn == 31 ? c->sp : c->x[rn], a, nb = 0;
+            if (lg > 4 || ((insn & 0x3f200c00u) == 0x3c200800u && !((insn >> 13) & 2)) ||
+                ((insn & 0x3f200000u) == 0x3c000000u && mode == 2)) {
+                c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break;
+            }
+            if ((insn & 0x3f000000u) == 0x3d000000u)
+                a = base + ((uint64_t)((insn >> 10) & 0xfff) << lg);
+            else if ((insn & 0x3f200c00u) == 0x3c200800u)
+                a = base + extend_reg(X(c, (insn >> 16) & 31), (insn >> 13) & 7, (insn >> 12) & 1 ? lg : 0);
+            else {
+                nb = base + (uint64_t)(int64_t)sextn((insn >> 12) & 0x1ff, 9);
+                a = mode == 1 ? base : nb;
+            }
+            ldst_v(c, lg, opc & 1, rt, a);
+            if ((insn & 0x3f200000u) == 0x3c000000u && (mode & 1) && c->stop == AOI_RUN) {
+                if (rn == 31) c->sp = nb; else c->x[rn] = nb;
+            }
+        } else if ((insn & 0x3f000000u) == 0x1c000000u && (insn >> 30) != 3) { /* ldr s/d/q literal */
+            ldst_v(c, 2 + (insn >> 30), 1, insn & 31, c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2));
+        } else if ((insn & 0x3e000000u) == 0x2c000000u && (insn >> 30) != 3) { /* stp/ldp/stnp/ldnp s/d/q */
+            int lg = 2 + (insn >> 30), load = (insn >> 22) & 1, mode = (insn >> 23) & 3;
+            int rt = insn & 31, rn = (insn >> 5) & 31, rt2 = (insn >> 10) & 31;
+            int64_t off = (int64_t)sextn((insn >> 15) & 0x7f, 7) * (1 << lg);
+            uint64_t base = rn == 31 ? c->sp : c->x[rn], a = mode == 1 ? base : base + off;
+            if (load) {
+                uint64_t t[2][2];
+                ldst_v(c, lg, 1, rt, a);
+                memcpy(t[0], c->vreg[rt], 16);
+                ldst_v(c, lg, 1, rt2, a + (1 << lg));
+                memcpy(t[1], c->vreg[rt2], 16);
+                if (c->stop == AOI_RUN) { memcpy(c->vreg[rt], t[0], 16); memcpy(c->vreg[rt2], t[1], 16); }
+            } else { ldst_v(c, lg, 0, rt, a); ldst_v(c, lg, 0, rt2, a + (1 << lg)); }
+            if ((mode == 1 || mode == 3) && c->stop == AOI_RUN) {
+                if (rn == 31) c->sp = base + off; else c->x[rn] = base + off;
+            }
+        /* ---- ld1..ld4 / st1..st4 structures (core/simd.c) ---- */
         } else if ((insn & 0x0a000000u) == 0x08000000u && ((insn >> 26) & 1)) {
-            c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break;
+            if (!aoi_simd_ldst(c, insn)) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
+        /* ---- Advanced SIMD and scalar FP data processing (core/simd.c) ---- */
+        } else if ((insn & 0x0e000000u) == 0x0e000000u) {
+            if (!aoi_simd_dp(c, insn)) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
         /* ---- load/store: register offset [Xn, Rm{, ext {#s}}] ---- */
         } else if ((insn & 0x3f200c00u) == 0x38200800u && ((insn >> 13) & 2)) {
             int size = insn >> 30, opc = (insn >> 22) & 3, rn = (insn >> 5) & 31;
@@ -349,7 +407,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             int is64 = insn >> 31, op = (insn >> 30) & 1, o2 = (insn >> 10) & 1;
             int rm = (insn >> 16) & 31, cond = (insn >> 12) & 0xf, rn = (insn >> 5) & 31, rd_ = insn & 31;
             uint64_t a = X(c, rn), b = X(c, rm), r;
-            if (cond_holds(c, (unsigned)cond)) r = a;
+            if (aoi_cond_holds(c, (unsigned)cond)) r = a;
             else if (op) r = o2 ? (uint64_t)0 - b : ~b;                /* csneg / csinv */
             else r = o2 ? b + 1 : b;                              /* csinc / csel */
             if (!is64) r &= 0xffffffffu;
@@ -413,8 +471,10 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (!is64) { a = (uint32_t)a; b = (uint32_t)b; }
             switch (op) {
             case 2:  r = b == 0 ? 0 : a / b; break;                          /* udiv */
-            case 3:  r = b == 0 ? 0 : is64 ? (uint64_t)((int64_t)a / (int64_t)b)
-                                           : (uint32_t)((int32_t)a / (int32_t)b); break; /* sdiv */
+            case 3:  if (b == 0) r = 0;                                      /* sdiv */
+                     else if (is64 ? b == ~0ULL : b == 0xffffffffu) r = 0 - a;   /* MIN / -1 wraps, no host trap */
+                     else r = is64 ? (uint64_t)((int64_t)a / (int64_t)b) : (uint32_t)((int32_t)a / (int32_t)b);
+                     break;
             case 8:  sh = b & (is64 ? 63 : 31); r = a << sh; break;          /* lslv */
             case 9:  sh = b & (is64 ? 63 : 31); r = a >> sh; break;          /* lsrv */
             case 10: sh = b & (is64 ? 63 : 31);

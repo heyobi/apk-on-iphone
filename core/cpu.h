@@ -28,6 +28,8 @@ enum aoi_stop { AOI_RUN = 0, AOI_STOP_EXIT, AOI_STOP_UNDEF, AOI_STOP_FAULT, AOI_
 struct aoi_cpu {
     uint64_t x[31];
     uint64_t sp, pc;
+    uint64_t vreg[32][2];       /* SIMD&FP V0-V31: [0] = bits 0-63, [1] = bits 64-127 */
+    uint32_t fpcr, fpsr;
     int n, z, c, v;
     uint64_t tpidr;             /* guest thread pointer, never the host's */
     struct aoi_mem *mem;
@@ -62,5 +64,12 @@ enum aoi_stop aoi_call(struct aoi_cpu *cpu, uint64_t fn, const uint64_t *args, i
 /* Provided by the syscall layer (core/linux.c). Returns the value for x0, or
  * sets cpu->stop to end the run. */
 uint64_t aoi_linux_syscall(struct aoi_cpu *cpu);
+
+/* Condition code test (EQ..NV) against the CPU's NZCV. */
+int aoi_cond_holds(struct aoi_cpu *cpu, unsigned cond);
+
+/* Advanced SIMD / FP (core/simd.c). Return 0 for an unimplemented encoding. */
+int aoi_simd_dp(struct aoi_cpu *cpu, uint32_t insn);
+int aoi_simd_ldst(struct aoi_cpu *cpu, uint32_t insn);
 
 #endif

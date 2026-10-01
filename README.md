@@ -3,7 +3,8 @@
 **Run Android apps natively on a non-jailbroken iPhone.** Not streaming, not a VM: the APK's own
 ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux.
 
-> Status: idea. Nothing here runs yet.
+> Status: early. A real Android native library (GMP from an APK) runs correctly in our
+> no-JIT interpreter on any host. No app UI yet.
 
 ## Why it might be possible now
 
@@ -28,13 +29,12 @@ ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux
 ## Status
 
 - **`gmpdemo`** (`make build/gmpdemo`): loads the **real `libgmp.so` from the Qalculate APK**,
-  links it (34 libc imports bound to a small host shim in `core/bionic.c`), and computes a
-  factorial with GMP's own code. `__gmpz_init` and `__gmpz_fac_ui` run — the factorial itself
-  executes, millions of real GMP instructions through the interpreter. The final decimal
-  formatting (`__gmpz_get_str`) faulted; the interpreter bugs behind it are fixed (see
-  `docs/STATUS.md`) and the demo needs a re-run.
+  links it (its libc imports bound to a small host shim in `core/bionic.c`), and computes
+  N! with GMP's own code, NEON paths included. Results match Python up to 30000!
+  (121,288 digits, 53 million interpreted instructions).
 - **`difftest`** (`make test` / `make difftest`): checks the interpreter instruction by
-  instruction against Unicorn (QEMU's A64 core) with random encodings and state.
+  instruction against Unicorn (QEMU's A64 core) with random encodings and state: every
+  integer, NEON and scalar-FP class the interpreter runs, about 50 classes.
 - **`aoirun`** (host tool, `make test`): a no-JIT AArch64 interpreter + a small Linux/aarch64
   syscall layer + an ELF loader. It runs a real static `aarch64-linux` ELF and produces correct
   output and exit code, at both `-O0` (loops and branches actually execute) and `-O1`. This is

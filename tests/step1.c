@@ -4,7 +4,8 @@
 
 #include <string.h>
 
-/* st: x0..x30, sp, pc, nzcv (bits 31..28), tpidr — 35 words. Returns the stop
+/* st: x0..x30, sp, pc, nzcv (bits 31..28), tpidr, then v0..v31 as lo/hi pairs,
+ * fpsr — 100 words. Returns the stop
  * reason (AOI_RUN means the instruction completed). */
 int aoi_step1(uint32_t insn, uint64_t *st, uint8_t *mem, uint64_t membase, uint64_t memsize,
               uint64_t *fault_addr)
@@ -23,12 +24,16 @@ int aoi_step1(uint32_t insn, uint64_t *st, uint8_t *mem, uint64_t membase, uint6
     c.sp = st[31]; c.pc = st[32];
     c.n = st[33] >> 31 & 1; c.z = st[33] >> 30 & 1; c.c = st[33] >> 29 & 1; c.v = st[33] >> 28 & 1;
     c.tpidr = st[34];
+    for (i = 0; i < 32; i++) { c.vreg[i][0] = st[35 + 2 * i]; c.vreg[i][1] = st[36 + 2 * i]; }
+    c.fpsr = (uint32_t)st[99];
     c.mem = &m;
     aoi_cpu_run(&c, 1);
     for (i = 0; i < 31; i++) st[i] = c.x[i];
     st[31] = c.sp; st[32] = c.pc;
     st[33] = (uint64_t)c.n << 31 | (uint64_t)c.z << 30 | (uint64_t)c.c << 29 | (uint64_t)c.v << 28;
     st[34] = c.tpidr;
+    for (i = 0; i < 32; i++) { st[35 + 2 * i] = c.vreg[i][0]; st[36 + 2 * i] = c.vreg[i][1]; }
+    st[99] = c.fpsr;
     *fault_addr = c.fault_addr;
     return c.stop;
 }
