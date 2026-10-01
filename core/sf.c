@@ -80,12 +80,7 @@ static const char *const composer_names[] = {
     "getStalledTransactionInfo", "getSchedulingPolicy",
 };
 
-static int64_t now_ns(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
-}
+static int64_t now_ns(void) { return aoi_mono_ns(); }     /* the guest's clock */
 
 static void ok(struct aoi_parcel *rep) { rep->status = 0; aoi_p32(rep, 0); }   /* binder::Status OK */
 
@@ -425,4 +420,97 @@ void aoi_sf_free(struct aoi_proc *p)
         }
     free(sf);
     p->sf = NULL;
+}
+
+/* ---------- snapshots (core/snap.c) ---------- */
+
+int aoi_sf_snap(struct aoi_proc *p, FILE *f, int save)
+{
+    struct aoi_sf *sf;
+    int k, i, sv[2];
+    if (save) {
+        uint8_t has = p->sf != NULL;
+        if (fwrite(&has, 1, 1, f) != 1) return -1;
+        return has && fwrite(p->sf, sizeof *p->sf, 1, f) != 1 ? -1 : 0;
+    }
+    {
+        uint8_t has;
+        if (fread(&has, 1, 1, f) != 1) return -1;
+        if (!has) return 0;
+    }
+    if (!(sf = calloc(1, sizeof *sf)) || fread(sf, sizeof *sf, 1, f) != 1) { free(sf); return -1; }
+    p->sf = sf;
+    for (k = 0; k < CONNS; k++) sf->c[k].send = sf->c[k].recv = -1;   /* the saved ones are gone */
+    for (k = 0; k < CONNS; k++) {                              /* host sockets: rebuilt */
+        struct conn *c = &sf->c[k];
+        if (!c->used) continue;
+        if (c->pair)                                           /* the guest's send end: we write a dup of it */
+            for (i = 0; i < AOI_PROC_FDS; i++)
+                if (p->fd[i].used && p->fd[i].kind == AOI_FD_PIPE && p->fd[i].pair == c->pair && p->fd[i].end == 1) {
+                    c->send = dup(p->fd[i].host);
+                    break;
+                }
+        if (c->send < 0) {                                     /* not handed out yet, or closed by the guest */
+            if (aoi_host_msgpair(sv)) return -1;
+            fcntl(sv[0], F_SETFL, O_NONBLOCK); fcntl(sv[1], F_SETFL, O_NONBLOCK);
+            fcntl(sv[0], F_SETFD, FD_CLOEXEC); fcntl(sv[1], F_SETFD, FD_CLOEXEC);
+            c->send = sv[0]; c->recv = sv[1];
+            c->pair = 0;
+        }
+        c->oneshot = 1;                                        /* an event in flight was lost: Choreographer */
+        c->next = 0;                                           /* ignores a vsync it did not ask for */
+    }
+    return 0;
+}
+
+/* Native objects by kind and index, so binder handles survive a snapshot. */
+enum { N_COMPOSER = 1, N_LEGACY, N_CLIENT, N_CONN, N_LAYER };
+
+int aoi_sf_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *kind, int32_t *idx)
+{
+    struct aoi_sf *sf = p->sf;
+    if (!sf) return -1;
+    *idx = 0;
+    if (self == sf) { *kind = fn == composer ? N_COMPOSER : fn == legacy ? N_LEGACY : N_CLIENT; return 0; }
+    if ((char *)self >= (char *)sf->c && (char *)self < (char *)(sf->c + CONNS)) {
+        *kind = N_CONN; *idx = (int32_t)((struct conn *)self - sf->c); return 0;
+    }
+    if ((char *)self >= (char *)sf->l && (char *)self < (char *)(sf->l + LAYERS)) {
+        *kind = N_LAYER; *idx = (int32_t)((struct layer *)self - sf->l); return 0;
+    }
+    return -1;
+}
+
+int aoi_sf_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface)
+{
+    struct aoi_sf *sf = p->sf;
+    if (!sf) return -1;
+    switch (kind) {
+    case N_COMPOSER: *fn = composer; *self = sf; *iface = "android.gui.ISurfaceComposer"; return 0;
+    case N_LEGACY: *fn = legacy; *self = sf; *iface = "android.ui.ISurfaceComposer"; return 0;
+    case N_CLIENT: *fn = client; *self = sf; *iface = "android.gui.ISurfaceComposerClient"; return 0;
+    case N_CONN:
+        if (idx < 0 || idx >= CONNS) return -1;
+        *fn = connection; *self = &sf->c[idx]; *iface = "android.gui.IDisplayEventConnection"; return 0;
+    case N_LAYER:
+        if (idx < 0 || idx >= LAYERS) return -1;
+        *fn = layer_handle; *self = &sf->l[idx]; *iface = ""; return 0;
+    }
+    return -1;
+}
+
+/* The frame on screen, to the host again (after a snapshot is loaded). */
+void aoi_sf_redraw(struct aoi_proc *p)
+{
+    struct aoi_sf *sf = p->sf;
+    struct aoi_gbuf *b;
+    uint8_t *px;
+    uint32_t y;
+    if (!sf || !sf->frame || !p->frame || !(b = aoi_gralloc_find(p, sf->frame)) || b->bpp != 4) return;
+    if (!(px = malloc((size_t)b->width * b->height * 4))) return;
+    for (y = 0; y < b->height; y++)
+        if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, px + (size_t)y * b->width * 4,
+                         (uint64_t)b->width * 4, 0)) break;
+    if (y == b->height) p->frame(p->frame_ctx, px, b->width, b->height);
+    free(px);
 }

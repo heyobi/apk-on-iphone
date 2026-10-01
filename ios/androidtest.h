@@ -24,7 +24,9 @@ int aoi_android_art_gc(const char *root, const char *tmpdir, aoi_log_fn log, voi
  * APK at guest path /data/app/apk/base.apk. The root (bundle) is read-only; datadir is
  * the writable host directory that is the guest's /data (a copy of the root's data/
  * plus the APK). Every frame SurfaceFlinger shows goes to frame(). The app's
- * logcat and output go to logpath. Returns when the app's process ends. */
+ * logcat and output go to logpath. Returns when the app's process ends. A snapshot
+ * of the started app (aoi_android_snapshot) is loaded instead of starting it again
+ * when it was taken for the same build, APK and compiled code. */
 typedef void (*aoi_frame_fn)(void *ctx, const unsigned char *rgbx, unsigned width, unsigned height);
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
                     void *frame_ctx, aoi_log_fn log, void *ctx);
@@ -32,5 +34,10 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
 /* A touch for the running app (from any thread): action 0 down, 1 up, 2 move, at
  * (x, y) in its screen pixels (the frames' size). Ignored when no app runs. */
 void aoi_android_touch(int action, float x, float y);
+
+/* The app is saved as it is now (a snapshot next to datadir, "<datadir>.snap"), so the
+ * next launch resumes it in seconds instead of starting it again; the first one is
+ * taken by itself once the app has started. Waits up to timeout s: 0 when written. */
+int aoi_android_snapshot(double timeout);
 
 #endif

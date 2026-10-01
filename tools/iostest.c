@@ -15,7 +15,8 @@
 
 static void out(void *ctx, const char *line) { (void)ctx; printf("%s\n", line); }
 
-/* AOI_APP_TAPS="x,y;x,y;...": taps in screen pixels, 4 s apart, after the first frame. */
+/* AOI_APP_TAPS="x,y;x,y;...": taps in screen pixels, 4 s apart, after the first frame;
+ * then with AOI_APP_SNAPSHOT=1 a snapshot (aoi_android_snapshot). */
 static void *taps(void *arg)
 {
     const char *s = arg;
@@ -30,6 +31,11 @@ static void *taps(void *arg)
         aoi_android_touch(1, x, y);
         s += n;
         if (*s == ';') s++;
+    }
+    if (getenv("AOI_APP_SNAPSHOT")) {               /* then as when iOS sends the app to the background */
+        sleep(4);
+        printf("snapshot: %d\n", aoi_android_snapshot(25));
+        fflush(stdout);
     }
     return NULL;
 }

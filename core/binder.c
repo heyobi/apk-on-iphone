@@ -380,3 +380,41 @@ void aoi_binder_free(struct aoi_proc *p)
     free(p->binder);
     p->binder = NULL;
 }
+
+/* ---------- snapshots (core/snap.c) ---------- */
+
+/* The driver state as is, its native objects as (kind, index) of the service that
+ * owns them: after gralloc and SurfaceFlinger are loaded. */
+int aoi_binder_snap(struct aoi_proc *p, FILE *f, int save)
+{
+    struct aoi_binder *b;
+    int32_t ki[2];
+    int h;
+    uint8_t has;
+    if (save) {
+        has = p->binder != NULL;
+        if (fwrite(&has, 1, 1, f) != 1) return -1;
+        if (!has) return 0;
+        b = p->binder;
+        if (fwrite(b, sizeof *b, 1, f) != 1) return -1;
+        for (h = 1; h < b->nnat; h++) {
+            if (aoi_sf_native_id(p, b->nat[h].self, b->nat[h].fn, &ki[0], &ki[1]) &&
+                aoi_gralloc_native_id(p, b->nat[h].self, b->nat[h].fn, &ki[0], &ki[1])) return -1;
+            if (fwrite(ki, sizeof ki, 1, f) != 1) return -1;
+        }
+        return 0;
+    }
+    if (fread(&has, 1, 1, f) != 1) return -1;
+    if (!has) return 0;
+    if (!(b = calloc(1, sizeof *b))) return -1;
+    p->binder = b;
+    if (fread(b, sizeof *b, 1, f) != 1 || b->nnat < 1 || b->nnat > NATIVES) return -1;
+    memset(&b->nat[0], 0, sizeof b->nat[0]);
+    for (h = 1; h < b->nnat; h++) {
+        struct native *n = &b->nat[h];
+        if (fread(ki, sizeof ki, 1, f) != 1) return -1;
+        if (aoi_sf_native_ref(p, ki[0], ki[1], &n->fn, &n->self, &n->iface) &&
+            aoi_gralloc_native_ref(p, ki[0], ki[1], &n->fn, &n->self, &n->iface)) return -1;
+    }
+    return 0;
+}

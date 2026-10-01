@@ -9,6 +9,7 @@
  * Debug environment: AOI_UFFD=1 offers userfaultfd (ART: CMC GC + boot image),
  * AOI_STOP_AT=N stops after N instructions, AOI_DUMP=addr,len,file saves guest
  * memory at the end; build/aoiproc-debug adds AOI_WATCH and AOI_PCRING (core/cpu.c). */
+#include "../core/binder.h"
 #include "../core/proc.h"
 #ifdef AOI_ORACLE
 #include "../core/oracle.h"
@@ -110,10 +111,20 @@ int main(int argc, char **argv)
     }
     envp[ne] = NULL;
     if (argc - a < 2) { fprintf(stderr, "usage: %s [-t] ROOT PROGRAM [args...]\n", argv[0]); return 2; }
-    if ((err = aoi_proc_exec(&proc, argv[a], argv[a + 1], argc - a - 1, (const char *const *)argv + a + 1, (const char *const *)envp))) {
+    if (getenv("AOI_SNAPSHOT_LOAD")) {               /* resume a saved process (core/snap.c) instead */
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if ((err = aoi_snap_load(&proc, getenv("AOI_SNAPSHOT_LOAD"), argv[a], NULL))) {
+            fprintf(stderr, "[aoiproc] snapshot %s: %s\n", getenv("AOI_SNAPSHOT_LOAD"), err);
+            return 1;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        fprintf(stderr, "[aoiproc] snapshot loaded in %.2f s\n",
+                (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9);
+    } else if ((err = aoi_proc_exec(&proc, argv[a], argv[a + 1], argc - a - 1, (const char *const *)argv + a + 1, (const char *const *)envp))) {
         fprintf(stderr, "[aoiproc] exec %s: %s\n", argv[a + 1], err);
         return 1;
     }
+    if (getenv("AOI_SNAPSHOT_SAVE")) snprintf(proc.snap_path, sizeof proc.snap_path, "%s", getenv("AOI_SNAPSHOT_SAVE"));
     if (trace) proc.trace = stderr;
 #ifdef AOI_DEBUG
     { extern uint64_t *aoi_pcring; if (getenv("AOI_PCRING")) aoi_pcring = calloc(1024, 8); }
@@ -126,6 +137,7 @@ int main(int argc, char **argv)
     if (profile && (proc.samples = calloc(1 << 20, sizeof *proc.samples))) proc.maxsamples = 1 << 20;
     proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
     if (getenv("AOI_TAPS")) { proc.frame = first_frame; proc.frame_ctx = &proc; }
+    if (getenv("AOI_SNAPSHOT_LOAD")) aoi_sf_redraw(&proc);      /* the frame it was showing: taps start */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     st = aoi_proc_run(&proc, getenv("AOI_STOP_AT") ? strtoull(getenv("AOI_STOP_AT"), NULL, 0) : 0);
     clock_gettime(CLOCK_MONOTONIC, &t1);

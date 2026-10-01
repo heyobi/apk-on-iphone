@@ -124,11 +124,15 @@ static uint64_t addflags(struct aoi_cpu *c, uint64_t a, uint64_t b, int carry_in
 /* The generic timer as user space sees it: a 24 MHz counter (Apple's and most
  * Android phones' frequency) driven by the host's monotonic clock. */
 #define AOI_CNTFRQ 24000000u
+int64_t aoi_mono_offset;           /* (core/proc.c: a restored snapshot's time shift) */
+
 static uint64_t aoi_cntvct(void)
 {
     struct timespec ts;
+    int64_t ns;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * AOI_CNTFRQ + (uint64_t)ts.tv_nsec * 3 / 125;
+    ns = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec + aoi_mono_offset;
+    return (uint64_t)(ns / 1000000000) * AOI_CNTFRQ + (uint64_t)(ns % 1000000000) * 3 / 125;
 }
 
 enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)

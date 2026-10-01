@@ -4,6 +4,7 @@
 #define AOI_BINDER_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include "parcel.h"
 
@@ -50,5 +51,17 @@ struct aoi_gbuf *aoi_gralloc_find(struct aoi_proc *p, uint32_t id);
 void aoi_gralloc_retain(struct aoi_proc *p, uint32_t id);
 void aoi_gralloc_release(struct aoi_proc *p, uint32_t id);
 uint64_t aoi_gralloc_syscall(struct aoi_proc *p, uint64_t op, uint64_t id);    /* AOI_SYS_GRALLOC */
+
+/* Snapshots (core/snap.c): save = 1 writes the state to f, 0 reads it back (after
+ * guest memory and fds). 0, or -1. The native objects of sf and gralloc are named
+ * by (kind, index) across a snapshot: *_native_id finds one, *_native_ref resolves it. */
+int aoi_binder_snap(struct aoi_proc *p, FILE *f, int save);
+int aoi_sf_snap(struct aoi_proc *p, FILE *f, int save);
+int aoi_gralloc_snap(struct aoi_proc *p, FILE *f, int save);
+int aoi_sf_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *kind, int32_t *idx);
+int aoi_sf_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface);
+int aoi_gralloc_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *kind, int32_t *idx);
+int aoi_gralloc_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface);
+void aoi_sf_redraw(struct aoi_proc *p);     /* the frame on screen to p->frame again */
 
 #endif

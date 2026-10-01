@@ -251,3 +251,34 @@ void aoi_gralloc_free(struct aoi_proc *p)
     free(p->gralloc);
     p->gralloc = NULL;
 }
+
+/* ---------- snapshots (core/snap.c) ---------- */
+
+int aoi_gralloc_snap(struct aoi_proc *p, FILE *f, int save)
+{
+    uint8_t has;
+    if (save) {
+        has = p->gralloc != NULL;
+        if (fwrite(&has, 1, 1, f) != 1) return -1;
+        return has && fwrite(p->gralloc, sizeof *p->gralloc, 1, f) != 1 ? -1 : 0;
+    }
+    if (fread(&has, 1, 1, f) != 1) return -1;
+    if (!has) return 0;
+    if (!(p->gralloc = calloc(1, sizeof *p->gralloc))) return -1;
+    return fread(p->gralloc, sizeof *p->gralloc, 1, f) == 1 ? 0 : -1;
+}
+
+int aoi_gralloc_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *kind, int32_t *idx)
+{
+    if (!p->gralloc || self != p->gralloc || fn != allocator) return -1;
+    *kind = 16; *idx = 0;
+    return 0;
+}
+
+int aoi_gralloc_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface)
+{
+    (void)idx;
+    if (!p->gralloc || kind != 16) return -1;
+    *fn = allocator; *self = p->gralloc; *iface = "android.hardware.graphics.allocator.IAllocator";
+    return 0;
+}

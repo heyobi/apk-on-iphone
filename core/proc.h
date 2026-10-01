@@ -99,6 +99,8 @@ struct aoi_proc {
     struct { uint64_t addr, len, off; int fd; } shm[32];
     int nshm;
     volatile int stop_request;      /* set from another host thread: aoi_proc_run returns AOI_RUN */
+    char snap_path[AOI_PATH];       /* if set: where the guest's open("/dev/aoi_snapshot") saves a snapshot */
+    volatile int snap_request;      /* that open happened: saved at the next time slice (core/snap.c) */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;
@@ -137,6 +139,24 @@ void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y);
 /* A host AF_UNIX pair that keeps message boundaries: SOCK_SEQPACKET, or where the
  * host has none (Darwin) SOCK_DGRAM with room for many messages. 0 or -1. */
 int aoi_host_msgpair(int sv[2]);
+
+/* The guest's CLOCK_MONOTONIC (the host's plus an offset a restored snapshot sets, so
+ * guest time never goes back), in ns. Used for every guest-visible clock and deadline. */
+int64_t aoi_mono_ns(void);
+extern int64_t aoi_mono_offset;
+
+/* A host fd for guest path `guest` opened with host open() flags (synthetic /proc
+ * files included), or -1 (core/snap.c reopens files with it). */
+int aoi_proc_open_host(struct aoi_proc *p, const char *guest, int flags);
+/* The host path of guest path `guest` (AOI_PATH bytes; "" if it has none). */
+void aoi_proc_host_path(struct aoi_proc *p, const char *guest, char *out);
+
+/* Snapshots (core/snap.c): the whole process (memory, threads, fds, binder,
+ * SurfaceFlinger, gralloc) saved to a file, and a process made from one, ready for
+ * aoi_proc_run. NULL, or what went wrong. A snapshot is only valid for the same
+ * build of this code. */
+const char *aoi_snap_save(struct aoi_proc *p, const char *path);
+const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data);
 
 /* Gives guest fds a and b (ends 0 and 1 of one host pair of type ptype) a new pair id,
  * so a snapshot can rebuild the pair. Returns the id. */

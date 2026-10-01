@@ -4,6 +4,7 @@
  * tools/iostest.c. */
 #define _POSIX_C_SOURCE 200809L
 #include "androidtest.h"
+#include "../core/binder.h"
 #include "../core/proc.h"
 
 #ifdef __APPLE__
@@ -172,6 +173,20 @@ static int classpath_env(const char *datadir, char vals[3][4096], const char **e
 }
 
 static struct aoi_proc *volatile running;   /* the app's process, while aoi_android_app runs */
+static char snap_path[1024];                /* where its snapshot goes */
+
+int aoi_android_snapshot(double timeout)
+{
+    struct aoi_proc *p = running;
+    struct timespec ts = { 0, 20000000 };
+    double waited = 0;
+    if (!p || !snap_path[0]) return -1;
+    snprintf(p->snap_path, sizeof p->snap_path, "%s", snap_path);
+    p->snap_request = 1;
+    while (p->snap_request && running == p && waited < timeout) { nanosleep(&ts, NULL); waited += 0.02; }
+    while (p->snap_path[0] && running == p && waited < timeout) { nanosleep(&ts, NULL); waited += 0.02; }   /* written */
+    return running == p && !p->snap_path[0] ? 0 : -1;
+}
 
 void aoi_android_touch(int action, float x, float y)
 {
@@ -181,8 +196,41 @@ void aoi_android_touch(int action, float x, float y)
 
 /* One guest process with the app environment: /data in datadir, output to fd. Its
  * exit code, or -1 (logged). frame: SurfaceFlinger's frames (the app), or NULL. */
+/* The launch a snapshot was taken for: the APK and its compiled code. A snapshot is
+ * loaded only with the same key next to it (the build is checked inside). */
+static void snap_key(const char *datadir, char *key, size_t n)
+{
+    char a[1024], o[1024];
+    struct stat sa, so;
+    snprintf(a, sizeof a, "%s/app/apk/base.apk", datadir);
+    snprintf(o, sizeof o, "%s/app/apk/oat/arm64/base.odex", datadir);
+    if (stat(a, &sa)) memset(&sa, 0, sizeof sa);
+    if (stat(o, &so)) memset(&so, 0, sizeof so);
+    snprintf(key, n, "apk %lld %lld odex %lld %lld\n", (long long)sa.st_size, (long long)sa.st_mtime,
+             (long long)so.st_size, (long long)so.st_mtime);
+}
+
+static int snap_key_ok(const char *snap, const char *key)
+{
+    char path[1100], got[256] = "";
+    FILE *f;
+    snprintf(path, sizeof path, "%s.key", snap);
+    if (!(f = fopen(path, "r"))) return 0;
+    if (!fgets(got, sizeof got, f)) got[0] = 0;
+    fclose(f);
+    return !strcmp(got, key);
+}
+
+static void snap_key_write(const char *snap, const char *key)
+{
+    char path[1100];
+    FILE *f;
+    snprintf(path, sizeof path, "%s.key", snap);
+    if ((f = fopen(path, "w"))) { fputs(key, f); fclose(f); }
+}
+
 static int run_guest(const char *root, const char *datadir, int fd, const char *const *argv, int argc,
-                     aoi_frame_fn frame, void *frame_ctx, const char *what, aoi_log_fn log, void *ctx)
+                     aoi_frame_fn frame, void *frame_ctx, const char *what, const char *snap, aoi_log_fn log, void *ctx)
 {
     static const char *const base[] = {
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
@@ -196,18 +244,41 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     enum aoi_stop st;
     struct timespec t0, t1;
     double secs, now, peak;
-    int ne = 0, i, rc = -1;
+    int ne = 0, i, rc = -1, resumed = 0;
 
     if (!p) { say(log, ctx, "%s: out of memory", what); return -1; }
     if (!classpath_env(datadir, vals, cp)) { say(log, ctx, "%s: no %s/system/environ/classpath", what, datadir); free(p); return -1; }
     while (base[ne]) { envp[ne] = base[ne]; ne++; }
     for (i = 0; cp[i]; i++) envp[ne++] = cp[i];
     envp[ne] = NULL;
-    if ((err = aoi_proc_exec(p, root, argv[0], argc, argv, envp))) {
+    if (snap) {                         /* resume the app where a snapshot left it, if it fits */
+        char key[256];
+        snap_key(datadir, key, sizeof key);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (!access(snap, R_OK) && snap_key_ok(snap, key)) {
+            if (!(err = aoi_snap_load(p, snap, root, datadir))) {
+                clock_gettime(CLOCK_MONOTONIC, &t1);
+                say(log, ctx, "%s: resumed from its snapshot in %.1f s", what,
+                    (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9);
+                resumed = 1;
+            } else {
+                say(log, ctx, "%s: snapshot not usable (%s), starting afresh", what, err);
+                aoi_proc_free(p);
+                memset(p, 0, sizeof *p);
+            }
+        }
+        if (!resumed) {                 /* a new one is taken once the app is idle (aoi.Main) */
+            unlink(snap);
+            snap_key_write(snap, key);
+        }
+    }
+    if (!resumed && (err = aoi_proc_exec(p, root, argv[0], argc, argv, envp))) {
         say(log, ctx, "%s: exec: %s", what, err);
         aoi_proc_free(p); free(p);
         return -1;
     }
+    if (snap && !resumed) snprintf(p->snap_path, sizeof p->snap_path, "%s", snap);
+    if (snap) snprintf(snap_path, sizeof snap_path, "%s", snap);
     snprintf(p->data, sizeof p->data, "%s", datadir);
     p->uffd = 1;                        /* ART's CMC GC and the boot image */
     p->frame = frame;
@@ -216,6 +287,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     p->fd[2].host = fd;
     p->log = fdopen(dup(fd), "w");
     if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
+    if (resumed) aoi_sf_redraw(p);      /* the screen it was showing */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     if (frame) running = p;
     st = aoi_proc_run(p, 0);
@@ -255,7 +327,7 @@ static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_f
     snprintf(dir, sizeof dir, "%s/app/apk/oat", datadir); mkdir(dir, 0755);
     snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", datadir); mkdir(dir, 0755);
     say(log, ctx, "dex2oat: the app's code is compiled once (a few minutes) ...");
-    if (run_guest(root, datadir, fd, argv, 6, NULL, NULL, "dex2oat", log, ctx) != 0) unlink(odex);   /* run interpreted */
+    if (run_guest(root, datadir, fd, argv, 6, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) unlink(odex);   /* run interpreted */
 }
 
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
@@ -265,8 +337,10 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
                                         "/data/app/apk/base.apk", NULL };
     int fd, rc;
     if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
+    char snap[1100];
+    snprintf(snap, sizeof snap, "%s.snap", datadir);
     compile_apk(root, datadir, fd, log, ctx);
-    rc = run_guest(root, datadir, fd, argv, 4, frame, frame_ctx, "app", log, ctx);
+    rc = run_guest(root, datadir, fd, argv, 4, frame, frame_ctx, "app", snap, log, ctx);
     close(fd);
     return rc;
 }

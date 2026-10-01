@@ -242,7 +242,7 @@ static int list_cb(const char *name, size_t len, void *ctx) {
         t.cancelsTouchesInView = NO;
         [self.screen addGestureRecognizer:t];
     }
-    [self append:@"Uygulama başlıyor (ilk kare yorumlayıcıda ~1 dakika sürebilir). İki parmakla dokunmak loga döner."];
+    [self append:@"Uygulama başlıyor: ilk açılış ~1 dakika, sonrakiler kayıttan (snapshot) birkaç saniye. İki parmakla dokunmak loga döner."];
     self.appRunning = YES;
     dispatch_async(self.appQueue, ^{
         aoi_android_app(root.UTF8String, data.UTF8String, logPath.UTF8String, frame_cb, (__bridge void *)self,
@@ -325,6 +325,22 @@ static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h)
     self.window.rootViewController = [VC new];
     [self.window makeKeyAndVisible];
     return YES;
+}
+
+/* Going to the background (iOS may end us there): the running app is saved as it is,
+ * so the next launch resumes it with what was typed since its first snapshot. */
+- (void)applicationDidEnterBackground:(UIApplication *)app {
+    __block UIBackgroundTaskIdentifier task = [app beginBackgroundTaskWithExpirationHandler:^{
+        [app endBackgroundTask:task];
+        task = UIBackgroundTaskInvalid;
+    }];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        aoi_android_snapshot(25);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (task != UIBackgroundTaskInvalid) [app endBackgroundTask:task];
+            task = UIBackgroundTaskInvalid;
+        });
+    });
 }
 @end
 

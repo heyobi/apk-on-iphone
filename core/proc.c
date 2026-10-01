@@ -294,6 +294,18 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
     return -1;
 }
 
+static int proc_file(struct aoi_proc *p, const char *g);
+
+void aoi_proc_host_path(struct aoi_proc *p, const char *guest, char *out) { to_host(p, guest, out); }
+
+int aoi_proc_open_host(struct aoi_proc *p, const char *guest, int flags)
+{
+    char h[AOI_PATH];
+    if (!strncmp(guest, "/proc/", 6)) return proc_file(p, guest);
+    to_host(p, guest, h);
+    return h[0] ? open(h, flags | O_CLOEXEC) : -1;
+}
+
 int aoi_proc_pair(struct aoi_proc *p, int a, int b, int ptype)
 {
     int id = ++p->next_pair;
@@ -804,12 +816,14 @@ static uint64_t block_and_retry(struct aoi_proc *p, int64_t ns)
 
 #define SLICE 100000                /* guest instructions per turn */
 
-static int64_t now_ns(void)
+int64_t aoi_mono_ns(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec + aoi_mono_offset;
 }
+
+static int64_t now_ns(void) { return aoi_mono_ns(); }
 
 /* Wakes up to n threads waiting on the futex word at addr (bitset-filtered);
  * returns how many. Their futex call returns 0. */
@@ -905,6 +919,15 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         if (max_steps && end > max_steps) end = max_steps;
         if (!sig_pending(p)) return p->cpu.stop;
         if (p->stop_request) return AOI_RUN;
+        if (p->snap_request) {                                     /* every thread is between instructions */
+            const char *e;
+            int64_t t0 = now_ns();
+            p->snap_request = 0;
+            e = aoi_snap_save(p, p->snap_path);
+            if (p->log) fprintf(p->log, "I/aoi: snapshot %s: %s (%.2f s)\n", p->snap_path, e ? e : "saved",
+                                (double)(now_ns() - t0) / 1e9);
+            p->snap_path[0] = 0;
+        }
         if (p->sf) aoi_sf_tick(p);                                 /* vsync events that are due */
         st = aoi_cpu_run(&p->cpu, end);
         if (st == AOI_STOP_FAULT && sig_fault(p)) continue;
@@ -1451,6 +1474,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
         if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
+        } else if (!strcmp(g, "/dev/aoi_snapshot")) {              /* aoi.Main: the app is up, save it */
+            if (p->snap_path[0]) p->snap_request = 1;
+            r = err(L_ENOENT);
+            break;
         } else if (!strcmp(g, "/dev/aoi_input")) {                 /* touches from the host (aoi_proc_touch) */
             int pv[2];
             if (p->input_w > 0 || pipe(pv)) { r = err(L_EBUSY); break; }
@@ -2106,6 +2133,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         int64_t t[2];
         clockid_t id = (a0 == 0 || a0 == 5 || a0 == 8) ? CLOCK_REALTIME : CLOCK_MONOTONIC;
         if (nr == NR_clock_getres) { ts.tv_sec = 0; ts.tv_nsec = 1; }
+        else if (id == CLOCK_MONOTONIC) { int64_t m = aoi_mono_ns(); ts.tv_sec = m / 1000000000; ts.tv_nsec = m % 1000000000; }
         else clock_gettime(id, &ts);
         t[0] = ts.tv_sec; t[1] = ts.tv_nsec;
         r = !a1 || put(p, a1, t, 16) ? 0 : err(L_EFAULT);

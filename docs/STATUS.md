@@ -392,6 +392,23 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Snapshots: the second launch resumes in under a second (host), app 0.15.**
+`core/snap.c` saves the whole guest process to a file and loads it back: struct
+aoi_proc as is (host pointers and fds fixed up), guest memory page by page (a page that
+equals its file mapping is mapped from the file again, zero pages are skipped, the rest
+is stored: ~80 MB for Qalculate), epoll lists and file offsets, host pipes and socket
+pairs rebuilt from their pair ids, binder/SurfaceFlinger/gralloc state (`*_snap`; native
+binder objects travel as (kind, index)), and the apps' files under /data/data (put back
+on load, so SQLite's cache and WAL index match the files). The guest's monotonic clock
+carries on (`aoi_mono_offset`). Every vsync connection gets one vsync after a load (an
+event in flight is lost). Taken when aoi.Main's activityIdle + 3 s opens
+`/dev/aoi_snapshot` (once per fresh start), and again by the iOS app when it goes to
+the background (`aoi_android_snapshot`, so history typed since is kept). Loaded only
+for the same build (inside the file) and the same APK + odex (`<datadir>.snap.key`);
+otherwise the app starts afresh. Host: save 1.7-1.8 s, load 0.3-0.9 s, then taps and
+frames as before (`AOI_SNAPSHOT_SAVE` / `AOI_SNAPSHOT_LOAD` in aoiproc; iostest's
+`AOI_APP_SNAPSHOT=1` snapshots after its taps). Not yet run on the phone.
+
 **On the phone with v0.14.60:** a frame after a tap ~1.1 s (Choreographer skips ~68,
 was ~125); the first full draw ~5.8 s (348, was 513); the second launch reuses the
 compiled odex and /data (no dex2oat).
@@ -510,6 +527,7 @@ none occur in Qalculate; other apps will tell (isacheck).
 - `core/vm.c` — sparse guest address space (2 MiB host chunks on demand, per-page R/W/X).
 - `core/proc.c` — a Linux process: execve-style loader (PT_INTERP, auxv) and the
   syscall layer for unmodified Android programs (`tools/aoiproc.c`).
+- `core/snap.c` — snapshots of a whole process (save/load), for fast relaunch.
 - `tools/fetch-android.sh`, `tools/android-root.sh` — the AOSP 14 guest root.
 - `core/load.c` — static-ELF loader + initial stack (for the `aoirun` path).
 - `tools/gmpdemo.c` — the end-to-end demo: APK library → linked → GMP computes.

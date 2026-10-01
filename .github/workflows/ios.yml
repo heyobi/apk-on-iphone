@@ -69,7 +69,7 @@ jobs:
             -o "$APP/ApkOnIphone" \
             ios/main.m ios/gmptest.c ios/vmprobe.c ios/androidtest.c \
             core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
-            core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c \
+            core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c core/snap.c \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics -lz
           cp ios/Info.plist "$APP/Info.plist"
           cp -RP aroot-mini "$APP/aroot"

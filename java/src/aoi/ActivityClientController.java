@@ -20,7 +20,30 @@ final class ActivityClientController extends IActivityClientController.Stub {
 
     private static void log(String what) { System.out.println("aoi: activity " + what); }
 
-    @Override public void activityIdle(IBinder t, Configuration c, boolean stopProfiling) { log("idle"); }
+    private static boolean snapshotAsked;
+
+    /** Once the app has settled (idle, and a few seconds for late work), the host may
+     *  save the whole process (core/snap.c): opening /dev/aoi_snapshot asks for it, and
+     *  the next launch resumes from there. The open itself always fails. */
+    @Override public void activityIdle(IBinder t, Configuration c, boolean stopProfiling) {
+        log("idle");
+        synchronized (ActivityClientController.class) {
+            if (snapshotAsked) return;
+            snapshotAsked = true;
+        }
+        Thread s = new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    Thread.sleep(3000);
+                    new java.io.FileInputStream("/dev/aoi_snapshot").close();
+                } catch (Exception e) {
+                    // expected: the host has taken it, or does not want one
+                }
+            }
+        }, "aoi-snapshot");
+        s.setDaemon(true);
+        s.start();
+    }
     @Override public void activityResumed(IBinder t, boolean splash) {
         log("resumed");
         try {                                                      /* what the app sees of its screen (reflection: */
