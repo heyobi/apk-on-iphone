@@ -392,6 +392,25 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**No more one-at-a-time service crashes (app 0.32).** Each new app or gesture was
+finding a service we lacked (clipboard, audio: null managers) or a call our services
+had not written (AbstractMethodError: Kiwi's startActivity, IUserManager...). Now
+aoi.Services covers both kinds:
+- every Context *_SERVICE name we do not provide gets a NullService at startup (206
+  of them), which answers any call with "no exception" and zeros/false/null/empty, so
+  a manager is never null; kept absent on purpose: textclassification (falls back to
+  a local classifier), autofill and content_capture (they wait 5 s for a reply);
+- our own services take their calls as transactions (queryLocalInterface null, so
+  the framework goes through Stub.Proxy as across processes) and catch
+  AbstractMethodError in onTransact: an unwritten call gets the default answer and
+  one log line, "aoi: missing <Service>: <signature>". WindowSession keeps direct
+  calls (per-frame relayout/finishDrawing).
+tools/appcheck.sh turns an app's log into its checklist: crashes, missing calls,
+stand-in services used, services still absent, missing native libraries. Qalculate
+from a fresh start: no crash, 2 missing calls (handleApplicationWtf,
+queryIntentContentProviders), 3 stand-ins used (accessibility, connectivity,
+network_management); dialog, menu and delete still work; run_android.sh 13/13.
+
 **Copy and Paste no longer kill the app (app 0.31).** On the phone, Qalculate's
 text toolbar (PopupWindow type 1005) came up, and tapping Copy or Paste killed the
 app: View.performClick plays the click sound, ViewRootImpl asks AudioManager

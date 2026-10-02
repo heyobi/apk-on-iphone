@@ -19,6 +19,15 @@ import java.util.HashMap;
  * not implement throws AbstractMethodError, naming the next method to write.
  */
 final class ActivityManager extends IActivityManager.Stub {
+    /* Calls go through Stub.onTransact, and one we have not written gets the default
+     * answer instead of an AbstractMethodError (aoi.Services). */
+    @Override public android.os.IInterface queryLocalInterface(String descriptor) { return null; }
+    @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
+            throws android.os.RemoteException {
+        try { return super.onTransact(code, data, reply, flags); }
+        catch (AbstractMethodError e) { return Services.missing(this, e, reply); }
+    }
+
     private final ApplicationInfo app;
     private final ActivityInfo launcher;
     private final ArrayList providers = new ArrayList();          /* the app's own, installed at bind */

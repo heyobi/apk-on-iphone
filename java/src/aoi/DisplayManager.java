@@ -13,6 +13,15 @@ import android.view.DisplayInfo;
  *  frame is drawn in software and rasterizing dominates a frame: 2x is 2.25 times fewer
  *  pixels; the iPhone scales the frames up.) */
 final class DisplayManager extends IDisplayManager.Stub {
+    /* Calls go through Stub.onTransact, and one we have not written gets the default
+     * answer instead of an AbstractMethodError (aoi.Services). */
+    @Override public android.os.IInterface queryLocalInterface(String descriptor) { return null; }
+    @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
+            throws android.os.RemoteException {
+        try { return super.onTransact(code, data, reply, flags); }
+        catch (AbstractMethodError e) { return Services.missing(this, e, reply); }
+    }
+
     static int WIDTH = 786, HEIGHT = 1704, DPI = 320;
 
     static {

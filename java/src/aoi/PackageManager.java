@@ -16,6 +16,15 @@ import java.util.Map;
 
 /** The in-process PackageManager: one package is installed, ours. */
 final class PackageManager extends IPackageManager.Stub {
+    /* Calls go through Stub.onTransact, and one we have not written gets the default
+     * answer instead of an AbstractMethodError (aoi.Services). */
+    @Override public android.os.IInterface queryLocalInterface(String descriptor) { return null; }
+    @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
+            throws android.os.RemoteException {
+        try { return super.onTransact(code, data, reply, flags); }
+        catch (AbstractMethodError e) { return Services.missing(this, e, reply); }
+    }
+
     private final App app;
 
     PackageManager(App app) {

@@ -49,6 +49,7 @@ public final class Main {
         ServiceManager.addService("content", new ContentService());
         ServiceManager.addService("clipboard", new Clipboard());
         ServiceManager.addService("audio", new AudioService());
+        Services.standIns();                                       /* the rest: default answers */
         /* No GPU in the guest yet (a GSI has no vendor GLES driver; its ANGLE needs Vulkan):
          * windows draw in software, with Skia on the CPU, into buffers we can show. */
         java.lang.reflect.Field hw = Class.forName("android.view.ThreadedRenderer").getDeclaredField("sRendererEnabled");

@@ -16,6 +16,15 @@ import java.util.ArrayList;
  *  text) asks the host to act on it. Without a host clipboard (the desktop runner)
  *  the clip stays in this process. */
 final class Clipboard extends IClipboard.Stub {
+    /* Calls go through Stub.onTransact, and one we have not written gets the default
+     * answer instead of an AbstractMethodError (aoi.Services). */
+    @Override public android.os.IInterface queryLocalInterface(String descriptor) { return null; }
+    @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
+            throws android.os.RemoteException {
+        try { return super.onTransact(code, data, reply, flags); }
+        catch (AbstractMethodError e) { return Services.missing(this, e, reply); }
+    }
+
     private static final File FILE = new File("/data/local/tmp/aoi.clip");
 
     private ClipData clip;                                     /* the last one set here */

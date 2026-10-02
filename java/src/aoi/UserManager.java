@@ -5,6 +5,15 @@ import android.os.IUserManager;
 
 /** One user, 0: the owner, unlocked, running in the foreground, unrestricted. */
 final class UserManager extends IUserManager.Stub {
+    /* Calls go through Stub.onTransact, and one we have not written gets the default
+     * answer instead of an AbstractMethodError (aoi.Services). */
+    @Override public android.os.IInterface queryLocalInterface(String descriptor) { return null; }
+    @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
+            throws android.os.RemoteException {
+        try { return super.onTransact(code, data, reply, flags); }
+        catch (AbstractMethodError e) { return Services.missing(this, e, reply); }
+    }
+
     @Override public boolean isUserUnlocked(int u) { return u == 0; }
     @Override public boolean isUserUnlockingOrUnlocked(int u) { return u == 0; }
     @Override public boolean isUserRunning(int u) { return u == 0; }
