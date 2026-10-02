@@ -59,6 +59,11 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "in-process services (Java binder, servicemanager)" "servicemanager: local binder ok" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ServiceTest
+    # A stand-in service's list calls give an empty ParceledListSlice (ShortcutManager
+    # would NPE on null).
+    # shellcheck disable=SC2086
+    check "stand-in services answer empty lists" "stand-in: getShortcuts 0, getAllPendingJobsInNamespace 0" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ServiceTest
     # aoi.Clipboard through the host's clipboard (aoiproc's AOI_CLIP): paste in, copy out.
     # shellcheck disable=SC2086
     export AOI_CLIP="from the host"

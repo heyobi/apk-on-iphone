@@ -4,8 +4,12 @@ import android.os.Binder;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.ServiceManager;
+import android.content.pm.ParceledListSlice;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 
 /** What keeps a missing piece of Android from killing an app.
@@ -38,7 +42,7 @@ final class Services {
     }
 
     /** A service nobody wrote: every call returns "no exception" and zeros. */
-    static final class NullService extends Binder {
+    public static final class NullService extends Binder {
         private final String name;
         NullService(String name) { this.name = name; }
 
@@ -47,9 +51,54 @@ final class Services {
             synchronized (logged) {
                 if (logged.add(name)) System.out.println("aoi: service \"" + name + "\" is a stand-in (default answers)");
             }
-            if (reply != null) reply.writeNoException();
+            if (reply != null) {
+                reply.writeNoException();
+                if (returnsSlice(data, code)) {                    /* a null one is an NPE in the manager */
+                    reply.writeInt(1);
+                    new ParceledListSlice(new ArrayList()).writeToParcel(reply, 0);
+                }
+            }
             return true;
         }
+    }
+
+    private static final HashMap<String, Boolean> slices = new HashMap<String, Boolean>();
+
+    /** Whether the AIDL call returns a ParceledListSlice. Its interface is the token
+     *  that opens the data (strict mode policy, work source, header, then the name);
+     *  the method is the Stub's TRANSACTION_ field with this code. Everything else's
+     *  zeros read as empty (arrays, lists) or as values. */
+    static boolean returnsSlice(Parcel data, int code) {
+        String desc = null;
+        int at = data.dataPosition();
+        for (int off = 12; off >= 4 && desc == null; off -= 4) {
+            try {
+                data.setDataPosition(off);
+                String s = data.readString();
+                if (s != null && s.indexOf('.') > 0) { Class.forName(s); desc = s; }
+            } catch (Throwable e) { /* not here */ }
+        }
+        data.setDataPosition(at);
+        if (desc == null) return false;
+        String key = desc + "#" + code;
+        synchronized (slices) {
+            Boolean b = slices.get(key);
+            if (b != null) return b;
+        }
+        boolean r = false;
+        try {
+            Class<?> itf = Class.forName(desc);
+            for (Field f : Class.forName(desc + "$Stub").getDeclaredFields()) {
+                if (!f.getName().startsWith("TRANSACTION_") || f.getType() != int.class) continue;
+                f.setAccessible(true);
+                if (f.getInt(null) != code) continue;
+                String m = f.getName().substring("TRANSACTION_".length());
+                for (Method x : itf.getMethods())
+                    if (x.getName().equals(m)) r = ParceledListSlice.class.isAssignableFrom(x.getReturnType());
+            }
+        } catch (Throwable e) { /* no Stub: zeros */ }
+        synchronized (slices) { slices.put(key, r); }
+        return r;
     }
 
     /** Names whose managers do better without a service than with zeros. */

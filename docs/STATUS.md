@@ -424,6 +424,22 @@ aoi.PackageManager answered null. It now answers from the manifest (services and
 receivers). Its renderer still needs a process of its own (bindService to
 SandboxedProcessService0 is not done): open.
 
+**On the phone (0.47 log) and stand-ins that answer empty lists (app 0.48).**
+DNS and HTTPS work on the phone: Qalculate downloads its exchange rates (coinbase,
+jsdelivr); www.ecb.europa.eu alone fails with "Trust anchor for certification path
+not found" although the store has the 135 roots (likely a chain the server sends
+incomplete; Android does not fetch missing intermediates): open. WhatsApp reaches
+Google's servers (a real 403, API_KEY_ANDROID_APP_BLOCKED: the app's signature check)
+and gets past the EULA to RegisterAsCompanionActivity (no SIM), then died in
+ShortcutManager.getShortcuts on a null ParceledListSlice from the "shortcut" stand-in.
+Services.NullService now reads the interface name from the call's token, finds the
+method by its Stub's TRANSACTION_ code and answers an empty ParceledListSlice when
+that is the return type (arrays and lists already read empty from zeros).
+tests/run_android.sh "stand-in services answer empty lists": getShortcuts and
+IJobScheduler.getAllPendingJobsInNamespace through the framework's proxies.
+Kiwi: bindServiceInstance (missing) and then a Chromium CHECK (brk #0 in libchrome)
+on the fallback to SandboxedProcessService1: it needs a renderer process. open.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:
