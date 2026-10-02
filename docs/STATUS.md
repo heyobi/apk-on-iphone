@@ -392,6 +392,27 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**GL games' path: GLSurfaceView (host, app 0.40).** tools/mktestapk.py builds a test
+APK without the Android SDK (java/testapp: a binary AndroidManifest.xml written by
+the script, classes.dex by javac + dx against java/testapp/stubs): aoi.glapp, a plain
+Activity whose GLSurfaceView clears to a stepping color and scissors a white square,
+as a game's render thread would. It runs on the host GPU (HWUI on, AOI_HWUI=1): the
+frames reach the screen in the right place. What it took:
+- a SurfaceView has layers of its own (a container and, below it, the BLAST layer
+  its buffers go to), children of the window's, placed by SurfaceView in transactions
+  we do not parse. aoi.WindowSession puts a pre-draw listener on each window and
+  tells core/sf.c where each SurfaceView's BLAST layer is: the window's place plus
+  the view's, just below the window (whose transparent hole shows it) or above it
+  for setZOrderOnTop. Window z values step by 4 to leave room.
+- core/sf.c composes onto a black screen as large as the layers reach (the bottom
+  layer no longer sets it: a SurfaceView's is smaller than the screen), converting a
+  layer whose RGBA/BGRA order differs from the screen's.
+- "input" (aoi.InputService): the virtual keyboard device (-1, empty key map).
+  KeyCharacterMap.load asks for it when a plain Activity's action bar prepares its
+  menu; without it the app died (UnavailableException).
+Run: python3 tools/mktestapk.py glapp.apk, install it as DATA/app/apk/base.apk with
+the classpath and aoi.dex of an app data dir, aoiproc ... aoi.Main.
+
 **Qalculate on the phone's GPU (app 0.38).** With 0.38 Qalculate ran on ANGLE/Metal
 from start to finish: HWUI's EGL setup, Skia's first GL calls, frames drawn and read
 back (804x1556: 9.5 ms for the first frame, then 3.6-3.7 ms on average per frame,

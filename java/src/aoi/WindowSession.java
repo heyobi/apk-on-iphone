@@ -39,7 +39,8 @@ final class WindowSession extends IWindowSession.Stub {
         SurfaceControl sc;
         InputChannel input;
         int z;
-        boolean shown, focused;
+        boolean shown, focused, watched;
+        final java.util.HashMap<Integer, String> subs = new java.util.HashMap<Integer, String>();   /* SurfaceView layers */
     }
 
     private final SurfaceSession surfaces = new SurfaceSession();
@@ -123,6 +124,89 @@ final class WindowSession extends IWindowSession.Stub {
         try { new FileInputStream("/dev/aoi_layer/" + cmd).close(); } catch (IOException e) { /* always ENOENT */ }
     }
 
+    /** The window's ViewRootImpl (its IWindow is ViewRootImpl.W, in this process). */
+    private static Object viewRoot(Win w) {
+        try {
+            java.lang.reflect.Field f = w.token.getClass().getDeclaredField("mViewAncestor");
+            f.setAccessible(true);
+            return ((java.lang.ref.WeakReference<?>) f.get(w.token)).get();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static Object field(Object o, Class<?> c, String name) throws Exception {
+        java.lang.reflect.Field f = c.getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(o);
+    }
+
+    /** SurfaceViews (GLSurfaceView: games) have layers of their own, children of the
+     *  window's, that SurfaceView creates and moves in transactions. Before each draw
+     *  of the window (a pre-draw listener, after SurfaceView's own) we tell core/sf.c
+     *  where they are: the window's place plus the view's place in it, just below the
+     *  window (the window leaves a transparent hole over it) or just above it
+     *  (setZOrderOnTop: mSubLayer > 0). The buffers go to its BLAST layer, a child of
+     *  the SurfaceView's container layer. */
+    private void watch(final Win w) {
+        if (w.watched) return;
+        final Object root = viewRoot(w);
+        if (root == null) return;
+        try {
+            Object view = field(root, root.getClass(), "mView");
+            Class<?> l = Class.forName("android.view.ViewTreeObserver$OnPreDrawListener");
+            Object proxy = java.lang.reflect.Proxy.newProxyInstance(l.getClassLoader(), new Class<?>[] { l },
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override public Object invoke(Object p, java.lang.reflect.Method m, Object[] a) {
+                            if (m.getName().equals("onPreDraw")) { surfaceViews(w, root); return Boolean.TRUE; }
+                            if (m.getName().equals("hashCode")) return System.identityHashCode(p);
+                            if (m.getName().equals("equals")) return p == a[0];
+                            return null;
+                        }
+                    });
+            Object vto = view.getClass().getMethod("getViewTreeObserver").invoke(view);
+            vto.getClass().getMethod("addOnPreDrawListener", l).invoke(vto, proxy);
+            w.watched = true;
+        } catch (Exception e) {
+            System.out.println("aoi: surface views: " + e);
+        }
+    }
+
+    private void surfaceViews(Win w, Object root) {
+        try {
+            Class<?> sv = Class.forName("android.view.SurfaceView"), vg = Class.forName("android.view.ViewGroup");
+            java.util.ArrayList<Object> todo = new java.util.ArrayList<Object>();
+            todo.add(field(root, root.getClass(), "mView"));
+            while (!todo.isEmpty()) {
+                Object v = todo.remove(todo.size() - 1);
+                if (vg.isInstance(v)) {
+                    int n = (Integer) vg.getMethod("getChildCount").invoke(v);
+                    for (int i = 0; i < n; i++) todo.add(vg.getMethod("getChildAt", int.class).invoke(v, i));
+                }
+                if (!sv.isInstance(v)) continue;
+                SurfaceControl sc = (SurfaceControl) field(v, sv, "mBlastSurfaceControl");   /* the one with buffers, */
+                if (sc == null || !sc.isValid()) continue;                                      /* in mSurfaceControl */
+                int sub = (Integer) field(v, sv, "mSubLayer");
+                int[] loc = new int[2];
+                v.getClass().getMethod("getLocationInWindow", int[].class).invoke(v, (Object) loc);
+                int id = sc.getLayerId();
+                String cmd = id + "/" + (w.frame.left + loc[0]) + "/" + (w.frame.top + loc[1]) + "/"
+                        + (sub < 0 ? w.z - 1 : w.z + 1) + "/0";
+                if (cmd.equals(w.subs.get(id))) continue;
+                synchronized (this) { w.subs.put(id, cmd); }
+                System.out.println("aoi: surface view layer " + cmd);
+                layer(cmd);
+            }
+        } catch (Exception e) {
+            System.out.println("aoi: surface views: " + e);
+        }
+    }
+
+    private void hideSubs(Win w) {
+        for (Integer id : w.subs.keySet()) layer(id + "/hide");
+        w.subs.clear();
+    }
+
     private void place(Win w) {
         WindowManager.LayoutParams a = w.attrs;
         Rect in = a != null ? a.surfaceInsets : null;
@@ -139,7 +223,7 @@ final class WindowSession extends IWindowSession.Stub {
         Win w = new Win();
         w.token = window.asBinder();
         w.attrs = attrs;
-        w.z = ++nextZ;
+        w.z = nextZ += 4;
         w.frame.set(screen());
         windows.add(w);
         if (outInputChannel != null) {
@@ -182,7 +266,7 @@ final class WindowSession extends IWindowSession.Stub {
         if (win == null) {
             win = new Win();
             win.token = window != null ? window.asBinder() : null;
-            win.z = ++nextZ;
+            win.z = nextZ += 4;
             windows.add(win);
         }
         if (attrs != null) win.attrs = attrs;
@@ -212,10 +296,12 @@ final class WindowSession extends IWindowSession.Stub {
             outSurface.copyFrom(win.sc, "aoi.WindowSession.relayout");
             win.shown = true;
             place(win);
+            watch(win);
             if (win.attrs != null && win.attrs.type == 1005) focus(parent(win), true);   /* a text toolbar */
         } else if (visibility != 0 && win.sc != null && win.shown) {
             win.shown = false;
             layer(win.sc.getLayerId() + "/hide");
+            hideSubs(win);
             subGone(win);
         }
         return 0;
@@ -229,6 +315,7 @@ final class WindowSession extends IWindowSession.Stub {
             System.out.println("aoi: window removed: " + (w.attrs != null ? w.attrs.getTitle() : ""));
             windows.remove(i);
             if (w.sc != null) layer(w.sc.getLayerId() + "/hide");
+            hideSubs(w);
             subGone(w);
             return;
         }

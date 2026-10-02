@@ -3,6 +3,7 @@ package android.view;
 public final class SurfaceControl {
     public void copyFrom(SurfaceControl other, String callsite) {}
     public int getLayerId() { return 0; }
+    public boolean isValid() { return false; }
     public void release() {}
 
     public static class Transaction {

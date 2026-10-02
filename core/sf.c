@@ -352,28 +352,35 @@ static int visible(struct aoi_proc *p, struct aoi_sf *sf, struct layer **v)
     return n;
 }
 
-/* The screen: the bottom layer's buffer, then each one above it, its dim first, drawn
- * over it (premultiplied alpha, source over), clipped to the bottom one. As packed rows
- * of RGBA (or BGRA, the bottom layer's format) to the host and to $AOI_SF_DUMP. */
+/* The screen: black, then each layer bottom to top, its dim first, drawn over it
+ * (premultiplied alpha, source over). The screen is as large as the layers reach
+ * (an activity's window fills it); its pixel format is the largest layer's, and a
+ * layer in the other order (RGBA/BGRA) is swapped on the way. A SurfaceView's layer
+ * lies below its window, which leaves a transparent hole over it. As packed rows to
+ * the host and to $AOI_SF_DUMP. */
 static void compose(struct aoi_proc *p, struct aoi_sf *sf)
 {
     struct layer *v[LAYERS];
-    struct aoi_gbuf *base, *b;
+    struct aoi_gbuf *b;
     uint8_t *px, *row = NULL;
-    uint32_t w, h, y, x;
+    uint32_t w = 0, h = 0, y, x, format = 1;
+    uint64_t area = 0;
     int n = visible(p, sf, v), k;
     if (!n || (!p->frame && !getenv("AOI_SF_DUMP"))) return;
-    base = aoi_gralloc_find(p, v[0]->buf);
-    w = base->width; h = base->height;
-    if (!(px = malloc((size_t)w * h * 4))) return;
-    for (y = 0; y < h; y++)
-        if (!aoi_vm_read(&p->vm, base->addr + (uint64_t)y * base->stride * 4, px + (size_t)y * w * 4, (uint64_t)w * 4, 0))
-            break;
-    if (y < h) { free(px); return; }
-    for (k = 1; k < n; k++) {
+    for (k = 0; k < n; k++) {
+        b = aoi_gralloc_find(p, v[k]->buf);
+        if ((uint64_t)b->width * b->height > area) { area = (uint64_t)b->width * b->height; format = b->format; }
+        if (v[k]->x >= 0 && (uint32_t)v[k]->x + b->width > w) w = (uint32_t)v[k]->x + b->width;
+        if (v[k]->y >= 0 && (uint32_t)v[k]->y + b->height > h) h = (uint32_t)v[k]->y + b->height;
+    }
+    if (!w || !h || !(px = malloc((size_t)w * h * 4))) return;
+    for (y = 0; y < (size_t)w * h; y++) { px[4 * y] = px[4 * y + 1] = px[4 * y + 2] = 0; px[4 * y + 3] = 255; }
+    for (k = 0; k < n; k++) {
         struct layer *ly = v[k];
         int32_t x0, y0, x1, y1;
+        int swap;
         b = aoi_gralloc_find(p, ly->buf);
+        swap = (b->format == 5) != (format == 5);
         if (ly->dim > 0) {                                     /* FLAG_DIM_BEHIND: black at dimAmount */
             uint32_t keep = (uint32_t)(1000 - (ly->dim > 1000 ? 1000 : ly->dim)) * 256 / 1000, i;
             for (i = 0; i < w * h * 4; i++) if ((i & 3) != 3) px[i] = (uint8_t)(px[i] * keep >> 8);
@@ -388,14 +395,16 @@ static void compose(struct aoi_proc *p, struct aoi_sf *sf)
             if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, row, (uint64_t)b->width * 4, 0)) break;
             for (x = (uint32_t)x0; x < (uint32_t)x1; x++, d += 4, s += 4) {
                 uint32_t a = s[3], c;
-                if (a == 255) { memcpy(d, s, 4); continue; }
+                uint8_t t[4];
                 if (!a) continue;
-                for (c = 0; c < 4; c++) d[c] = (uint8_t)(s[c] + (d[c] * (255 - a) + 127) / 255);
+                if (swap) { t[0] = s[2]; t[1] = s[1]; t[2] = s[0]; t[3] = s[3]; } else memcpy(t, s, 4);
+                if (a == 255) { memcpy(d, t, 4); continue; }
+                for (c = 0; c < 4; c++) d[c] = (uint8_t)(t[c] + (d[c] * (255 - a) + 127) / 255);
             }
         }
     }
     free(row);
-    dump(p, px, w, h, base->format, sf->frames);
+    dump(p, px, w, h, format, sf->frames);
     if (p->frame) p->frame(p->frame_ctx, px, w, h);
     free(px);
 }
