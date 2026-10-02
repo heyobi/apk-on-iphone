@@ -392,6 +392,11 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Name: LiquidAPK (app 0.21).** The home-screen name and the launcher's title; links are
+liquidapk://open?app=<package> (aoi:// still opens). The bundle id stays
+com.heyobi.apkoniphone, so an update keeps the installed apps and their data.
+(liquidapk.com and .app had no DNS records when chosen; registration not checked.)
+
 **Java heap (app 0.20).** A Qalculate session on the phone ended after 40 s with exit
 137 (the app's KillApplicationHandler: kill(SIGKILL) after an uncaught exception) and
 "Clamp target GC heap from 30MB to 16MB" in the log: without dalvik.vm.heap* properties

@@ -1,6 +1,6 @@
-// apk-on-iphone: Android apps on the iPhone, in an AArch64 interpreter (no JIT, no
+// LiquidAPK (apk-on-iphone): Android apps on the iPhone, in an AArch64 interpreter (no JIT, no
 // debugger). A launcher of installed APKs (each with its own /data, snapshot and
-// home-screen link aoi://open?app=<package>), the app's screen fitted to the safe
+// home-screen link liquidapk://open?app=<package>; aoi:// too), the app's screen fitted to the safe
 // area, a back gesture from the left edge, and the developer tests. Built without an
 // Xcode project by .github/workflows/ios.yml.
 #import <UIKit/UIKit.h>
@@ -14,7 +14,7 @@
 #include "vmprobe.h"
 #include "androidtest.h"
 
-#define APP_NAME @"APK on iPhone"
+#define APP_NAME @"LiquidAPK"
 
 static void log_cb(void *ctx, const char *line);
 static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h);
@@ -80,7 +80,7 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 - (NSString *)dir { return [[AoiApp appsDir] stringByAppendingPathComponent:self.pkg]; }
 - (NSString *)infoPath { return [self.dir stringByAppendingPathExtension:@"plist"]; }
 - (NSString *)apkPath { return [self.dir stringByAppendingPathComponent:@"app/apk/base.apk"]; }
-- (NSURL *)link { return [NSURL URLWithString:[NSString stringWithFormat:@"aoi://open?app=%@", self.pkg]]; }
+- (NSURL *)link { return [NSURL URLWithString:[NSString stringWithFormat:@"liquidapk://open?app=%@", self.pkg]]; }
 
 /* Every installed app: a directory under Documents/apps with an APK in it. */
 + (NSArray<AoiApp *> *)all {
@@ -897,7 +897,7 @@ static void home_cb(void *ctx) {
     return YES;
 }
 
-/* aoi://open?app=<package>: a home-screen link (Shortcuts) or another app. */
+/* liquidapk://open?app=<package> (or aoi://, 0.19's): a home-screen link (Shortcuts) or another app. */
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)opts {
     NSURLComponents *c = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     for (NSURLQueryItem *q in c.queryItems)
