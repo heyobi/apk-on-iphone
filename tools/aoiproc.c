@@ -229,8 +229,9 @@ int main(int argc, char **argv)
     default:
         {
             char w[256];
-            fprintf(stderr, "[aoiproc] stopped (%d) at pc=%#" PRIx64 " in %s, x7=%#" PRIx64 "\n", (int)st, proc.cpu.pc,
-                    aoi_proc_where(&proc, proc.cpu.pc, w, sizeof w), proc.cpu.x[7]);
+            fprintf(stderr, "[aoiproc] stopped (%d) at pc=%#" PRIx64 " in %s, x7=%#" PRIx64 ", %llu MiB of host chunks, peak RSS %ld MiB\n",
+                    (int)st, proc.cpu.pc, aoi_proc_where(&proc, proc.cpu.pc, w, sizeof w), proc.cpu.x[7],
+                    (unsigned long long)(proc.vm.nchunks * (AOI_VM_CHUNK >> 20)), peak_rss_mib());
         }
         return 6;
     }

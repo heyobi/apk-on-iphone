@@ -160,7 +160,8 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 - (void)remove {
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *p in @[ self.dir, self.infoPath, [self.dir stringByAppendingString:@".snap"],
-                           [self.dir stringByAppendingString:@".snap.key"], [self.dir stringByAppendingString:@".log"] ])
+                           [self.dir stringByAppendingString:@".snap.key"], [self.dir stringByAppendingString:@".log"],
+                           [self.dir stringByAppendingString:@".log.1"] ])
         [fm removeItemAtPath:p error:nil];
 }
 
@@ -779,12 +780,14 @@ static Launcher *launcher;
 /* The log, and each installed app's own log (its last 60 kB). */
 - (void)copyLog {
     NSMutableString *all = [launcher.log mutableCopy];
-    for (AoiApp *a in [AoiApp all]) {
-        NSString *app = [NSString stringWithContentsOfFile:[a.dir stringByAppendingString:@".log"] encoding:NSUTF8StringEncoding error:nil];
-        if (!app.length) continue;
-        NSString *tail = app.length > 60000 ? [app substringFromIndex:app.length - 60000] : app;
-        [all appendFormat:@"\n--- %@ ---\n%@", a.pkg, tail];
-    }
+    for (AoiApp *a in [AoiApp all])
+        for (NSString *ext in @[ @".log.1", @".log" ]) {          /* the previous run, then this one */
+            NSString *app = [NSString stringWithContentsOfFile:[a.dir stringByAppendingString:ext]
+                                                      encoding:NSUTF8StringEncoding error:nil];
+            if (!app.length) continue;
+            NSString *tail = app.length > 40000 ? [app substringFromIndex:app.length - 40000] : app;
+            [all appendFormat:@"\n--- %@%@ ---\n%@", a.pkg, ext, tail];
+        }
     UIPasteboard.generalPasteboard.string = all;
     [launcher append:@"(log panoya kopyalandı)"];
 }

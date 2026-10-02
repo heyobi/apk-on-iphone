@@ -129,7 +129,12 @@ def main():
     props = {b"ro.product.cpu.abi": b"arm64-v8a", b"ro.product.cpu.abilist": b"arm64-v8a",
              b"ro.product.cpu.abilist64": b"arm64-v8a", b"ro.product.cpu.abilist32": b"",
              b"ro.zygote": b"zygote64",
-             b"servicemanager.ready": b"true"}       # set by servicemanager on a device (ours is in core/binder.c)
+             b"servicemanager.ready": b"true",       # set by servicemanager on a device (ours is in core/binder.c)
+             # the Java heap a phone's vendor sets; without these ART caps apps at 16 MB
+             # (AndroidRuntime's -Xmx default) and they die of OutOfMemoryError. (Setting
+             # heapstartsize/minfree/maxfree/targetutilization too makes the CMC GC run
+             # past its space here: left at ART's defaults.)
+             b"dalvik.vm.heapgrowthlimit": b"128m", b"dalvik.vm.heapsize": b"256m"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

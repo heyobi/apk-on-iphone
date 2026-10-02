@@ -359,6 +359,8 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     int fd, rc;
     char snap[1100], path[1100];
     FILE *f;
+    snprintf(path, sizeof path, "%s.1", logpath);         /* the last run's log stays (a crash's stack) */
+    rename(logpath, path);
     if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
     snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);   /* aoi.DisplayManager reads it */
     if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }

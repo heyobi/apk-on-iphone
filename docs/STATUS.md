@@ -392,6 +392,16 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Java heap (app 0.20).** A Qalculate session on the phone ended after 40 s with exit
+137 (the app's KillApplicationHandler: kill(SIGKILL) after an uncaught exception) and
+"Clamp target GC heap from 30MB to 16MB" in the log: without dalvik.vm.heap* properties
+AndroidRuntime gives ART -Xmx16m. tools/mkprops.py now sets heapgrowthlimit 128m and
+heapsize 256m, as a phone's vendor partition does. (Also setting heapstartsize,
+heapminfree, heapmaxfree and heaptargetutilization makes the CMC GC's compaction walk
+past its space through our userfaultfd: SIGSEGV at the space's end, 1.4 GB touched;
+left at ART's defaults until that is understood.) Each app's previous log is kept
+(<package>.log.1, also in "Logu kopyala"), so a crash's stack survives the relaunch.
+
 **A launcher (app 0.19).** ios/main.m is now a launcher of installed APKs: glass cards
 (iOS 26's UIGlassEffect, looked up at run time; a blur material before), "APK ekle",
 and a developer page with the old tests and logs. Each app lives in Documents/apps/
