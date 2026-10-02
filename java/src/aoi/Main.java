@@ -54,6 +54,7 @@ public final class Main {
         ServiceManager.addService("input", new InputService());
         ServiceManager.addService("mount", new StorageService());
         ServiceManager.addService("power", new PowerService());
+        ServiceManager.addService("connectivity", new ConnectivityService());
         ServiceManager.addService("audio", new AudioService());
         Services.standIns();                                       /* the rest: default answers */
         /* Windows draw in software (Skia on the CPU) unless AOI_HWUI is set: then HWUI's

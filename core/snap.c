@@ -342,7 +342,8 @@ static void reopen_fds(struct aoi_proc *p, const int64_t *offset)
     int i, j;
     for (i = 0; i < AOI_PROC_FDS; i++) {
         struct aoi_proc_fd *d = &p->fd[i];
-        d->dir = NULL;
+        d->dir = NULL; d->req = NULL; d->nreq = 0; d->connecting = 0;
+        if (d->kind == AOI_FD_DNS) d->peer = -1;                 /* (a restored socket reads as closed) */
         if (!d->used) continue;
         d->host = -1;
         if (i <= 2) { d->host = i; continue; }               /* the caller's stdio */

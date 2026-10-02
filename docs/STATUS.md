@@ -392,6 +392,38 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The network (app 0.47).** Apps reach the internet through the host's sockets:
+- core/proc.c: AF_INET/AF_INET6 sockets are host sockets, non-blocking underneath
+  (a blocking call sleeps the thread and runs again, as pipes do; poll/epoll ask
+  the host socket): connect (blocking or EINPROGRESS), bind/listen/accept4,
+  send/recv(from/msg), get/setsockopt (the options worth passing on), getsockname/
+  getpeername, shutdown, FIONREAD/FIONBIO, Linux errno for the network errors.
+  Addresses are translated (Darwin's sockaddrs have a length byte, AF_INET6 is 30
+  there). On a host without IPv6, Java's dual-stack AF_INET6 sockets get an AF_INET
+  host socket and v4-mapped addresses (::ffff:a.b.c.d) both ways. SIGPIPE ignored.
+- DNS: bionic asks netd at /dev/socket/dnsproxyd ("getaddrinfo host serv flags
+  family socktype protocol netid"); the connect gives a host pair and the answer
+  (netd's "222" format, Linux sockaddrs) comes from the host's getaddrinfo, logged
+  as "I/aoi: dns NAME: ok". It blocks the guest while it resolves. The guest runs
+  with ANDROID_NO_USE_FWMARK_CLIENT=1, so libnetd_client does not ask netd's
+  fwmarkd to tag every socket (ios/androidtest.c, tools/android-setup.sh).
+- aoi.ConnectivityService ("connectivity"): one Wi-Fi network (netId 100), CONNECTED,
+  with INTERNET, VALIDATED, NOT_METERED...; the framework's own Network,
+  NetworkInfo, NetworkCapabilities and LinkProperties, made by reflection. Network
+  callbacks (registerNetworkCallback) are not answered yet.
+- The CA certificates (/apex/com.android.conscrypt/cacerts, 135 files) are in the
+  iOS root now: HTTPS had no trust anchors there.
+- java.net.Socket.close: PlainSocketImpl shuts down a socketpair end (its close
+  marker): shutdown works on host-backed pairs.
+tests/run_android.sh "network": aoi.NetworkTest sees the network through the
+framework's IConnectivityManager proxy, resolves localhost and GETs a page from a
+local python HTTP server. On the host, Qalculate resolves www.ecb.europa.eu and
+reaches the TLS handshake (refused here by the sandbox proxy's own CA).
+Kiwi: Chromium checks that its child-process service exists (getServiceInfo);
+aoi.PackageManager answered null. It now answers from the manifest (services and
+receivers). Its renderer still needs a process of its own (bindService to
+SandboxedProcessService0 is not done): open.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

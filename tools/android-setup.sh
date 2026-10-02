@@ -13,7 +13,8 @@
 #      guest/mapper.c), where libui looks for it (the sphal namespace)
 #   6. /vendor/lib64/egl/libGLES_aoi.so, our OpenGL ES driver (build/libGLES_aoi.so,
 #      guest/gles.c), where libEGL looks for it (ro.hardware.egl=aoi)
-# Idempotent; prints the aoiproc -e options for dalvikvm on stdout.
+# Idempotent; prints the aoiproc -e options for dalvikvm on stdout (with
+# ANDROID_NO_USE_FWMARK_CLIENT: there is no netd to tag sockets, core/proc.c).
 set -eu
 R=$1
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,3 +39,4 @@ if [ -f "$DIR/build/libGLES_aoi.so" ]; then
     cp "$DIR/build/libGLES_aoi.so" "$R/vendor/lib64/egl/libGLES_aoi.so"
 fi
 awk '$2=="BOOTCLASSPATH" || $2=="DEX2OATBOOTCLASSPATH" {printf "-e %s=%s ", $2, $3}' "$R/data/system/environ/classpath"
+printf '%s\n' "-e ANDROID_NO_USE_FWMARK_CLIENT=1"            # libnetd_client: no fwmarkd to tag sockets

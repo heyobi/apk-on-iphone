@@ -17,7 +17,12 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -49,7 +54,11 @@ enum { L_EPERM = 1, L_ENOENT = 2, L_ESRCH = 3, L_EINTR = 4, L_EIO = 5, L_EBADF =
        L_ENOTTY = 25, L_EFBIG = 27, L_ENOSPC = 28, L_ESPIPE = 29, L_EROFS = 30, L_EPIPE = 32,
        L_ERANGE = 34, L_ENAMETOOLONG = 36, L_ENOSYS = 38, L_ENOTEMPTY = 39, L_ELOOP = 40,
        L_ENODATA = 61, L_EOVERFLOW = 75, L_ENOTSOCK = 88, L_ENOTSUP = 95, L_EAFNOSUPPORT = 97,
-       L_ENOTCONN = 107, L_ETIMEDOUT = 110, L_ECONNREFUSED = 111 };
+       L_ENOTCONN = 107, L_ETIMEDOUT = 110, L_ECONNREFUSED = 111,
+       L_EDESTADDRREQ = 89, L_EMSGSIZE = 90, L_EPROTOTYPE = 91, L_ENOPROTOOPT = 92, L_EPROTONOSUPPORT = 93,
+       L_EADDRINUSE = 98, L_EADDRNOTAVAIL = 99, L_ENETDOWN = 100, L_ENETUNREACH = 101, L_ECONNABORTED = 103,
+       L_ECONNRESET = 104, L_ENOBUFS = 105, L_EISCONN = 106, L_EHOSTUNREACH = 113, L_EALREADY = 114,
+       L_EINPROGRESS = 115 };
 
 static int lx_errno(int e)
 {
@@ -65,6 +74,15 @@ static int lx_errno(int e)
     case EPIPE: return L_EPIPE;       case ERANGE: return L_ERANGE;   case ENAMETOOLONG: return L_ENAMETOOLONG;
     case ENOSYS: return L_ENOSYS;     case ENOTEMPTY: return L_ENOTEMPTY; case ELOOP: return L_ELOOP;
     case EOVERFLOW: return L_EOVERFLOW; case ETIMEDOUT: return L_ETIMEDOUT;
+    case ENOTSOCK: return L_ENOTSOCK; case ENOTCONN: return L_ENOTCONN; case ECONNREFUSED: return L_ECONNREFUSED;
+    case EAFNOSUPPORT: return L_EAFNOSUPPORT; case EDESTADDRREQ: return L_EDESTADDRREQ;
+    case EMSGSIZE: return L_EMSGSIZE; case EPROTOTYPE: return L_EPROTOTYPE; case ENOPROTOOPT: return L_ENOPROTOOPT;
+    case EPROTONOSUPPORT: return L_EPROTONOSUPPORT; case EADDRINUSE: return L_EADDRINUSE;
+    case EADDRNOTAVAIL: return L_EADDRNOTAVAIL; case ENETDOWN: return L_ENETDOWN;
+    case ENETUNREACH: return L_ENETUNREACH; case ECONNABORTED: return L_ECONNABORTED;
+    case ECONNRESET: return L_ECONNRESET; case ENOBUFS: return L_ENOBUFS; case EISCONN: return L_EISCONN;
+    case EHOSTUNREACH: return L_EHOSTUNREACH; case EALREADY: return L_EALREADY;
+    case EINPROGRESS: return L_EINPROGRESS; case ENOTSUP: return L_ENOTSUP;
     default: return L_EIO;
     }
 }
@@ -493,6 +511,7 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     uint8_t random16[16];
 
     memset(p, 0, sizeof *p);
+    signal(SIGPIPE, SIG_IGN);                                      /* a guest socket's peer gone: EPIPE, not death */
     snprintf(p->root, sizeof p->root, "%s", root);
     snprintf(p->cwd, sizeof p->cwd, "/");
     if ((e = aoi_vm_init(&p->vm, GUEST_SPACE))) return e;
@@ -980,6 +999,8 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 enum {
     NR_getcwd = 17, NR_pipe2 = 59, NR_eventfd2 = 19, NR_epoll_create1 = 20, NR_epoll_ctl = 21,
     NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_msync = 227, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_socketpair = 199, NR_connect = 203, NR_sendto = 206, NR_recvfrom = 207,
+    NR_bind = 200, NR_listen = 201, NR_accept = 202, NR_getsockname = 204, NR_getpeername = 205,
+    NR_shutdown = 210, NR_sendmsg = 211, NR_recvmsg = 212, NR_accept4 = 242,
     NR_setsockopt = 208, NR_getsockopt = 209, NR_symlinkat = 36, NR_linkat = 37, NR_renameat = 38, NR_ftruncate = 46, NR_fchmod = 52, NR_fchmodat = 53, NR_fchownat = 54, NR_fchown = 55, NR_fsync = 82, NR_fdatasync = 83, NR_utimensat = 88, NR_renameat2 = 276, NR_dup = 23, NR_dup3 = 24, NR_setpgid = 154, NR_getpgid = 155, NR_getsid = 156, NR_statfs = 43, NR_fstatfs = 44, NR_fcntl = 25, NR_ioctl = 29, NR_mkdirat = 34, NR_unlinkat = 35, NR_faccessat = 48,
     NR_chdir = 49, NR_openat = 56, NR_close = 57, NR_getdents64 = 61, NR_lseek = 62, NR_read = 63,
     NR_write = 64, NR_readv = 65, NR_writev = 66, NR_pread64 = 67, NR_pwrite64 = 68,
@@ -1271,7 +1292,7 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         if (f->count) r |= EP_IN;
         if (f->count < 0xfffffffffffffffeULL) r |= EP_OUT;
         break;
-    case AOI_FD_FILE: case AOI_FD_PIPE: {
+    case AOI_FD_FILE: case AOI_FD_PIPE: case AOI_FD_INET: case AOI_FD_DNS: {
         struct pollfd pf;
         pf.fd = f->host; pf.events = (short)((want & EP_IN ? POLLIN : 0) | (want & EP_OUT ? POLLOUT : 0)); pf.revents = 0;
         if (poll(&pf, 1, 0) > 0) {
@@ -1444,6 +1465,393 @@ static uint64_t logd_write(struct aoi_proc *p, const uint8_t *pkt, uint64_t n)
     return n;
 }
 
+/* ---------- the network: AF_INET/AF_INET6 on host sockets, DNS for netd's clients ----------
+ * A guest socket is a host socket, non-blocking underneath: a blocking call that
+ * would wait sleeps the thread and runs again (block_and_retry), as pipes do, and
+ * poll/epoll ask the host socket. Addresses are translated (Darwin's sockaddrs start
+ * with a length byte, and AF_INET6 is 30 there). bionic resolves names through netd:
+ * it writes "getaddrinfo host service flags family socktype protocol netid" to
+ * /dev/socket/dnsproxyd and reads netd's answer, which here comes from the host's
+ * getaddrinfo. (libnetd_client also tags each socket through netd's fwmarkd: the
+ * guest runs with ANDROID_NO_USE_FWMARK_CLIENT, so it does not.) */
+
+static const uint8_t v4mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+
+/* v4: the host socket is AF_INET, so a v4-mapped AF_INET6 address (::ffff:a.b.c.d)
+ * becomes AF_INET; any other AF_INET6 address is unreachable (-2). */
+static int sa_from_guest(const uint8_t *s, uint64_t n, struct sockaddr_storage *h, socklen_t *hl, int v4)
+{
+    uint16_t fam = (uint16_t)(s[0] | s[1] << 8);
+    uint8_t m[16];
+    memset(h, 0, sizeof *h);
+    if (v4 && fam == 10 && n >= 24) {
+        if (memcmp(s + 8, v4mapped, 12) && memcmp(s + 8, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16)) return -2;
+        memset(m, 0, sizeof m);
+        m[0] = 2; memcpy(m + 2, s + 2, 2); memcpy(m + 4, s + 20, 4);   /* (:: is INADDR_ANY) */
+        s = m; n = 16; fam = 2;
+    }
+    if (fam == 2 && n >= 8) {
+        struct sockaddr_in *a = (struct sockaddr_in *)h;
+        a->sin_family = AF_INET;
+        memcpy(&a->sin_port, s + 2, 2); memcpy(&a->sin_addr, s + 4, 4);
+#ifdef __APPLE__
+        a->sin_len = sizeof *a;
+#endif
+        *hl = sizeof *a;
+        return 0;
+    }
+    if (fam == 10 && n >= 24) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)h;
+        a->sin6_family = AF_INET6;
+        memcpy(&a->sin6_port, s + 2, 2); memcpy(&a->sin6_flowinfo, s + 4, 4); memcpy(&a->sin6_addr, s + 8, 16);
+        if (n >= 28) memcpy(&a->sin6_scope_id, s + 24, 4);
+#ifdef __APPLE__
+        a->sin6_len = sizeof *a;
+#endif
+        *hl = sizeof *a;
+        return 0;
+    }
+    return -1;
+}
+
+/* A host address as Linux lays it out: 16 or 28 bytes (0: not INET). */
+static uint32_t sa_to_guest(const struct sockaddr *h, uint8_t *s, int v4)
+{
+    memset(s, 0, 28);
+    if (v4 && h->sa_family == AF_INET) {                           /* as ::ffff:a.b.c.d */
+        const struct sockaddr_in *a = (const struct sockaddr_in *)(const void *)h;
+        s[0] = 10; memcpy(s + 2, &a->sin_port, 2); memcpy(s + 8, v4mapped, 12); memcpy(s + 20, &a->sin_addr, 4);
+        return 28;
+    }
+    if (h->sa_family == AF_INET) {
+        const struct sockaddr_in *a = (const struct sockaddr_in *)(const void *)h;
+        s[0] = 2; memcpy(s + 2, &a->sin_port, 2); memcpy(s + 4, &a->sin_addr, 4);
+        return 16;
+    }
+    if (h->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)(const void *)h;
+        s[0] = 10; memcpy(s + 2, &a->sin6_port, 2); memcpy(s + 4, &a->sin6_flowinfo, 4);
+        memcpy(s + 8, &a->sin6_addr, 16); memcpy(s + 24, &a->sin6_scope_id, 4);
+        return 28;
+    }
+    return 0;
+}
+
+/* accept/recvfrom/getsockname's (addr, *addrlen) out-parameters. */
+static void put_sa(struct aoi_proc *p, uint64_t addr, uint64_t lenp, const struct sockaddr *h, int v4)
+{
+    uint8_t s[28];
+    uint32_t n = sa_to_guest(h, s, v4), cap;
+    if (!addr || !lenp || !get(p, lenp, &cap, 4)) return;
+    if (n) put(p, addr, s, n < cap ? n : cap);
+    put(p, lenp, &n, 4);
+}
+
+static int get_sa(struct aoi_proc *p, uint64_t addr, uint64_t len, struct sockaddr_storage *h, socklen_t *hl, int v4)
+{
+    uint8_t s[28];
+    memset(s, 0, sizeof s);
+    if (len < 8 || !get(p, addr, s, len < sizeof s ? len : sizeof s)) return -1;
+    return sa_from_guest(s, len, h, hl, v4);
+}
+
+static uint64_t sa_err(int e) { return err(e == -2 ? L_ENETUNREACH : L_EAFNOSUPPORT); }
+
+static int msg_flags(uint64_t f)                                   /* Linux MSG_* -> host */
+{
+    int h = 0;
+    if (f & 1) h |= MSG_OOB;
+    if (f & 2) h |= MSG_PEEK;
+#ifdef MSG_NOSIGNAL
+    h |= MSG_NOSIGNAL;                                             /* (Darwin: SO_NOSIGPIPE on the socket) */
+#endif
+    return h;
+}
+
+/* EAGAIN on a blocking guest socket: sleep and run the call again. */
+static uint64_t net_wait(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t r, uint64_t flags)
+{
+    if (r == err(L_EAGAIN) && !f->nonblock && !(flags & 0x40)) return block_and_retry(p, 1000000);   /* MSG_DONTWAIT */
+    return r;
+}
+
+static uint8_t net_buf[256 * 1024];                                /* one host thread runs the guest */
+
+static void host_sock_setup(int h)
+{
+    int one = 1;
+    fcntl(h, F_SETFL, O_NONBLOCK);
+    fcntl(h, F_SETFD, FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+    setsockopt(h, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    (void)one;
+}
+
+static uint64_t net_socket(struct aoi_proc *p, uint64_t fam, uint64_t type, uint64_t proto)
+{
+    int t = (int)(type & 0xf), h, n, v4 = 0;
+    if (t != 1 && t != 2) return err(L_EPROTONOSUPPORT);
+    h = socket(fam == 2 ? AF_INET : AF_INET6, t == 1 ? SOCK_STREAM : SOCK_DGRAM, (int)proto);
+    if (h < 0 && fam == 10 && (h = socket(AF_INET, t == 1 ? SOCK_STREAM : SOCK_DGRAM, (int)proto)) >= 0) v4 = 1;
+    if (h < 0) return herr();                                      /* (a host without IPv6: v4 only) */
+    host_sock_setup(h);
+    if ((n = fd_new(p, h, fam == 2 ? "socket:[inet]" : "socket:[inet6]", 0)) < 0) { close(h); return err(L_EMFILE); }
+    p->fd[n].kind = AOI_FD_INET;
+    p->fd[n].nonblock = (type & 04000) != 0;                       /* SOCK_NONBLOCK */
+    p->fd[n].v4 = v4;
+    return (uint64_t)n;
+}
+
+static uint64_t net_connect(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t addr, uint64_t len)
+{
+    struct sockaddr_storage sa;
+    socklen_t sl;
+    int e0;
+    if (f->connecting) {                                           /* a blocking connect, run again */
+        struct pollfd pf;
+        int e = 0;
+        socklen_t el = sizeof e;
+        pf.fd = f->host; pf.events = POLLOUT; pf.revents = 0;
+        if (poll(&pf, 1, 0) <= 0) return block_and_retry(p, 1000000);
+        f->connecting = 0;
+        getsockopt(f->host, SOL_SOCKET, SO_ERROR, &e, &el);
+        return e ? err(lx_errno(e)) : 0;
+    }
+    if ((e0 = get_sa(p, addr, len, &sa, &sl, f->v4))) return sa_err(e0);
+    if (!connect(f->host, (struct sockaddr *)&sa, sl)) return 0;
+    if (errno != EINPROGRESS) return herr();
+    if (f->nonblock) return err(L_EINPROGRESS);
+    f->connecting = 1;
+    return block_and_retry(p, 1000000);
+}
+
+static uint64_t net_accept(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t addr, uint64_t lenp, uint64_t flags)
+{
+    struct sockaddr_storage sa;
+    socklen_t sl = sizeof sa;
+    int h = accept(f->host, (struct sockaddr *)&sa, &sl), n;
+    if (h < 0) return net_wait(p, f, herr(), 0);
+    host_sock_setup(h);
+    if ((n = fd_new(p, h, f->path, 0)) < 0) { close(h); return err(L_EMFILE); }
+    p->fd[n].kind = AOI_FD_INET;
+    p->fd[n].nonblock = (flags & 04000) != 0;
+    p->fd[n].v4 = f->v4;
+    put_sa(p, addr, lenp, (struct sockaddr *)&sa, f->v4);
+    return (uint64_t)n;
+}
+
+static uint64_t net_sendto(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t len,
+                           uint64_t flags, uint64_t addr, uint64_t alen)
+{
+    struct sockaddr_storage sa;
+    socklen_t sl = 0;
+    ssize_t k;
+    int e0;
+    if (len > sizeof net_buf) len = sizeof net_buf;               /* a short send, as a full buffer gives */
+    if (len && !get(p, buf, net_buf, len)) return err(L_EFAULT);
+    if (addr && alen && (e0 = get_sa(p, addr, alen, &sa, &sl, f->v4))) return sa_err(e0);
+    k = sl ? sendto(f->host, net_buf, (size_t)len, msg_flags(flags), (struct sockaddr *)&sa, sl)
+           : send(f->host, net_buf, (size_t)len, msg_flags(flags));
+    return k < 0 ? net_wait(p, f, herr(), flags) : (uint64_t)k;
+}
+
+static uint64_t net_recvfrom(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t len,
+                             uint64_t flags, uint64_t addr, uint64_t lenp)
+{
+    struct sockaddr_storage sa;
+    socklen_t sl = sizeof sa;
+    ssize_t k;
+    if (len > sizeof net_buf) len = sizeof net_buf;
+    memset(&sa, 0, sizeof sa);
+    k = recvfrom(f->host, net_buf, (size_t)len, msg_flags(flags), (struct sockaddr *)&sa, &sl);
+    if (k < 0) return net_wait(p, f, herr(), flags);
+    if (k && !put(p, buf, net_buf, (uint64_t)k)) return err(L_EFAULT);
+    if (addr) { if (sl && sa.ss_family) put_sa(p, addr, lenp, (struct sockaddr *)&sa, f->v4); else { uint32_t z = 0; put(p, lenp, &z, 4); } }
+    return (uint64_t)k;
+}
+
+/* sendmsg/recvmsg: struct msghdr {name, namelen, iov, iovlen, control, controllen, flags}
+ * at 0, 8, 16, 24, 32, 40, 48; the iovecs gathered into one buffer, no control data. */
+static uint64_t net_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp, uint64_t flags, int recv)
+{
+    uint8_t m[56];
+    uint64_t i, n = 0, iov, iovlen, r;
+    if (!get(p, mp, m, sizeof m)) return err(L_EFAULT);
+    iov = u64(m + 16); iovlen = u64(m + 24);
+    if (iovlen > 1024) return err(L_EINVAL);
+    if (!recv) {                                                   /* gather, then one sendto */
+        struct sockaddr_storage sa;
+        socklen_t sl = 0;
+        ssize_t k;
+        int e0;
+        for (i = 0; i < iovlen; i++) {
+            uint8_t e[16];
+            uint64_t b, l;
+            if (!get(p, iov + 16 * i, e, 16)) return err(L_EFAULT);
+            b = u64(e); l = u64(e + 8);
+            if (l > sizeof net_buf - n) l = sizeof net_buf - n;
+            if (l && !get(p, b, net_buf + n, l)) return err(L_EFAULT);
+            n += l;
+        }
+        if (u64(m) && u32(m + 8) && (e0 = get_sa(p, u64(m), u32(m + 8), &sa, &sl, f->v4))) return sa_err(e0);
+        k = sl ? sendto(f->host, net_buf, (size_t)n, msg_flags(flags), (struct sockaddr *)&sa, sl)
+               : send(f->host, net_buf, (size_t)n, msg_flags(flags));
+        return k < 0 ? net_wait(p, f, herr(), flags) : (uint64_t)k;
+    }
+    for (i = 0; i < iovlen; i++) {                                 /* room for all of it */
+        uint8_t e[16];
+        if (!get(p, iov + 16 * i, e, 16)) return err(L_EFAULT);
+        n += u64(e + 8);
+    }
+    {
+        struct sockaddr_storage sa;
+        socklen_t sl = sizeof sa;
+        ssize_t k;
+        uint64_t done = 0;
+        uint32_t z = 0;
+        if (n > sizeof net_buf) n = sizeof net_buf;
+        memset(&sa, 0, sizeof sa);
+        k = recvfrom(f->host, net_buf, (size_t)n, msg_flags(flags), (struct sockaddr *)&sa, &sl);
+        if (k < 0) return net_wait(p, f, herr(), flags);
+        for (i = 0; i < iovlen && done < (uint64_t)k; i++) {       /* scatter */
+            uint8_t e[16];
+            uint64_t l;
+            get(p, iov + 16 * i, e, 16);
+            l = u64(e + 8) < (uint64_t)k - done ? u64(e + 8) : (uint64_t)k - done;
+            if (l && !put(p, u64(e), net_buf + done, l)) return err(L_EFAULT);
+            done += l;
+        }
+        if (u64(m) && sl && sa.ss_family) {
+            uint8_t s[28];
+            uint32_t sn = sa_to_guest((struct sockaddr *)&sa, s, f->v4), cap = u32(m + 8);
+            if (sn) put(p, u64(m), s, sn < cap ? sn : cap);
+            put(p, mp + 8, &sn, 4);
+        } else put(p, mp + 8, &z, 4);
+        put(p, mp + 40, &z, 4); put(p, mp + 44, &z, 4);            /* no control data */
+        put(p, mp + 48, &z, 4);                                    /* msg_flags */
+        r = (uint64_t)k;
+    }
+    return r;
+}
+
+/* The options worth passing on; anything else is accepted (set) or 0 (get). */
+static int sockopt_host(uint64_t level, uint64_t opt, int *hl, int *ho)
+{
+    if (level == 1) {                                              /* SOL_SOCKET */
+        *hl = SOL_SOCKET;
+        switch (opt) {
+        case 2: *ho = SO_REUSEADDR; return 1;
+        case 3: *ho = SO_TYPE; return 1;
+        case 4: *ho = SO_ERROR; return 1;
+        case 6: *ho = SO_BROADCAST; return 1;
+        case 7: *ho = SO_SNDBUF; return 1;
+        case 8: *ho = SO_RCVBUF; return 1;
+        case 9: *ho = SO_KEEPALIVE; return 1;
+        case 15: *ho = SO_REUSEPORT; return 1;
+        default: return 0;
+        }
+    }
+    if (level == 6 && opt == 1) { *hl = IPPROTO_TCP; *ho = TCP_NODELAY; return 1; }
+    if (level == 41 && opt == 26) { *hl = IPPROTO_IPV6; *ho = IPV6_V6ONLY; return 1; }   /* (ignored on a v4 one) */
+    return 0;
+}
+
+static uint64_t net_sockopt(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t level, uint64_t opt,
+                            uint64_t val, uint64_t len, int set)
+{
+    int hl, ho, v = 0;
+    socklen_t vl = sizeof v;
+    if (set) {
+        if (!sockopt_host(level, opt, &hl, &ho) || len < 4 || !get(p, val, &v, 4)) return 0;
+        if (f->v4 && hl != SOL_SOCKET && hl != IPPROTO_TCP) return 0;
+        return setsockopt(f->host, hl, ho, &v, sizeof v) ? herr() : 0;
+    }
+    if (sockopt_host(level, opt, &hl, &ho)) {
+        if (getsockopt(f->host, hl, ho, &v, &vl)) return herr();
+        if (ho == SO_ERROR) v = v ? lx_errno(v) : 0;
+        if (ho == SO_TYPE) v = v == SOCK_STREAM ? 1 : v == SOCK_DGRAM ? 2 : v;
+    }
+    vl = 4;
+    if (val) put(p, val, &v, 4);
+    if (len) put(p, len, &vl, 4);
+    return 0;
+}
+
+/* /dev/socket/dnsproxyd: the request up to its NUL, then netd's answer ("222\0", per
+ * address {BE32 1, flags, family, socktype, protocol, BE32 len + sockaddr, BE32 len +
+ * canonical name}, BE32 0) into the host pair the guest reads. */
+static void be32(uint8_t *o, uint32_t v) { o[0] = (uint8_t)(v >> 24); o[1] = (uint8_t)(v >> 16); o[2] = (uint8_t)(v >> 8); o[3] = (uint8_t)v; }
+
+static void dns_answer(struct aoi_proc *p, struct aoi_proc_fd *f)
+{
+    char host[256], serv[64];
+    int flags = -1, fam = 0, type = 0, proto = 0;
+    struct addrinfo hints, *res = NULL, *ai;
+    static uint8_t out[16384];
+    size_t n = 0;
+    int rc = -1;
+    if (sscanf(f->req, "getaddrinfo %255s %63s %d %d %d %d", host, serv, &flags, &fam, &type, &proto) == 6) {
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = fam == 2 ? AF_INET : fam == 10 ? AF_INET6 : AF_UNSPEC;
+        hints.ai_socktype = type == 1 ? SOCK_STREAM : type == 2 ? SOCK_DGRAM : 0;
+        hints.ai_protocol = proto > 0 ? proto : 0;
+        if (flags != -1)
+            hints.ai_flags = (flags & 1 ? AI_PASSIVE : 0) | (flags & 2 ? AI_CANONNAME : 0)
+                           | (flags & 4 ? AI_NUMERICHOST : 0) | (flags & 0x400 ? AI_NUMERICSERV : 0);
+        rc = getaddrinfo(strcmp(host, "^") ? host : NULL, strcmp(serv, "^") ? serv : NULL, &hints, &res);
+        if (p->log) fprintf(p->log, "I/aoi: dns %s: %s\n", host, rc ? gai_strerror(rc) : "ok");
+    } else if (p->log) fprintf(p->log, "I/aoi: dns: not answered: %.60s\n", f->req);
+    if (!rc) {
+        memcpy(out, "222", 4); n = 4;
+        for (ai = res; ai && n + 512 < sizeof out; ai = ai->ai_next) {
+            uint8_t s[28];
+            uint32_t sl = sa_to_guest(ai->ai_addr, s, 0), cl = ai->ai_canonname ? (uint32_t)strlen(ai->ai_canonname) + 1 : 0;
+            if (!sl || cl > 255) continue;
+            be32(out + n, 1); be32(out + n + 4, 0);
+            be32(out + n + 8, ai->ai_family == AF_INET ? 2 : 10);
+            be32(out + n + 12, ai->ai_socktype == SOCK_DGRAM ? 2 : ai->ai_socktype == SOCK_STREAM ? 1 : (uint32_t)ai->ai_socktype);
+            be32(out + n + 16, (uint32_t)ai->ai_protocol);
+            be32(out + n + 20, sl); memcpy(out + n + 24, s, sl); n += 24 + sl;
+            be32(out + n, cl); if (cl) memcpy(out + n + 4, ai->ai_canonname, cl); n += 4 + cl;
+        }
+        be32(out + n, 0); n += 4;
+        freeaddrinfo(res);
+    } else {
+        memcpy(out, "401", 4); be32(out + 4, 4); be32(out + 8, 7); n = 12;   /* DnsProxyOperationFailed, EAI_NODATA */
+    }
+    if (write(f->peer, out, n) < 0) {}
+    close(f->peer);
+    f->peer = -1;
+}
+
+static uint64_t dns_write(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t len)
+{
+    uint64_t i;
+    if (!f->req && !(f->req = calloc(1, 1024))) return err(L_ENOMEM);
+    for (i = 0; i < len; i++) {
+        uint8_t c;
+        if (!get(p, buf + i, &c, 1)) return err(L_EFAULT);
+        if (f->peer < 0) continue;                                 /* answered: the rest is dropped */
+        if (f->nreq < 1023) f->req[f->nreq++] = (char)c;
+        if (!c) dns_answer(p, f);
+    }
+    return len;
+}
+
+/* connect() to netd's DNS socket: a host pair, the guest reading one end. */
+static uint64_t dns_open(struct aoi_proc *p, struct aoi_proc_fd *f)
+{
+    int hv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, hv)) return herr();
+    fcntl(hv[0], F_SETFL, O_NONBLOCK); fcntl(hv[0], F_SETFD, FD_CLOEXEC); fcntl(hv[1], F_SETFD, FD_CLOEXEC);
+    close(f->host);
+    f->host = hv[0]; f->peer = hv[1];
+    f->kind = AOI_FD_DNS; f->nreq = 0;
+    (void)p;
+    return 0;
+}
+
 uint64_t aoi_proc_syscall(struct aoi_cpu *c)
 {
     struct aoi_proc *p = c->host_ctx;
@@ -1468,7 +1876,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 1, nr == NR_read ? -1 : (int64_t)a3) : 0;
-        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p, 1000000);
+        if (r == err(L_EAGAIN) && (f->kind == AOI_FD_PIPE || f->kind == AOI_FD_INET || f->kind == AOI_FD_DNS)
+            && !f->nonblock) r = block_and_retry(p, 1000000);
         break;
     }
     case NR_write: case NR_pwrite64: {
@@ -1491,9 +1900,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = get(p, a1, pkt, n) ? logd_write(p, pkt, n), a2 : err(L_EFAULT);
             break;
         }
+        if (f->kind == AOI_FD_DNS) { r = dns_write(p, f, a1, a2); break; }
         if (f->host <= 2) fflush(stdout);
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
-        if (r == err(L_EAGAIN) && f->kind == AOI_FD_PIPE && !f->nonblock) r = block_and_retry(p, 1000000);
+        if (r == err(L_EAGAIN) && (f->kind == AOI_FD_PIPE || f->kind == AOI_FD_INET) && !f->nonblock)
+            r = block_and_retry(p, 1000000);
         break;
     }
     case NR_readv: case NR_writev: {
@@ -1515,7 +1926,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = total;
             break;
         }
-        if (f->kind != AOI_FD_FILE && f->kind != AOI_FD_PIPE) { r = err(L_ENOTCONN); break; }
+        if (f->kind != AOI_FD_FILE && f->kind != AOI_FD_PIPE && f->kind != AOI_FD_INET) { r = err(L_ENOTCONN); break; }
         r = 0;
         for (i = 0; i < a2; i++) {
             uint8_t e[16];
@@ -1614,7 +2025,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (a0 > 2) { if (f->dir) closedir(f->dir); else close(f->host); }
         if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
-        f->used = 0; f->dir = NULL; f->ep = NULL;
+        if (f->kind == AOI_FD_DNS && f->peer >= 0) close(f->peer);
+        free(f->req);
+        f->used = 0; f->dir = NULL; f->ep = NULL; f->req = NULL; f->nreq = 0; f->connecting = 0;
         epoll_forget(p, (int)a0);
         r = 0;
         break;
@@ -1810,22 +2223,53 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_sendto: case NR_recvfrom: {                            /* on host-backed sockets; addresses ignored */
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        if (f->kind != AOI_FD_PIPE) { r = err(L_ENOTSOCK); break; }
+        if (f->kind == AOI_FD_INET) {
+            r = nr == NR_sendto ? net_sendto(p, f, a1, a2, a3, a4, a5) : net_recvfrom(p, f, a1, a2, a3, a4, a5);
+            break;
+        }
+        if (f->kind == AOI_FD_DNS && nr == NR_sendto) { r = dns_write(p, f, a1, a2); break; }
+        if (f->kind != AOI_FD_PIPE && f->kind != AOI_FD_DNS) { r = err(L_ENOTSOCK); break; }
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, nr == NR_recvfrom, -1) : 0;
         if (r == err(L_EAGAIN) && !f->nonblock && !(a3 & 0x40)) r = block_and_retry(p, 1000000);   /* MSG_DONTWAIT */
         if (nr == NR_recvfrom && a5 && (int64_t)r >= 0) { uint32_t z = 0; put(p, a5, &z, 4); }   /* *addrlen = 0 */
         break;
     }
-    case NR_setsockopt: r = 0; break;                              /* buffer sizes and the like: accepted */
-    case NR_getsockopt: {                                          /* an int option: 0, or the buffer size */
+    case NR_setsockopt:                                            /* buffer sizes and the like: accepted */
+        r = (f = fd_get(p, a0)) && f->kind == AOI_FD_INET ? net_sockopt(p, f, a1, a2, a3, a4, 1) : 0;
+        break;
+    case NR_getsockopt: {
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_INET) { r = net_sockopt(p, f, a1, a2, a3, a4, 0); break; }                                          /* an int option: 0, or the buffer size */
         uint32_t v = (a1 == 1 && (a2 == 7 || a2 == 8)) ? 65536 : 0, l = 4;   /* SO_SNDBUF / SO_RCVBUF */
         if (a3) put(p, a3, &v, 4);
         if (a4) put(p, a4, &l, 4);
         r = 0;
         break;
     }
-    case NR_socket: {                                              /* AF_UNIX only: logd, or nothing */
+    case NR_bind: case NR_listen: case NR_shutdown: case NR_getsockname: case NR_getpeername:
+    case NR_accept: case NR_accept4: case NR_sendmsg: case NR_recvmsg: {
+        struct sockaddr_storage sa;
+        socklen_t sl = sizeof sa;
+        if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_PIPE && nr == NR_shutdown) {          /* a socketpair end (Java's close marker) */
+            r = shutdown(f->host, (int)a1) && errno != ENOTSOCK ? herr() : 0;
+            break;
+        }
+        if (f->kind != AOI_FD_INET) { r = err(L_ENOSYS); break; }  /* other AF_UNIX: as before */
+        memset(&sa, 0, sizeof sa);
+        if (nr == NR_bind) r = get_sa(p, a1, a2, &sa, &sl, f->v4) ? err(L_EINVAL) : bind(f->host, (struct sockaddr *)&sa, sl) ? herr() : 0;
+        else if (nr == NR_listen) r = listen(f->host, (int)a1) ? herr() : 0;
+        else if (nr == NR_shutdown) r = shutdown(f->host, (int)a1) ? herr() : 0;
+        else if (nr == NR_accept || nr == NR_accept4) r = net_accept(p, f, a1, a2, nr == NR_accept4 ? a3 : 0);
+        else if (nr == NR_sendmsg || nr == NR_recvmsg) r = net_msg(p, f, a1, a2, nr == NR_recvmsg);
+        else {
+            int k = nr == NR_getsockname ? getsockname(f->host, (struct sockaddr *)&sa, &sl) : getpeername(f->host, (struct sockaddr *)&sa, &sl);
+            if (k) r = herr(); else { put_sa(p, a1, a2, (struct sockaddr *)&sa, f->v4); r = 0; }
+        }
+        break;
+    }
+    case NR_socket: {                                              /* AF_UNIX: logd, dnsproxyd; AF_INET(6) */
         int n, d;
+        if (a0 == 2 || a0 == 10) { r = net_socket(p, a0, a1, a2); break; }
         if (a0 != 1) { r = err(L_EAFNOSUPPORT); break; }
         if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
         if ((n = fd_new(p, d, "socket:[unix]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
@@ -1837,10 +2281,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         char path[110];
         uint8_t sa[110];
         if (!(f = fd_get(p, a0)) || f->kind == AOI_FD_FILE) { r = err(L_ENOTSOCK); break; }
+        if (f->kind == AOI_FD_INET) { r = net_connect(p, f, a1, a2); break; }
         memset(sa, 0, sizeof sa);
         if (a2 < 3 || !get(p, a1, sa, a2 < sizeof sa ? a2 : sizeof sa - 1)) { r = err(L_EFAULT); break; }
         memcpy(path, sa + 2, sizeof path - 2); path[sizeof path - 3] = 0;
         if (!strcmp(path, "/dev/socket/logdw")) { f->kind = AOI_FD_LOGD; r = 0; }
+        else if (!strcmp(path, "/dev/socket/dnsproxyd")) r = dns_open(p, f);
         else r = err(L_ECONNREFUSED);                              /* no other daemons yet */
         break;
     }
@@ -1915,6 +2361,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_ioctl:
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_INET && (a1 == 0x541b || a1 == 0x5421)) {   /* FIONREAD, FIONBIO */
+            int v = 0;
+            if (a1 == 0x5421) { r = get(p, a2, &v, 4) ? (f->nonblock = v != 0, 0) : err(L_EFAULT); break; }
+            r = ioctl(f->host, FIONREAD, &v) ? herr() : put(p, a2, &v, 4) ? 0 : err(L_EFAULT);
+            break;
+        }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_BINDER) {
             int block;
             r = aoi_binder_ioctl(p, a1, a2, &block);

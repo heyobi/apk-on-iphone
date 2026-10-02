@@ -31,10 +31,17 @@ struct aoi_proc_fd {
     struct aoi_epoll *ep;           /* AOI_FD_EPOLL: the interest list (shared by dups) */
     int pair, end, ptype;           /* AOI_FD_PIPE: one end (0/1) of host pair `pair` (0: none);
                                      * ptype 0 pipe, else a socket type: a snapshot rebuilds it */
+    int connecting;                 /* AOI_FD_INET: a blocking connect waits for the host's */
+    int v4;                         /* AOI_FD_INET: an AF_INET6 guest socket on an AF_INET host one */
+    int peer;                       /* AOI_FD_DNS: host end the answer is written to (-1 once sent) */
+    int nreq;                       /* AOI_FD_DNS: bytes of the request so far, in req */
+    char *req;
 };
 
 enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,
-       AOI_FD_EVENTFD, AOI_FD_EPOLL };
+       AOI_FD_EVENTFD, AOI_FD_EPOLL,
+       AOI_FD_INET,                 /* AF_INET/AF_INET6: a host socket, non-blocking underneath */
+       AOI_FD_DNS };                /* netd's /dev/socket/dnsproxyd, answered with the host's resolver */
 
 /* An epoll instance: level-triggered interest entries {fd, events, data}. */
 struct aoi_epoll { int refs, n, cap; struct { int fd; uint32_t events; uint64_t data; } *e; };

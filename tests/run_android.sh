@@ -70,6 +70,19 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "SoundPool (libsoundpool, audio service)" "soundpool: built and released" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.SoundPoolTest
+    # The network: aoi.ConnectivityService, DNS through netd's dnsproxyd (answered by the
+    # host's resolver) and an HTTP GET on the host's sockets, from a local server.
+    if command -v python3 >/dev/null 2>&1; then
+        W=$(mktemp -d); echo "merhaba ag" > "$W/hello.txt"
+        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+        (cd "$W" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1) & HTTPD=$!
+        sleep 1
+        # shellcheck disable=SC2086
+        check "network (connectivity, DNS, HTTP on host sockets)" \
+            'network: connected true, internet true, 100, localhost 127.0.0.1, http 200 "merhaba ag"' $ENV $SCP \
+            -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.NetworkTest "$PORT"
+        kill $HTTPD 2>/dev/null; rm -rf "$W"
+    else echo "SKIP android: network (no python3)"; fi
     # OpenGL ES: Android's libEGL -> our driver (/vendor/lib64/egl/libGLES_aoi.so) -> the host's GPU.
     if [ -f "$R/vendor/lib64/egl/libGLES_aoi.so" ] && nm "$P" 2>/dev/null | grep -q aoi_gpu_call; then
         # shellcheck disable=SC2086

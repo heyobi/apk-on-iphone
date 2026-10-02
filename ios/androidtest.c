@@ -95,7 +95,8 @@ int aoi_android_run_env(const char *root, const char *tmpdir, int argc, const ch
     static const char *const base[] = {
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
         "TMPDIR=/data/local/tmp", "ANDROID_ART_ROOT=/apex/com.android.art",
-        "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata", NULL };
+        "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata",
+        "ANDROID_NO_USE_FWMARK_CLIENT=1", NULL };            /* no netd fwmarkd: sockets untagged */
     const char *envp[32];
     int ne = 0;
     struct aoi_proc *p = calloc(1, sizeof *p);
@@ -392,9 +393,10 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
         "TMPDIR=/data/local/tmp", "ANDROID_ART_ROOT=/apex/com.android.art",
         "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata",
-        "CLASSPATH=/data/local/tmp/aoi.dex", NULL };
+        "CLASSPATH=/data/local/tmp/aoi.dex",
+        "ANDROID_NO_USE_FWMARK_CLIENT=1", NULL };            /* no netd fwmarkd: sockets untagged (core/proc.c) */
     static char vals[3][4096];
-    const char *cp[4], *envp[16];
+    const char *cp[4], *envp[24];
     struct aoi_proc *p = calloc(1, sizeof *p);
     const char *err;
     enum aoi_stop st;

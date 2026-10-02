@@ -27,6 +27,23 @@ final class App {
         return null;
     }
 
+    /** A <service> of the manifest, with its <meta-data> (Chromium checks that its
+     *  child-process services exist: getServiceInfo). */
+    android.content.pm.ServiceInfo service(String className) {
+        for (PackageParser.Service sv : pkg.services)
+            if (sv.info.name.equals(className)) {
+                if (sv.info.metaData == null) sv.info.metaData = sv.metaData;
+                return sv.info;
+            }
+        return null;
+    }
+
+    ActivityInfo receiver(String className) {
+        for (PackageParser.Activity a : pkg.receivers)
+            if (a.info.name.equals(className)) return a.info;
+        return null;
+    }
+
     ActivityInfo activity(String className) {
         for (PackageParser.Activity a : pkg.activities)
             if (a.info.name.equals(className)) return a.info;

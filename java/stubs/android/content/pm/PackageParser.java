@@ -14,12 +14,20 @@ public class PackageParser {
         public ApplicationInfo applicationInfo;
         public final ArrayList<Activity> activities = null;
         public final ArrayList<Provider> providers = null;
+        public final ArrayList<Service> services = null;
+        public final ArrayList<Activity> receivers = null;
         public android.os.Bundle mAppMetaData;
     }
 
     public static final class Activity {
         public ActivityInfo info;
+        public android.os.Bundle metaData;                      /* declared on Component */
         public ArrayList<ActivityIntentInfo> intents;           /* declared on Component */
+    }
+
+    public static final class Service {
+        public ServiceInfo info;
+        public android.os.Bundle metaData;                      /* declared on Component */
     }
 
     public static final class Provider {
