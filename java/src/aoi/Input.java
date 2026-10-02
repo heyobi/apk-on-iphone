@@ -14,10 +14,12 @@ import java.io.FileInputStream;
  *  becomes a MotionEvent sent on the server end of a window's input channel, as
  *  InputDispatcher would: the gesture goes to the window it went down in (or a touch
  *  modal one above it, a menu that closes on a touch outside), in its coordinates;
- *  windows above that watch outside touches get ACTION_OUTSIDE. Action 4 cancels the gesture (the host took it), and
- *  action 3 is "back": the resumed activity's onBackPressed
- *  on the main thread (a KEYCODE_BACK event would need window focus, and focus makes
- *  text cursors blink: a full repaint twice a second). */
+ *  windows above that watch outside touches get ACTION_OUTSIDE. A held finger gives
+ *  its window focus (WindowSession.focus: text selection), a touch on it takes it.
+ *  Action 4 cancels the gesture (the host took it), and action 3 is "back": the
+ *  resumed activity's onBackPressed on the main thread (a KEYCODE_BACK event would
+ *  need window focus, and focus makes text cursors blink: a full repaint twice a
+ *  second). */
 final class Input {
     private static final int SOURCE_TOUCHSCREEN = 0x1002;
 
@@ -29,6 +31,13 @@ final class Input {
     private WindowSession.Win target;                          /* the gesture's window */
     private int seq;
     private long downTime;
+    private float downX, downY;
+    /** A finger held still this long (ms) gives its window focus: a long press is coming,
+     *  and Compose shows its selection's handles and toolbar only in a focused window. */
+    private static final int HOLD = 800;
+    private final Runnable hold = new Runnable() {
+        @Override public void run() { if (target != null) session.focus(target, true); }
+    };
 
     private Input(WindowSession session) { this.session = session; }
 
@@ -99,8 +108,12 @@ final class Input {
         if (action == 0) {
             downTime = now;
             target = session.target(x, y);
+            downX = x; downY = y;
+            session.focus(target, false);                          /* a touch on the window itself: selecting is over */
+            handler.postDelayed(hold, HOLD);
             for (WindowSession.Win w : session.watchers(target)) event(w, 4, x, y, now);   /* ACTION_OUTSIDE */
         }
+        if (action != 0 && (action != 2 || Math.abs(x - downX) + Math.abs(y - downY) > 24)) handler.removeCallbacks(hold);
         if (target == null) return;
         event(target, action == 4 ? 3 : action, x, y, now);   /* 4 from the host: MotionEvent.ACTION_CANCEL */
         if (action == 1 || action == 4) target = null;

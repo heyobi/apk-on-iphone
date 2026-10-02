@@ -39,7 +39,7 @@ final class WindowSession extends IWindowSession.Stub {
         SurfaceControl sc;
         InputChannel input;
         int z;
-        boolean shown;
+        boolean shown, focused;
     }
 
     private final SurfaceSession surfaces = new SurfaceSession();
@@ -58,13 +58,14 @@ final class WindowSession extends IWindowSession.Stub {
     }
 
     /** The visible window a touch at (x, y) goes to, top first: the one under it, or
-     *  one above it that is touch modal (not FLAG_NOT_TOUCH_MODAL: a popup menu or
-     *  dialog that closes on a touch outside it). */
+     *  one above it that is touch modal (neither FLAG_NOT_TOUCH_MODAL nor
+     *  FLAG_NOT_FOCUSABLE, as InputDispatcher has it: a popup menu or dialog that
+     *  closes on a touch outside it; a text selection handle is not). */
     synchronized Win target(float x, float y) {
         for (int i = windows.size() - 1; i >= 0; i--) {
             Win w = windows.get(i);
             if (!w.shown || w.input == null || w.attrs == null || (w.attrs.flags & 0x10) != 0) continue;   /* NOT_TOUCHABLE */
-            if (w.frame.contains((int) x, (int) y) || (w.attrs.flags & 0x20) == 0) return w;            /* NOT_TOUCH_MODAL */
+            if (w.frame.contains((int) x, (int) y) || (w.attrs.flags & 0x28) == 0) return w;   /* NOT_TOUCH_MODAL, NOT_FOCUSABLE */
         }
         return null;
     }
@@ -77,6 +78,45 @@ final class WindowSession extends IWindowSession.Stub {
             if (o.shown && o.input != null && o.attrs != null && (o.attrs.flags & 0x40000) != 0) r.add(o);
         }
         return r;
+    }
+
+    /** Window focus for app window `w` (its ViewRootImpl is in this process: the IWindow
+     *  is its W). Compose shows a text field's selection handles and its copy/paste
+     *  toolbar only in a focused window (and hides the toolbar as soon as it comes up in
+     *  an unfocused one), but in a focused window the field's cursor blinks, a full
+     *  repaint twice a second. So a window has focus only while text is being selected:
+     *  aoi.Input gives it on a held finger (a long press coming) and takes it on a touch
+     *  that goes to the window itself and when its last popup (toolbar, handles) goes;
+     *  a text toolbar coming up gives it too. */
+    synchronized void focus(Win w, boolean on) {
+        if (w == null || w.focused == on || w.attrs == null || w.attrs.type < 1 || w.attrs.type > 99) return;
+        w.focused = on;
+        try {
+            java.lang.reflect.Field f = w.token.getClass().getDeclaredField("mViewAncestor");
+            f.setAccessible(true);
+            Object root = ((java.lang.ref.WeakReference<?>) f.get(w.token)).get();
+            if (root == null) return;
+            java.lang.reflect.Method m = root.getClass().getDeclaredMethod("windowFocusChanged", boolean.class);
+            m.setAccessible(true);
+            m.invoke(root, on);
+        } catch (Exception e) {
+            System.out.println("aoi: focus: " + e);
+        }
+    }
+
+    /** The app window a sub-window (a popup) belongs to. */
+    private Win parent(Win s) {
+        for (Win w : windows) if (s.attrs != null && w.token == s.attrs.token) return w;
+        return null;
+    }
+
+    /** Sub-window `s` went away: when it was the last one up (the toolbar and handles
+     *  gone after a copy or paste), selecting is over and its window loses focus. */
+    private void subGone(Win s) {
+        Win p = s.attrs != null && s.attrs.type >= 1000 && s.attrs.type <= 1999 ? parent(s) : null;
+        if (p == null || !p.focused) return;
+        for (Win o : windows) if (o != s && o.shown && o.attrs != null && o.attrs.token == p.token) return;
+        focus(p, false);
     }
 
     private static void layer(String cmd) {
@@ -172,9 +212,11 @@ final class WindowSession extends IWindowSession.Stub {
             outSurface.copyFrom(win.sc, "aoi.WindowSession.relayout");
             win.shown = true;
             place(win);
+            if (win.attrs != null && win.attrs.type == 1005) focus(parent(win), true);   /* a text toolbar */
         } else if (visibility != 0 && win.sc != null && win.shown) {
             win.shown = false;
             layer(win.sc.getLayerId() + "/hide");
+            subGone(win);
         }
         return 0;
     }
@@ -187,6 +229,7 @@ final class WindowSession extends IWindowSession.Stub {
             System.out.println("aoi: window removed: " + (w.attrs != null ? w.attrs.getTitle() : ""));
             windows.remove(i);
             if (w.sc != null) layer(w.sc.getLayerId() + "/hide");
+            subGone(w);
             return;
         }
     }

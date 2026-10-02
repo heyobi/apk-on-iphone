@@ -392,6 +392,30 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Text selection stays up: Cut / Copy / Paste / Select all (app 0.33).** On the
+phone a long press in Qalculate's input brought the copy/paste toolbar up for a
+moment, then it went. Compose shows a text field's selection handles and toolbar
+only in a focused window (and hides the toolbar in an unfocused one), and our windows
+never had focus: a focused field's cursor blinks, a full repaint twice a second.
+Now WindowSession.focus gives an app window focus (its ViewRootImpl's
+windowFocusChanged, in this process) only while text is being selected: when a
+finger is held still for 0.8 s (aoi.Input: a long press is coming) or a text toolbar
+(type 1005) comes up, and takes it back on a touch that goes to the window itself or
+when its last popup (toolbar, handles) goes. Two more fixes the selection needed:
+- a touch outside a FLAG_NOT_FOCUSABLE popup goes to the window below, as in
+  InputDispatcher (a selection handle was swallowing the tap meant for "Copy");
+- android.widget.Magnifier (the loupe over a dragged handle, Compose and TextView)
+  renders with a HardwareRenderer of its own, and its first GL call aborted the app:
+  there is no OpenGL ES implementation. core/hle.c makes HardwareRenderer.nSetSurface
+  and nCopySurfaceInto return at once (libhwui offsets, checked by hash), so that
+  renderer never gets a surface: it skips its frames, the loupe stays invisible.
+Host (Qalculate, fresh start; aoiproc's held taps now move a pixel every 0.1 s, as a
+finger does): long press -> two handles and Cut / Copy / Select all, still up 7 s
+later; Copy -> host clipboard "87"; long press again -> Paste is offered; Paste
+replaces the selection with the host's "12345"; afterwards the window lets go of
+focus and the frames stop. The long-press timeout is still 5 s (core settings,
+app 0.14). run_android.sh 13/13, difftest WRONG 0.
+
 **No more one-at-a-time service crashes (app 0.32).** Each new app or gesture was
 finding a service we lacked (clipboard, audio: null managers) or a call our services
 had not written (AbstractMethodError: Kiwi's startActivity, IUserManager...). Now

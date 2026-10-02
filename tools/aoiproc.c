@@ -28,7 +28,8 @@
  * file mappings that were never touched). */
 /* AOI_TAPS="x,y;x,y;...": after the first frame, taps in screen pixels 4 s apart
  * (aoi_proc_touch from another thread, as the iOS view sends them); "back" presses
- * the back key; "x,y,ms" holds the finger down that long (a long press). */
+ * the back key; "x,y,ms" holds the finger down that long (a long press; it moves a
+ * pixel every 0.1 s, as a finger on glass does). */
 /* The host clipboard (proc.h, clip): a buffer, AOI_CLIP at the start; each change is logged. */
 static char clipbuf[4096];
 static void clip(void *ctx, int op, const char *path)
@@ -72,7 +73,11 @@ static void *taps(void *arg)
           fprintf(stderr, "[aoiproc] tap %.0f,%.0f at %.3f s, %llu instructions\n", x, y,
                   (double)ts.tv_sec + (double)ts.tv_nsec / 1e9, (unsigned long long)((struct aoi_proc *)arg)->cpu.steps); }
         aoi_proc_touch(arg, 0, x, y);
-        { struct timespec ts = { hold / 1000, (long)(hold % 1000) * 1000000 }; nanosleep(&ts, NULL); }   /* a tap: ~0.1 s */
+        for (; hold > 0; hold -= 100) {                   /* a tap: ~0.1 s; a held finger moves a little, as on glass */
+            struct timespec ts = { 0, (long)(hold < 100 ? hold : 100) * 1000000 };
+            nanosleep(&ts, NULL);
+            if (hold > 100) aoi_proc_touch(arg, 2, x + (hold / 100 % 2), y);
+        }
         aoi_proc_touch(arg, 1, x, y);
         s += n;
         if (*s == ';') s++;

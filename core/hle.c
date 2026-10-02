@@ -311,18 +311,37 @@ ST_FN blit_row_s32a(struct aoi_cpu *c, uint64_t ctx)
     return 1;
 }
 
+/* ---------- no GPU ---------- */
+
+/* android.widget.Magnifier (a text field's loupe while a selection handle is dragged:
+ * Compose and TextView both show one) draws through a HardwareRenderer of its own,
+ * and the first GL call on its render thread aborts the process: there is no OpenGL
+ * ES implementation. HardwareRenderer.nSetSurface and nCopySurfaceInto (the
+ * Magnifier's PixelCopy of the window) return at once here, so that renderer never
+ * gets a surface and never needs GL: it skips its frames, the loupe stays invisible,
+ * and the drag goes on. */
+ST_FN no_gpu(struct aoi_cpu *c, uint64_t ctx)
+{
+    (void)ctx;
+    c->steps++;
+    return 1;
+}
+
 /* ---------- the table ---------- */
 
 struct stage {
     uint32_t off, insns, hash;          /* offset in libhwui.so, length, FNV-1a of its code */
     int (*fn)(struct aoi_cpu *c, uint64_t ctx);   /* NULL: just_return (ret) */
     const char *name;
-    int call;                           /* 1: a called function (returns to x30); 2: the pipeline loop */
+    int call;                           /* 1: a called function (returns to x30); 2: the pipeline loop;
+                                         * 3: a called function replaced outright (no_gpu: never checked) */
 };
 
 static const struct stage stages[] = {
     { 0x489bac, 25, 0xf271759bu, rect_memset32, "rect_memset32", 1 },
     { 0x49e20c, 64, 0xa2464ffeu, blit_row_color32, "blit_row_color32", 1 },
+    { 0x4b41b8,  8, 0x5a73f29au, no_gpu, "HardwareRenderer.nSetSurface", 3 },
+    { 0x4c93b4,  8, 0x3f57836au, no_gpu, "HardwareRenderer.nCopySurfaceInto", 3 },
     { 0x5afb24, 64, 0x48558843u, blit_row_s32a, "blit_row_s32a_opaque", 1 },
     { 0x5d9dec, 12, 0x810c2fd5u, clamp_01, "clamp_01", 0 },
     { 0x5d9f54, 15, 0x079ded96u, seed_shader, "seed_shader", 0 },
@@ -470,7 +489,7 @@ static int run(struct aoi_cpu *c)
             return 2;
         }
         if (stages[i].call) {                                       /* a function: runs, returns */
-            if (CHECK_NOW()) { check_call(c, i); ran = 1; if (c->stop != AOI_RUN) break; continue; }
+            if (stages[i].call == 1 && CHECK_NOW()) { check_call(c, i); ran = 1; if (c->stop != AOI_RUN) break; continue; }
             if (!stages[i].fn(c, 0)) break;
             c->pc = c->x[30];
             ran = 1;
