@@ -32,6 +32,22 @@ final class ActivityTaskManager extends IActivityTaskManager.Stub {
         return c;
     }
 
+    /** An activity of the app goes on top of its task (aoi.Activities); another app's
+     *  is not here: START_INTENT_NOT_RESOLVED, which the caller sees as
+     *  ActivityNotFoundException. Results (startActivityForResult) are not sent back yet. */
+    @Override
+    public int startActivity(android.app.IApplicationThread caller, String pkg, String feature,
+            android.content.Intent intent, String type, android.os.IBinder resultTo, String resultWho,
+            int requestCode, int flags, android.app.ProfilerInfo profiler, android.os.Bundle options) {
+        android.content.pm.ActivityInfo a = Activities.resolve(intent);
+        if (a == null) {
+            System.out.println("aoi: no activity for " + intent);
+            return -91;                                            /* START_INTENT_NOT_RESOLVED */
+        }
+        Activities.launch(a, intent);
+        return 0;                                                  /* START_SUCCESS */
+    }
+
     @Override public List getTasks(int max, boolean recents, boolean keepIntent, int display) { return new ArrayList(); }
     @Override public List getAppTasks(String pkg) { return new ArrayList(); }
     @Override public int getLastResumedActivityUserId() { return 0; }

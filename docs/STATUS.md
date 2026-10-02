@@ -392,6 +392,29 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**0.32 killed every app on the phone; activities on a stack (app 0.34).** 0.32's
+stand-in "connectivity" service gave ActivityThread a ConnectivityManager, and
+handleBindApplication's getDefaultProxy loads libframework-connectivity-jni.so
+(NetworkUtils); the phone's bundle (ios/android-files.txt, the files traced from
+earlier runs) did not have it, so every app died in bindApplication. The host's full
+root has it, which is why the host runs passed. It is in the list now; Qalculate
+starts on a root made by tools/mini-root.sh from that list (plus
+/vendor/lib64/hw/mapper.aoi.so, which the workflow adds). Run an app on the mini root
+before shipping a change that adds services or libraries.
+Kiwi's launcher activity is a trampoline that starts the browser's activity
+(IActivityTaskManager.startActivity was missing). aoi.Activities now keeps the app's
+task: startActivity resolves the app's own activity (component, or an intent filter's
+action; an activity-alias stands for its target) and launches it on top (the one
+below pauses, stops, its window hides); another app's intent gets
+START_INTENT_NOT_RESOLVED (ActivityNotFoundException in the app). finish() of the top
+activity resumes the one below and destroys it; back on an activity above the root
+asks it to finish (IRequestFinishCallback), on the root it leaves the app as before.
+isTaskRoot/isTopOfTask answer from the stack, and the host's back goes to the top
+activity. Host: a second MainActivity started over Qalculate's first, back finished
+it, the first came back and took taps, back on it went home. Kiwi and WhatsApp still
+to be tried on the phone (no APKs on the host); startActivityForResult results are not
+returned yet.
+
 **Text selection stays up: Cut / Copy / Paste / Select all (app 0.33).** On the
 phone a long press in Qalculate's input brought the copy/paste toolbar up for a
 moment, then it went. Compose shows a text field's selection handles and toolbar

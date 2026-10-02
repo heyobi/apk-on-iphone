@@ -80,6 +80,7 @@
 /apex/com.android.tethering/javalib/framework-connectivity.jar
 /apex/com.android.tethering/javalib/framework-tethering.jar
 /apex/com.android.tethering/lib64/libframework-connectivity-tiramisu-jni.so
+/apex/com.android.tethering/lib64/libframework-connectivity-jni.so
 /apex/com.android.tzdata/etc/icu/icu_tzdata.dat
 /apex/com.android.uwb/javalib/framework-uwb.jar
 /apex/com.android.virt/javalib/framework-virtualization.jar

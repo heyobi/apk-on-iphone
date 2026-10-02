@@ -15,6 +15,9 @@ public interface IActivityTaskManager {
     int getLastResumedActivityUserId() throws RemoteException;
     boolean isInLockTaskMode() throws RemoteException;
     int getLockTaskModeState() throws RemoteException;
+    int startActivity(IApplicationThread caller, String callingPackage, String callingFeatureId,
+            android.content.Intent intent, String resolvedType, android.os.IBinder resultTo, String resultWho,
+            int requestCode, int flags, ProfilerInfo profilerInfo, android.os.Bundle options) throws RemoteException;
 
     abstract class Stub extends Binder implements IActivityTaskManager {
         public Stub() {}

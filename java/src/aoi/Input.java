@@ -17,7 +17,7 @@ import java.io.FileInputStream;
  *  windows above that watch outside touches get ACTION_OUTSIDE. A held finger gives
  *  its window focus (WindowSession.focus: text selection), a touch on it takes it.
  *  Action 4 cancels the gesture (the host took it), and action 3 is "back": the
- *  resumed activity's onBackPressed on the main thread (a KEYCODE_BACK event would
+ *  top activity's onBackPressed on the main thread (a KEYCODE_BACK event would
  *  need window focus, and focus makes text cursors blink: a full repaint twice a
  *  second). */
 final class Input {
@@ -75,28 +75,25 @@ final class Input {
         }
     }
 
-    /** The resumed activity (ActivityThread's records) presses back, on the main thread. */
+    /** The task's top activity (ActivityThread's record of it) presses back, on the main thread. */
     private static void back() {
         try {
             Class<?> at = Class.forName("android.app.ActivityThread");
             Object thread = at.getMethod("currentActivityThread").invoke(null);
             java.lang.reflect.Field f = at.getDeclaredField("mActivities");
             f.setAccessible(true);
-            for (Object rec : ((java.util.Map<?, ?>) f.get(thread)).values()) {
-                java.lang.reflect.Field pf = rec.getClass().getDeclaredField("paused");
-                java.lang.reflect.Field af = rec.getClass().getDeclaredField("activity");
-                pf.setAccessible(true);
-                af.setAccessible(true);
-                final Object a = af.get(rec);
-                if (a == null || pf.getBoolean(rec)) continue;
-                final java.lang.reflect.Method m = a.getClass().getMethod("onBackPressed");
-                new Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
-                    @Override public void run() {
-                        try { m.invoke(a); } catch (Exception e) { System.out.println("aoi: back: " + e); }
-                    }
-                });
-                return;
-            }
+            Object rec = ((java.util.Map<?, ?>) f.get(thread)).get(Activities.top());   /* the task's top one */
+            if (rec == null) return;
+            java.lang.reflect.Field af = rec.getClass().getDeclaredField("activity");
+            af.setAccessible(true);
+            final Object a = af.get(rec);
+            if (a == null) return;
+            final java.lang.reflect.Method m = a.getClass().getMethod("onBackPressed");
+            new Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+                @Override public void run() {
+                    try { m.invoke(a); } catch (Exception e) { System.out.println("aoi: back: " + e); }
+                }
+            });
         } catch (Exception e) {
             System.out.println("aoi: back: " + e);
         }

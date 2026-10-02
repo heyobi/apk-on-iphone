@@ -28,12 +28,14 @@ final class ActivityManager extends IActivityManager.Stub {
         catch (AbstractMethodError e) { return Services.missing(this, e, reply); }
     }
 
+    private final App the;
     private final ApplicationInfo app;
     private final ActivityInfo launcher;
     private final ArrayList providers = new ArrayList();          /* the app's own, installed at bind */
     IApplicationThread thread;
 
     ActivityManager(App a) {
+        this.the = a;
         this.app = a.info;
         this.launcher = a.launcher;
         for (android.content.pm.PackageParser.Provider p : a.pkg.providers) providers.add(p.info);
@@ -90,18 +92,9 @@ final class ActivityManager extends IActivityManager.Stub {
     @Override
     public void finishAttachApplication(long startSeq) throws RemoteException {
         if (launcher == null) { System.out.println("aoi: no launcher activity"); return; }
-        System.out.println("aoi: launching " + launcher.name);
-        android.os.IBinder token = new android.os.Binder();
-        android.content.Intent intent = android.content.Intent.makeMainActivity(
-                new android.content.ComponentName(app.packageName, launcher.name));
-        Configuration config = phone();
-        android.app.servertransaction.ClientTransaction tr = android.app.servertransaction.ClientTransaction.obtain(thread);
-        tr.addTransactionItem(android.app.servertransaction.LaunchActivityItem.obtain(token, intent, 1, launcher, config,
-                new Configuration(), 0, null, null, 2 /* PROCESS_STATE_TOP */, null, null, null, null, null, true, null,
-                new android.os.Binder(), null, new android.os.Binder(), false, null, null,
-                new android.window.ActivityWindowInfo()));
-        tr.addTransactionItem(android.app.servertransaction.ResumeActivityItem.obtain(token, true, false));
-        thread.scheduleTransaction(tr);
+        Activities.attach(the, thread);
+        Activities.launch(launcher, android.content.Intent.makeMainActivity(
+                new android.content.ComponentName(app.packageName, launcher.name)));
     }
 
     /* ---- permissions: one app, everything granted, but it is not the system UI ---- */

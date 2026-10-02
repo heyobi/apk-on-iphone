@@ -78,9 +78,9 @@ final class ActivityClientController extends IActivityClientController.Stub {
     @Override public void activityRelaunched(IBinder t) {}
     @Override public void reportSizeConfigurations(IBinder t, SizeConfigurationBuckets b) {}
     @Override public int getDisplayId(IBinder t) { return 0; }
-    @Override public int getTaskForActivity(IBinder t, boolean onlyRoot) { return 1; }
+    @Override public int getTaskForActivity(IBinder t, boolean onlyRoot) { return !onlyRoot || Activities.isRoot(t) ? 1 : -1; }
     @Override public Configuration getTaskConfiguration(IBinder t) { return ActivityManager_phone(); }
-    @Override public boolean isTopOfTask(IBinder t) { return true; }
+    @Override public boolean isTopOfTask(IBinder t) { return Activities.isTop(t); }
     @Override public boolean willActivityBeVisible(IBinder t) { return true; }
     @Override public int getRequestedOrientation(IBinder t) { return -1; }   /* UNSPECIFIED */
     @Override public void setRequestedOrientation(IBinder t, int o) {}
@@ -92,9 +92,9 @@ final class ActivityClientController extends IActivityClientController.Stub {
     @Override public void setImmersive(IBinder t, boolean immersive) {}
     @Override public void setTaskDescription(IBinder t, ActivityManager.TaskDescription d) {}
 
-    /** Leaving the app (back on its root activity, finish, task to back): as Android's
-     *  launcher would come up, the host shows its own (open "/dev/aoi_home"); the
-     *  process stays as it is, ready to be shown again. */
+    /** Leaving the app (back on its root activity, finishing the last one, task to
+     *  back): as Android's launcher would come up, the host shows its own (open
+     *  "/dev/aoi_home"); the process stays as it is, ready to be shown again. */
     private static void home() {
         try {
             new java.io.FileInputStream("/dev/aoi_home").close();
@@ -106,12 +106,21 @@ final class ActivityClientController extends IActivityClientController.Stub {
     @Override
     public boolean finishActivity(IBinder t, int code, Intent data, int finishTask) {
         log("finish requested");
-        home();
+        if (!Activities.finish(t)) home();                         /* the last one: leave the app */
         return true;
     }
 
     @Override public boolean moveActivityTaskToBack(IBinder t, boolean nonRoot) { home(); return true; }
-    @Override public void onBackPressed(IBinder t, IRequestFinishCallback cb) { log("back at the root"); home(); }
+    /** Back that the activity did not handle itself: the root activity leaves the app,
+     *  one above it is asked to finish (as ActivityClientController does). */
+    @Override
+    public void onBackPressed(IBinder t, IRequestFinishCallback cb) {
+        if (!Activities.isRoot(t) && cb != null) {
+            try { cb.requestFinish(); return; } catch (android.os.RemoteException e) { log("back: " + e); }
+        }
+        log("back at the root");
+        home();
+    }
     @Override public void splashScreenAttached(IBinder t) {}
     @Override public void reportActivityFullyDrawn(IBinder t, boolean restored) { log("fully drawn"); }
     @Override public void overridePendingTransition(IBinder t, String pkg, int enter, int exit, int bg) {}
