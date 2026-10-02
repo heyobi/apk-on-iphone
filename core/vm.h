@@ -29,6 +29,11 @@
  * or zero-fill when no userfaultfd watches it). Its R/W/X bits stay as they were. */
 #define AOI_PROT_MISSING 0x40
 
+/* mincore() bits that mean a host page exists: resident, or compressed/paged out
+ * (Darwin's MINCORE_PAGED_OUT 0x20), or touched/copied. Not 0x80: Darwin's
+ * MINCORE_ANONYMOUS is set for every page of anonymous memory, untouched too. */
+#define AOI_MINCORE_EXISTS 0x7f
+
 struct aoi_vm {
     uint8_t **chunk;                /* host memory per 2 MiB of guest space, or NULL */
     uint64_t size;                  /* bytes of guest address space */

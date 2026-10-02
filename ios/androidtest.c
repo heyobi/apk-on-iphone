@@ -191,6 +191,7 @@ static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
     long hp = sysconf(_SC_PAGESIZE);
     uint64_t nci = p->vm.size >> AOI_VM_CHUNK_SHIFT, ci, total = 0, anon = 0, mapped = 0, i;
     uint64_t nwin = (p->vm.size >> WIN_SHIFT) < (1 << 12) ? (p->vm.size >> WIN_SHIFT) : (1 << 12);
+    uint64_t bits[8] = { 0 };
     size_t o;
     int k;
     if (hp <= 0 || hp > (long)AOI_VM_CHUNK) { snprintf(out, outn, "?"); return; }
@@ -199,7 +200,11 @@ static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
         uint8_t *c = p->vm.chunk[ci];
         uint64_t n = 0, j;
         if (!c || mincore((void *)c, AOI_VM_CHUNK, (void *)vec)) continue;
-        for (j = 0; j < AOI_VM_CHUNK / (uint64_t)hp; j++) if (vec[j]) n++;
+        for (j = 0; j < AOI_VM_CHUNK / (uint64_t)hp; j++) {
+            int b;
+            if (vec[j] & AOI_MINCORE_EXISTS) n++;
+            for (b = 0; b < 8; b++) if (vec[j] >> b & 1) bits[b]++;
+        }
         total += n;
         if (!p->vm.filemap[ci]) anon += n;
         if ((ci << AOI_VM_CHUNK_SHIFT >> WIN_SHIFT) < nwin) win[ci << AOI_VM_CHUNK_SHIFT >> WIN_SHIFT] += (uint32_t)n;
@@ -222,6 +227,12 @@ static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
                               (unsigned long long)((uint64_t)win[best] * (uint64_t)hp >> 20), name);
         win[best] = 0;
     }
+    if (o < outn)                                   /* mincore's bits over all chunk pages, in MB */
+        snprintf(out + o, outn - o, " mincore bits 1/2/4/8/10/20/40/80: %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu MB",
+                 (unsigned long long)(bits[0] * (uint64_t)hp >> 20), (unsigned long long)(bits[1] * (uint64_t)hp >> 20),
+                 (unsigned long long)(bits[2] * (uint64_t)hp >> 20), (unsigned long long)(bits[3] * (uint64_t)hp >> 20),
+                 (unsigned long long)(bits[4] * (uint64_t)hp >> 20), (unsigned long long)(bits[5] * (uint64_t)hp >> 20),
+                 (unsigned long long)(bits[6] * (uint64_t)hp >> 20), (unsigned long long)(bits[7] * (uint64_t)hp >> 20));
 }
 
 /* While an app runs: its memory every 10 s (phys_footprint and what it is made of,

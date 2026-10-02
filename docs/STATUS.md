@@ -392,6 +392,17 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The snapshot's skip, made to work on iOS (app 0.28).** 0.27's lines settled it: a
+Qalculate resumed from its snapshot stays at ~405 MB, flat, while a fresh start jumps
+from 377 MB to 2.3 GB right when its first snapshot is saved, and closing an app (which
+saves one) took the footprint to 2.9 GB. And mincore() reported all 3.5 GB of the
+guest's chunks as present while the footprint was 377 MB: Darwin sets
+MINCORE_ANONYMOUS (0x80) on every page of anonymous memory, untouched ones too, so
+0.26's "skip pages mincore says do not exist" never skipped anything on the phone.
+The test is now vec & AOI_MINCORE_EXISTS (0x7f: resident, referenced, modified,
+paged out (compressed), copied), in the save and in the memory lines, which also give
+how much of the chunks carries each mincore bit, to check this on the phone.
+
 **Where the phone's memory goes (app 0.27).** 0.26 still showed a fresh Qalculate
 at 2.4 GB footprint (1.8 GB internal) where the host's RSS for the same run is 412 MB,
 and it stayed there: the snapshot's reads were not (all of) it. The memory lines now

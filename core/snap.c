@@ -130,7 +130,7 @@ static const char *save_memory(struct aoi_proc *p, FILE *f)
             uint8_t kind;
             uint32_t one = 1;
             if (!vm->prot[pg]) continue;
-            if (resident && !incore[k * PAGE / (uint64_t)hp]) continue;   /* never written: zero */
+            if (resident && !(incore[k * PAGE / (uint64_t)hp] & AOI_MINCORE_EXISTS)) continue;   /* never written: zero */
             if (mi) {                                        /* the same bytes as its file? */
                 struct aoi_proc_map *m = &p->maps[mi - 1];
                 uint64_t fo = m->off + (a - m->start);
