@@ -410,6 +410,10 @@ frames reach the screen in the right place. What it took:
 - "input" (aoi.InputService): the virtual keyboard device (-1, empty key map).
   KeyCharacterMap.load asks for it when a plain Activity's action bar prepares its
   menu; without it the app died (UnavailableException).
+- snapshots: aoi.Snapshot pauses every GLSurfaceView (onPause: its EGL context and
+  surface go) with HWUI's trim, and resumes them after; a process resumed from the
+  snapshot makes a new context and the renderer carries on (host: saved in 1.2 s,
+  resumed in 0.3 s, frames 480, 510, ... drawn on).
 Run: python3 tools/mktestapk.py glapp.apk, install it as DATA/app/apk/base.apk with
 the classpath and aoi.dex of an app data dir, aoiproc ... aoi.Main.
 

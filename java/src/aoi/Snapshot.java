@@ -14,6 +14,9 @@ import java.util.concurrent.TimeUnit;
  *  the background (WindowManagerGlobal.trimMemory(TRIM_MEMORY_COMPLETE): renderers
  *  destroyed, RenderThread's EGL context gone), and draw again afterwards: here, and
  *  in a process resumed from the snapshot, which carries on from the same place.
+ *  GLSurfaceViews (games) keep their own EGL context: they are paused around the
+ *  snapshot, as when their activity stops (onPause releases the context, onResume
+ *  makes a new one and the app's renderer gets onSurfaceCreated again).
  *  /dev/aoi_gpu_live fails with EBUSY while the host still holds something. */
 final class Snapshot {
     private static final int TRIM_MEMORY_COMPLETE = 80;
@@ -22,9 +25,12 @@ final class Snapshot {
 
     static void take() {
         boolean gpu = System.getenv("AOI_HWUI") != null;
+        final java.util.List<Object> gl = new java.util.ArrayList<Object>();
         if (gpu) {
             onMain(new Runnable() {
                 @Override public void run() {
+                    glViews(gl);
+                    for (Object v : gl) call(v, "onPause");
                     try {
                         Class<?> g = Class.forName("android.view.WindowManagerGlobal");
                         Object wmg = g.getMethod("getInstance").invoke(null);
@@ -45,8 +51,40 @@ final class Snapshot {
         if (gpu) {
             sleep(300);                                            /* taken at the next time slice */
             onMain(new Runnable() {
-                @Override public void run() { redraw(); }
+                @Override public void run() {
+                    for (Object v : gl) call(v, "onResume");
+                    redraw();
+                }
             });
+        }
+    }
+
+    /** Every GLSurfaceView in the app's windows. */
+    private static void glViews(java.util.List<Object> out) {
+        try {
+            Class<?> g = Class.forName("android.view.WindowManagerGlobal"), vg = Class.forName("android.view.ViewGroup"),
+                    gl = Class.forName("android.opengl.GLSurfaceView");
+            Object wmg = g.getMethod("getInstance").invoke(null);
+            java.lang.reflect.Field f = g.getDeclaredField("mViews");
+            f.setAccessible(true);
+            java.util.ArrayList<Object> todo = new java.util.ArrayList<Object>(((java.util.List<?>) f.get(wmg)));
+            while (!todo.isEmpty()) {
+                Object v = todo.remove(todo.size() - 1);
+                if (gl.isInstance(v)) out.add(v);
+                if (!vg.isInstance(v)) continue;
+                int n = (Integer) vg.getMethod("getChildCount").invoke(v);
+                for (int i = 0; i < n; i++) todo.add(vg.getMethod("getChildAt", int.class).invoke(v, i));
+            }
+        } catch (Exception e) {
+            System.out.println("aoi: snapshot: views " + e);
+        }
+    }
+
+    private static void call(Object o, String method) {
+        try {
+            o.getClass().getMethod(method).invoke(o);
+        } catch (Exception e) {
+            System.out.println("aoi: snapshot: " + method + " " + e);
         }
     }
 
