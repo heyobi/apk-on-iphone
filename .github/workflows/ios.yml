@@ -63,6 +63,13 @@ jobs:
           set -eu
           APP=build/Payload/ApkOnIphone.app
           mkdir -p "$APP"
+          # the newest Xcode on the runner: Liquid Glass (UIGlassEffect) needs the iOS 26 SDK
+          XC=""
+          for x in $(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -rV); do
+            if DEVELOPER_DIR="$x/Contents/Developer" xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then XC=$x; break; fi
+          done
+          if [ -n "$XC" ]; then export DEVELOPER_DIR="$XC/Contents/Developer"; fi
+          echo "Xcode: ${XC:-default}, iOS SDK $(xcrun --sdk iphoneos --show-sdk-version)"
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
             -O2 -g0 -Wall -fobjc-arc -std=gnu11 \

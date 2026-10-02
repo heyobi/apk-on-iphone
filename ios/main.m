@@ -6,7 +6,6 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-#import <objc/message.h>
 #include <sys/sysctl.h>
 
 #include "../core/apk.h"
@@ -22,16 +21,18 @@ static void home_cb(void *ctx);
 
 /* ---------- looks ---------- */
 
-/* iOS 26's Liquid Glass (UIGlassEffect, looked up at run time so an older SDK builds),
- * else a thin blur material. */
+/* iOS 26's Liquid Glass when this build has the iOS 26 SDK (built with an older one, iOS
+ * draws a glass effect as an opaque white fallback), else a thin blur material. */
 static UIVisualEffect *glass_effect(BOOL interactive) {
-    Class g = NSClassFromString(@"UIGlassEffect");
-    if (g && [g respondsToSelector:@selector(effectWithStyle:)]) {
-        id e = ((id (*)(id, SEL, NSInteger))objc_msgSend)(g, @selector(effectWithStyle:), 0);   /* regular */
-        if (interactive) { @try { [e setValue:@YES forKey:@"interactive"]; } @catch (NSException *x) {} }
-        if (e) return e;
+#if defined(__IPHONE_26_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_26_0
+    if (@available(iOS 26.0, *)) {
+        UIGlassEffect *e = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+        e.interactive = interactive;
+        return e;
     }
-    return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
+#endif
+    (void)interactive;
+    return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark];
 }
 
 static UIVisualEffectView *glass_view(CGFloat radius, BOOL interactive) {
