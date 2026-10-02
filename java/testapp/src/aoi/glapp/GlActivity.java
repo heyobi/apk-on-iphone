@@ -17,6 +17,7 @@ public final class GlActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        System.out.println("glapp: external files " + getExternalFilesDir(null));   /* libGDX asks at start */
         view = new GLSurfaceView(this);
         view.setEGLContextClientVersion(2);
         view.setRenderer(new GLSurfaceView.Renderer() {

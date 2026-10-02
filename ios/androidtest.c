@@ -480,6 +480,9 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     memory_mb(&now, &peak);
     say(log, ctx, "%s: memory %.0f MB now, %.0f MB peak", what, now, peak);
     if (p->log) fclose(p->log);
+#ifdef AOI_GPU
+    aoi_gpu_end();                      /* the next app must not see this one's contexts or strings */
+#endif
     aoi_proc_free(p);
     free(p);
     return rc;

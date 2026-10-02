@@ -392,6 +392,17 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The GPU crash found (app 0.42).** 0.41's backtrace placed it: libEGL (copying the
+GL extension string, called from HWUI's setup) read guest address 0x559e42000, the
+string the host had copied into the *previous* app's memory. On the phone the
+host's GL state lives across app launches, and aoi_gpu_end (which forgets the cached
+strings, contexts and surfaces) was called after aoi_android_run_env's processes but
+not after run_guest's, the apps': so the second app with the GPU in a session crashed
+(context ids 2, 3 in the logs gave it away), the first worked. Now run_guest ends
+with it too. Also "mount" (aoi.StorageService): an empty volume list, so
+Context.getExternalFilesDir is null instead of a NullPointerException (cube.run,
+libGDX's DefaultAndroidFiles, got this far: libgdx.so loaded, EGL up).
+
 **The iPhone's keyboard in apps (app 0.41; host-tested, the iOS side not yet run).**
 aoi.InputMethodManager is now the input method: a focused window's editor starts
 input there (startInputOrWindowGainedFocus: its EditorInfo and the app's own
