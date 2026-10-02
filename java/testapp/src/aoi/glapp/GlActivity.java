@@ -20,6 +20,7 @@ public final class GlActivity extends Activity {
         System.out.println("glapp: external files " + getExternalFilesDir(null));   /* libGDX asks at start */
         view = new GLSurfaceView(this);
         view.setEGLContextClientVersion(2);
+        view.setPreserveEGLContextOnPause(true);                   /* as libGDX does */
         view.setRenderer(new GLSurfaceView.Renderer() {
             private int w, h, frame;
 

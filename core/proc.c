@@ -1107,6 +1107,31 @@ const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t 
     return buf;
 }
 
+/* Every live thread to the app's log: state, the futex it waits on, pc, lr and the
+ * frame-pointer chain (a hang: who waits for whom). */
+static void log_threads(struct aoi_proc *p)
+{
+    static const char *st[] = { "free", "run", "futex", "sleep" };
+    char w[256], w2[256];
+    int i, k;
+    if (!p->log) return;
+    for (i = 0; i < AOI_PROC_THREADS; i++) {
+        struct aoi_thread *t = &p->th[i];
+        struct aoi_cpu *c = i == p->cur ? &p->cpu : &t->cpu;
+        uint64_t fp = c->x[29], fr[2];
+        if (t->state == AOI_T_FREE) continue;
+        fprintf(p->log, "I/aoi: thread %d %s%s futex %#llx: pc %s, lr %s\n", t->tid, st[t->state & 3],
+                i == p->cur ? " (current)" : "", (unsigned long long)t->futex_addr,
+                aoi_proc_where(p, c->pc, w, sizeof w), aoi_proc_where(p, c->x[30], w2, sizeof w2));
+        for (k = 0; k < 16 && fp && aoi_vm_read(&p->vm, fp & 0x00ffffffffffffffULL, fr, 16, 0); k++) {
+            fprintf(p->log, "I/aoi:   #%d %s\n", k, aoi_proc_where(p, fr[1], w2, sizeof w2));
+            if (fr[0] <= fp) break;
+            fp = fr[0];
+        }
+    }
+    fflush(p->log);
+}
+
 /* ---------- /proc: generated when opened ---------- */
 
 /* Writes the content of a synthetic /proc file into a fresh host temp file and
@@ -1530,6 +1555,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         } else if (!strcmp(g, "/dev/aoi_snapshot_wanted")) {       /* aoi.Snapshot: EBUSY if the host takes one */
             r = err(p->snap_path[0] ? L_EBUSY : L_ENOENT);
+            break;
+        } else if (!strcmp(g, "/dev/aoi_threads")) {               /* aoi.Snapshot, when stuck: where each thread is */
+            log_threads(p);
+            r = err(L_ENOENT);
             break;
         } else if (!strcmp(g, "/dev/aoi_gpu_live")) {              /* aoi.Snapshot: EBUSY while it has GL state */
             r = err(p->gpu_live ? L_EBUSY : L_ENOENT);

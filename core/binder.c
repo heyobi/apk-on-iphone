@@ -72,6 +72,8 @@ struct aoi_binder {
     int nsvc;
     struct native nat[NATIVES];     /* handle h is nat[h]; 0 is servicemanager */
     int nnat;
+    uint32_t pn;                    /* the process's work: host calls (BR_TRANSACTION + its data) */
+    uint8_t pq[64 * 68];            /* waiting for a looper that waits for work */
 };
 
 static struct aoi_binder *state(struct aoi_proc *p)
@@ -224,8 +226,12 @@ static void reply(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, s
 }
 
 /* A one-way call from the host to a local object of the guest (ptr, cookie as its
- * flat_binder_object gave them): queued as BR_TRANSACTION for a looper thread, which
- * picks it up when its read runs again. 0, or -1 if no looper or no buffer. */
+ * flat_binder_object gave them): queued as BR_TRANSACTION in the process's work,
+ * which a looper thread takes when it reads with nothing of its own (write_read).
+ * As in the kernel, never a thread inside a call of its own: one waiting for
+ * SurfaceFlinger's reply while holding libgui's BufferCache lock would run
+ * onReleaseBuffer nested, wanting BLASTBufferQueue's lock, held by RenderThread
+ * waiting for the BufferCache lock (a deadlock). 0, or -1 if no looper or no room. */
 int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t code, const struct aoi_parcel *data)
 {
     struct aoi_binder *b = p->binder;
@@ -235,8 +241,8 @@ int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t 
     int i;
     if (!b || !b->buf || !ptr) return -1;
     for (i = 0; i < AOI_PROC_THREADS; i++)
-        if (b->th[i].tid && b->th[i].looper && b->th[i].n + 4 + 64 <= sizeof b->th[i].q) { t = &b->th[i]; break; }
-    if (!t) return -1;
+        if (b->th[i].tid && b->th[i].looper) { t = &b->th[i]; break; }
+    if (!t || b->pn + 4 + 64 > sizeof b->pq) return -1;
     dn = (data->n + 7) & ~7u; on = 8u * (uint32_t)data->nobj;
     if (b->next + dn + on + 8 > b->buflen) b->next = 0;
     at = b->buf + b->next;
@@ -248,9 +254,11 @@ int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t 
     tr[2] = code | (uint64_t)TF_ONE_WAY << 32;                 /* code, flags */
     tr[4] = data->n; tr[5] = on;
     tr[6] = at; tr[7] = at + dn;
-    push32(t, BR_TRANSACTION);
-    push(t, tr, sizeof tr);
-    if (p->trace) fprintf(p->trace, "[binder] host call %u to %#llx for tid %d\n", code, (unsigned long long)ptr, t->tid);
+    dn = BR_TRANSACTION;
+    memcpy(b->pq + b->pn, &dn, 4);
+    memcpy(b->pq + b->pn + 4, tr, sizeof tr);
+    b->pn += 4 + sizeof tr;
+    if (p->trace) fprintf(p->trace, "[binder] host call %u to %#llx queued\n", code, (unsigned long long)ptr);
     return 0;
 }
 
@@ -312,6 +320,11 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
     }
 
     if (bwr[3] > bwr[4]) {
+        if (!t->n && t->looper && b->pn) {                     /* free for the process's work */
+            push(t, b->pq, 4 + 64);
+            memmove(b->pq, b->pq + 4 + 64, b->pn - 4 - 64);
+            b->pn -= 4 + 64;
+        }
         if (!t->n) {
             if (!gwrite(p, arg, bwr, sizeof bwr)) return (uint64_t)-EFAULT_;
             *block = 1;                                        /* nothing to read: wait */

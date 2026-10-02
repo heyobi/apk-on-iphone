@@ -392,6 +392,30 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**A game on the phone's GPU, and its snapshot (app 0.43).** 0.42 on the iPhone:
+cube.run (libGDX) runs on ANGLE over Metal ("OGL renderer: ANGLE ... Apple A18 Pro
+GPU"), thousands of frames, playable; Qalculate's HWUI on the GPU reads back a frame
+in ~3.5 ms. The game's snapshot was refused ("the GPU still holds state"), for two
+reasons:
+- libGDX keeps its EGL context on pause (setPreserveEGLContextOnPause), so
+  aoi.Snapshot now turns that off for its own onPause and back on after onResume.
+- A deadlock in core/binder.c, found with a new /dev/aoi_threads (every guest
+  thread's state, futex and frame-pointer backtrace to the log; aoi.Snapshot opens
+  it when the GPU will not let go). Host one-way calls (SurfaceFlinger's
+  onReleaseBuffer) went straight into a looper thread's own queue. A binder thread
+  calling SurfaceFlinger synchronously (uncache a buffer, holding libgui's
+  BufferCache lock) read it nested while waiting for its reply, and wanted
+  BLASTBufferQueue's lock. RenderThread held that lock, disconnecting the window's
+  surface in trimMemory, and waited for the BufferCache lock. Now, as in the
+  kernel, they wait in a process queue, and a looper takes one only when it reads
+  with nothing of its own.
+The test app (tools/mktestapk.py) keeps its context on pause as libGDX does: 6 of 6
+snapshots saved (GPU free ~56 ms after the trim, was ~1 in 2 hung), and the resumed
+process carries on drawing from the frame it was at. Left from the 0.42 logs: no
+sound in cube.run (SoundPool wants the native media.extractor), Kiwi stops at
+"Illegal meta data value: the child service doesn't exist" (Chromium's child-process
+services), WhatsApp faults in libart (0x480000008).
+
 **The GPU crash found (app 0.42).** 0.41's backtrace placed it: libEGL (copying the
 GL extension string, called from HWUI's setup) read guest address 0x559e42000, the
 string the host had copied into the *previous* app's memory. On the phone the

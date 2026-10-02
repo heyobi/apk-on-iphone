@@ -11,6 +11,7 @@ public class GLSurfaceView extends android.view.SurfaceView {
     public void setEGLContextClientVersion(int v) {}
     public void setRenderer(Renderer r) {}
     public void setRenderMode(int m) {}
+    public void setPreserveEGLContextOnPause(boolean p) {}
     public void onPause() {}
     public void onResume() {}
 }

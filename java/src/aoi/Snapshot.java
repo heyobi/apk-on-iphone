@@ -16,7 +16,8 @@ import java.util.concurrent.TimeUnit;
  *  in a process resumed from the snapshot, which carries on from the same place.
  *  GLSurfaceViews (games) keep their own EGL context: they are paused around the
  *  snapshot, as when their activity stops (onPause releases the context, onResume
- *  makes a new one and the app's renderer gets onSurfaceCreated again).
+ *  makes a new one and the app's renderer gets onSurfaceCreated again; one that
+ *  asked to keep its context on pause, libGDX, is told not to for that pause).
  *  /dev/aoi_gpu_live fails with EBUSY while the host still holds something. */
 final class Snapshot {
     private static final int TRIM_MEMORY_COMPLETE = 80;
@@ -31,18 +32,20 @@ final class Snapshot {
             onMain(new Runnable() {
                 @Override public void run() {
                     glViews(gl);
-                    for (Object v : gl) call(v, "onPause");
-                    try {
-                        Class<?> g = Class.forName("android.view.WindowManagerGlobal");
-                        Object wmg = g.getMethod("getInstance").invoke(null);
-                        g.getMethod("trimMemory", int.class).invoke(wmg, TRIM_MEMORY_COMPLETE);
-                    } catch (Exception e) {
-                        System.out.println("aoi: snapshot: trimMemory " + e);
+                    for (Object v : gl) {                          /* libGDX keeps its context on pause: not here */
+                        preserve(v, false);
+                        call(v, "onPause");
                     }
+                    trim();
                 }
             });
-            for (int i = 0; i < 100 && gpuLive(); i++) sleep(50);
-            if (gpuLive()) System.out.println("aoi: snapshot: the GPU still holds state");
+            long t0 = System.currentTimeMillis();
+            for (int i = 0; i < 200 && gpuLive(); i++) sleep(50);  /* RenderThread lets go in its own time */
+            if (gpuLive()) {
+                System.out.println("aoi: snapshot: the GPU still holds state");
+                busy("/dev/aoi_threads");                          /* where everyone is, to the log */
+            }
+            else System.out.println("aoi: snapshot: GPU free after " + (System.currentTimeMillis() - t0) + " ms");
         }
         try {
             new FileInputStream("/dev/aoi_snapshot").close();
@@ -53,10 +56,23 @@ final class Snapshot {
             sleep(300);                                            /* taken at the next time slice */
             onMain(new Runnable() {
                 @Override public void run() {
-                    for (Object v : gl) call(v, "onResume");
+                    for (Object v : gl) {
+                        call(v, "onResume");
+                        preserve(v, true);
+                    }
                     redraw();
                 }
             });
+        }
+    }
+
+    private static void trim() {
+        try {
+            Class<?> g = Class.forName("android.view.WindowManagerGlobal");
+            Object wmg = g.getMethod("getInstance").invoke(null);
+            g.getMethod("trimMemory", int.class).invoke(wmg, TRIM_MEMORY_COMPLETE);
+        } catch (Exception e) {
+            System.out.println("aoi: snapshot: trimMemory " + e);
         }
     }
 
@@ -78,6 +94,27 @@ final class Snapshot {
             }
         } catch (Exception e) {
             System.out.println("aoi: snapshot: views " + e);
+        }
+    }
+
+    /** GLSurfaceView.setPreserveEGLContextOnPause: off around the snapshot (the context
+     *  must go), back on after if the app had it on (remembered in `kept`). */
+    private static final java.util.Set<Object> kept = java.util.Collections.newSetFromMap(
+            new java.util.IdentityHashMap<Object, Boolean>());
+
+    private static void preserve(Object v, boolean restore) {
+        try {
+            Class<?> g = Class.forName("android.opengl.GLSurfaceView");
+            if (!restore) {
+                if ((Boolean) g.getMethod("getPreserveEGLContextOnPause").invoke(v)) {
+                    kept.add(v);
+                    g.getMethod("setPreserveEGLContextOnPause", boolean.class).invoke(v, false);
+                }
+            } else if (kept.remove(v)) {
+                g.getMethod("setPreserveEGLContextOnPause", boolean.class).invoke(v, true);
+            }
+        } catch (Exception e) {
+            System.out.println("aoi: snapshot: preserve " + e);
         }
     }
 
