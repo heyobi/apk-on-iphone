@@ -395,7 +395,9 @@ NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0
 **The GPU on the phone: ANGLE on Metal (app 0.37, not yet run on the phone).** The
 iOS build links gpu/host.c with ANGLE's static libraries (Godot's godot-angle-static
 release for iOS arm64, chromium/7578, BSD-3 + MIT; licence texts in the app's
-licenses/) and the Khronos headers, pinned in .github/workflows/ios.yml; the guest's
+licenses/) and the Khronos headers, pinned in .github/workflows/ios.yml (gpu/angle_ios.cpp
+adds what those libraries leave out on iOS: two system_utils functions and a stand-in
+for the astc-encoder API); the guest's
 driver libGLES_aoi.so goes into the bundle's /vendor/lib64/egl. gpu/host.c asks ANGLE
 for its Metal display (EGL_PLATFORM_ANGLE_ANGLE). If it comes up, ios/androidtest.c
 gives apps the GPU (p->gpu, aoi_hle_gpu, AOI_HWUI=1): HWUI draws with GLES on Metal and

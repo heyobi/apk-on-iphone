@@ -790,11 +790,11 @@ static int egl_init(struct aoi_proc *p)
 #ifdef __APPLE__
     if (gpd) {
         static const EGLint metal[] = { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE };
-        dpy = gpd(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, metal);
+        dpy = gpd(EGL_PLATFORM_ANGLE_ANGLE, NULL, metal);
     }
 #endif
 #ifdef EGL_PLATFORM_SURFACELESS_MESA
-    if (gpd && dpy == EGL_NO_DISPLAY) dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    if (gpd && dpy == EGL_NO_DISPLAY) dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL);
 #endif
     (void)gpd;
     if (dpy == EGL_NO_DISPLAY) dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);

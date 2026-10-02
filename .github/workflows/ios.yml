@@ -104,13 +104,15 @@ jobs:
           if [ -n "$XC" ]; then export DEVELOPER_DIR="$XC/Contents/Developer"; fi
           echo "Xcode: ${XC:-default}, iOS SDK $(xcrun --sdk iphoneos --show-sdk-version)"
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 -std=c++17 -O2 -Wall \
+            -c gpu/angle_ios.cpp -o build/angle_ios.o
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
             -O2 -g0 -Wall -fobjc-arc -std=gnu11 \
             -o "$APP/ApkOnIphone" \
             ios/main.m ios/gmptest.c ios/vmprobe.c ios/androidtest.c \
             core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
             core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c core/snap.c core/hle.c \
-            -DAOI_GPU -Iangle-ios/include gpu/host.c angle-ios/lib/libEGL.a angle-ios/lib/libGLES.a angle-ios/lib/libANGLE.a \
+            -DAOI_GPU -Iangle-ios/include gpu/host.c build/angle_ios.o angle-ios/lib/libEGL.a angle-ios/lib/libGLES.a angle-ios/lib/libANGLE.a \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics \
             -framework Metal -framework IOSurface -framework OpenGLES -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
