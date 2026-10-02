@@ -392,6 +392,17 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Qalculate on the phone's GPU (app 0.38).** With 0.38 Qalculate ran on ANGLE/Metal
+from start to finish: HWUI's EGL setup, Skia's first GL calls, frames drawn and read
+back (804x1556: 9.5 ms for the first frame, then 3.6-3.7 ms on average per frame,
+3.3 ms with popups), the snapshot taken after the GL state was dropped (destroy
+surface/context, saved in 0.67 s) and HWUI coming back afterwards, popups and the
+text toolbar (their own window surfaces), back to the launcher. 0.37's crash
+(SIGSEGV at 0x53b626008, libc copy from libc++) did not come back; the 0.38 run has
+the logging to place it if it does. For games: libstdc++.so (libgdx needs it: cube.run
+stopped there), libOpenSLES.so and libaaudio.so with their dependencies are in the
+bundle (0.39).
+
 **The GPU on the phone, first try (app 0.37 -> 0.38).** On the iPhone, Qalculate,
 WhatsApp's EULA and Kiwi all got as far as HWUI's EGL setup on ANGLE (configs chosen;
 ANGLE has no 1010102 config, a warning) and then died the same way: SIGSEGV at

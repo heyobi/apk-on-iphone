@@ -1352,3 +1352,9 @@
 /system/product/overlay/treble-overlay-xiaomi-redmis2.apk
 /system/system_ext/overlay/config/config.xml
 /system/system_ext/overlay/gsi_overlay_systemui.apk
+/system/lib64/libaaudio.so
+/system/lib64/libaaudio_internal.so
+/system/lib64/com.android.media.aaudio-aconfig-cc.so
+/system/lib64/aaudio-aidl-cpp.so
+/system/lib64/libOpenSLES.so
+/system/lib64/libstdc++.so
