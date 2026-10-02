@@ -16,8 +16,8 @@ import java.util.concurrent.TimeUnit;
  *  in a process resumed from the snapshot, which carries on from the same place.
  *  GLSurfaceViews (games) keep their own EGL context: they are paused around the
  *  snapshot, as when their activity stops (onPause releases the context, onResume
- *  makes a new one and the app's renderer gets onSurfaceCreated again; one that
- *  asked to keep its context on pause, libGDX, is told not to for that pause).
+ *  makes a new one and the app's renderer gets onSurfaceCreated again). One that
+ *  asks to keep its context on pause (libGDX) is not snapshotted at all.
  *  The host takes the snapshot the moment its last context or surface goes
  *  (/dev/aoi_snapshot_gpu_free), so a window drawing again just after (the user
  *  tapping) cannot get in between. */
@@ -31,15 +31,23 @@ final class Snapshot {
         boolean gpu = System.getenv("AOI_HWUI") != null;
         final java.util.List<Object> gl = new java.util.ArrayList<Object>();
         if (gpu) {
+            final boolean[] keeps = { false };
+            onMain(new Runnable() {
+                @Override public void run() {
+                    glViews(gl);
+                    for (Object v : gl) keeps[0] |= preserves(v);
+                }
+            });
+            if (keeps[0]) {                                        /* libGDX: its unmanaged meshes would be lost */
+                System.out.println("aoi: snapshot: skipped, a GLSurfaceView keeps its EGL context");
+                busy("/dev/aoi_snapshot_skip");                    /* the host stops waiting; a fresh start next time */
+                return;
+            }
             long t0 = System.currentTimeMillis();                  /* the host saves it the moment the last */
             busy("/dev/aoi_snapshot_gpu_free");                    /* context goes: a window drawing again */
             onMain(new Runnable() {                                /* (a tap) can't slip in between */
                 @Override public void run() {
-                    glViews(gl);
-                    for (Object v : gl) {                          /* libGDX keeps its context on pause: not here */
-                        preserve(v, false);
-                        call(v, "onPause");
-                    }
+                    for (Object v : gl) call(v, "onPause");
                     trim();
                 }
             });
@@ -61,10 +69,7 @@ final class Snapshot {
         if (gpu) {
             onMain(new Runnable() {
                 @Override public void run() {
-                    for (Object v : gl) {
-                        call(v, "onResume");
-                        preserve(v, true);
-                    }
+                    for (Object v : gl) call(v, "onResume");
                     redraw();
                 }
             });
@@ -102,24 +107,15 @@ final class Snapshot {
         }
     }
 
-    /** GLSurfaceView.setPreserveEGLContextOnPause: off around the snapshot (the context
-     *  must go), back on after if the app had it on (remembered in `kept`). */
-    private static final java.util.Set<Object> kept = java.util.Collections.newSetFromMap(
-            new java.util.IdentityHashMap<Object, Boolean>());
-
-    private static void preserve(Object v, boolean restore) {
+    /** GLSurfaceView.getPreserveEGLContextOnPause: such a view (libGDX) counts on its
+     *  context outliving a pause and rebuilds only its "managed" meshes and textures
+     *  after a loss; taking the context away for a snapshot left the rest pointing at
+     *  nothing (cube.run's geometry in spikes, 0.43-0.45). */
+    private static boolean preserves(Object v) {
         try {
-            Class<?> g = Class.forName("android.opengl.GLSurfaceView");
-            if (!restore) {
-                if ((Boolean) g.getMethod("getPreserveEGLContextOnPause").invoke(v)) {
-                    kept.add(v);
-                    g.getMethod("setPreserveEGLContextOnPause", boolean.class).invoke(v, false);
-                }
-            } else if (kept.remove(v)) {
-                g.getMethod("setPreserveEGLContextOnPause", boolean.class).invoke(v, true);
-            }
+            return (Boolean) Class.forName("android.opengl.GLSurfaceView").getMethod("getPreserveEGLContextOnPause").invoke(v);
         } catch (Exception e) {
-            System.out.println("aoi: snapshot: preserve " + e);
+            return false;
         }
     }
 

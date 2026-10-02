@@ -1571,6 +1571,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         } else if (!strcmp(g, "/dev/aoi_snapshot_pending")) {      /* aoi.Snapshot: EBUSY until it is taken */
             r = err(p->snap_gpu_free || p->snap_request ? L_EBUSY : L_ENOENT);
             break;
+        } else if (!strcmp(g, "/dev/aoi_snapshot_skip")) {         /* aoi.Snapshot: this app is not saved */
+            p->snap_gpu_free = 0; p->snap_request = 0; p->snap_path[0] = 0;
+            r = err(L_ENOENT);
+            break;
         } else if (!strcmp(g, "/dev/aoi_snapshot_cancel")) {       /* aoi.Snapshot: gave up waiting */
             p->snap_gpu_free = 0;
             r = err(L_ENOENT);

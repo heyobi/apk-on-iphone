@@ -68,7 +68,7 @@ struct native { aoi_native_fn fn; void *self; const char *iface; };
 struct aoi_binder {
     uint64_t buf, buflen, next;     /* the guest's receive mapping, bump allocator in it */
     struct bthread th[AOI_PROC_THREADS];
-    struct service svc[128];
+    struct service svc[512];        /* ~210 are aoi.Services stand-ins: 128 silently dropped the last */
     int nsvc;
     struct native nat[NATIVES];     /* handle h is nat[h]; 0 is servicemanager */
     int nnat;
@@ -160,6 +160,7 @@ static void servicemanager(struct aoi_proc *p, struct aoi_binder *b, uint32_t co
     if (code == 3 && obj0 >= 0 && obj0 + 28 <= (int64_t)r->n) { /* addService(name, binder, ...) */
         const uint8_t *o = r->d + obj0;
         if (!sv && b->nsvc < (int)(sizeof b->svc / sizeof b->svc[0])) sv = &b->svc[b->nsvc++];
+        if (!sv && p->log) fprintf(p->log, "I/aoi: servicemanager full: \"%s\" not registered\n", name);
         if (sv) {
             snprintf(sv->name, sizeof sv->name, "%s", name);
             memcpy(&sv->type, o, 4); memcpy(&sv->flags, o + 4, 4);

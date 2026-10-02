@@ -140,6 +140,12 @@ def main():
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)
+    # A release ("user") build, as on a phone: the GSI says userdebug and debuggable,
+    # and apps such as WhatsApp then warn of a custom ROM.
+    for k in list(props):
+        if b"fingerprint" in k or k.endswith(b".description") or k.endswith(b"display.id") or k.endswith(b".flavor"):
+            props[k] = props[k].replace(b"userdebug", b"user").replace(b"test-keys", b"release-keys")
+    props.update({b"ro.build.type": b"user", b"ro.debuggable": b"0", b"ro.build.tags": b"release-keys"})
     for kv in sys.argv[2:]:
         k, v = kv.encode().split(b"=", 1)
         props[k] = v

@@ -392,6 +392,25 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
+the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
+three things in its way, two fixed here:
+- Its worker died on ShortcutManager == null, and Kiwi logged "No service published"
+  for power and uimode: core/binder.c's servicemanager held 128 services and silently
+  dropped the rest of aoi.Services' ~205 stand-ins. Now 512, and a full table is logged.
+- "You have a custom ROM installed": tools/mkprops.py now sets a release build's
+  identity over the GSI's (ro.build.type=user, ro.debuggable=0, release-keys, "user"
+  in the fingerprint, description and display id).
+- "An internet connection is required": open. There are no AF_INET sockets yet
+  (core/proc.c serves AF_UNIX only), no DNS (bionic asks netd's
+  /dev/socket/dnsproxyd) and the "connectivity" stand-in reports no network.
+Also "power" is aoi.PowerService now: isInteractive is true (the stand-in said the
+screen was off).
+cube.run drew spiky geometry after its first snapshot: 0.43 made a GLSurfaceView
+that keeps its EGL context on pause (libGDX) drop it for the snapshot, and libGDX
+rebuilds only its "managed" meshes after a loss. Such an app is now not snapshotted
+at all (/dev/aoi_snapshot_skip: the host stops waiting, the next launch is fresh).
+
 **A fault no longer moves the base register: ART's CMC crashes (app 0.45).**
 WhatsApp (at start) and cube.run (after long play) faulted in libart's
 Class::FindInstanceField / FindStaticField, called from nterp's field resolution
