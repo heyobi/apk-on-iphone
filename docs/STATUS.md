@@ -392,6 +392,24 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**A fault no longer moves the base register: ART's CMC crashes (app 0.45).**
+WhatsApp (at start) and cube.run (after long play) faulted in libart's
+Class::FindInstanceField / FindStaticField, called from nterp's field resolution
+(the symbols come from libart's .gnu_debugdata). The class came out of a DexCache's
+resolved-types array, and its field array pointed at the last 4 bytes of a 1 GiB
+linear-alloc pool. Reproduced on the host with a stress dex (scratch, not committed):
+8 threads loading 1,500-class dex files through PathClassLoaders while the main
+thread runs Runtime.gc(). Under CMC it failed within ~1.5 G instructions, with a
+VerifyError naming the wrong class for a field, then the same SIGSEGV; under CC it
+passed. The cause: pre/post-indexed loads and stores (ldr/str, ldp/stp, their SIMD
+forms) wrote the new base register even when the access faulted. CMC moves pages
+away (MREMAP_DONTUNMAP), a touch raises SIGBUS, ART maps the page and the
+instruction runs again: from a base already moved, so `ldr w8, [x0], #4` walking a
+field array read the wrong words. Now the writeback happens only after the access
+succeeds (the SIMD multi-structure forms already did this). tests/signals.c step 16
+checks it (fails before the fix). The stress now passes under CMC: 15.8 G
+instructions, ~200 MB of host chunks instead of 3.4 GB. difftest WRONG 0.
+
 **Snapshots while the user taps (app 0.44).** 0.43 on the phone: cube.run's
 snapshot is saved now (the GPU free 5 and 58 ms after the trim). Qalculate's was
 refused once, and the thread dump showed no deadlock: the user was tapping, so HWUI

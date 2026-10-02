@@ -395,7 +395,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (opc == 3) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
             if (load) { vld(c, rt, a, bytes); vld(c, rt2, a + bytes, bytes); }
             else { vst(c, rt, a, bytes); vst(c, rt2, a + bytes, bytes); }
-            if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
+            if ((mode == 1 || mode == 3) && c->stop == AOI_RUN) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         } else if ((insn & 0x3f000000u) == 0x3d000000u) { BODY(28)          /* ldr/str b..q [Xn, #uimm] */
             int size = insn >> 30, opc = (insn >> 22) & 3, rn = (insn >> 5) & 31, rt = insn & 31;
             int bytes = (opc & 2) ? 16 : 1 << size;
@@ -408,7 +408,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             uint64_t base = (rn == 31) ? c->sp : c->x[rn], a = (mode == 1) ? base : base + off;
             if (mode == 2) { c->stop = AOI_STOP_UNDEF; c->fault_insn = insn; break; }
             if (opc & 1) vld(c, rt, a, bytes); else vst(c, rt, a, bytes);
-            if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
+            if ((mode == 1 || mode == 3) && c->stop == AOI_RUN) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         } else if ((insn & 0x3f200c00u) == 0x3c200800u) { BODY(30)          /* ldr/str b..q [Xn, Xm{,ext}] */
             int size = insn >> 30, opc = (insn >> 22) & 3, rm = (insn >> 16) & 31;
             int option = (insn >> 13) & 7, S = (insn >> 12) & 1, rn = (insn >> 5) & 31, rt = insn & 31;
@@ -513,7 +513,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             if (opc == 0) wr(c, a, X(c, rt), bytes);
             else if (size == 3 && opc == 2) { /* prfum: no-op */ }
             else ild(c, rt, a, bytes, opc);
-            if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
+            if ((mode == 1 || mode == 3) && c->stop == AOI_RUN) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         /* ---- load/store pair ---- */
         } else if ((insn & 0x3a000000u) == 0x28000000u && ((insn >> 26) & 1) == 0) { BODY(37) /* stp/ldp */
             int is64 = (insn >> 31) & 1, load = (insn >> 22) & 1, mode = (insn >> 23) & 3;
@@ -527,7 +527,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                         if (sw) { v1 = sextn(v1, 32); v2 = sextn(v2, 32); }
                         if (c->stop == AOI_RUN) { setX(c, rt, v1); setX(c, rt2, v2); } }
             else { wr(c, a, X(c, rt), bytes); wr(c, a + bytes, X(c, rt2), bytes); }
-            if (mode == 1 || mode == 3) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
+            if ((mode == 1 || mode == 3) && c->stop == AOI_RUN) { uint64_t nb = base + off; if (rn == 31) c->sp = nb; else c->x[rn] = nb; }
         /* ---- conditional select (csel/csinc/csinv/csneg, incl cset/csetm) ---- */
         } else if ((insn & 0x1fe00000u) == 0x1a800000u) { BODY(38)
             int is64 = insn >> 31, op = (insn >> 30) & 1, o2 = (insn >> 10) & 3;
