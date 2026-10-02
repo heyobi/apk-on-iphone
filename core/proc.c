@@ -8,6 +8,7 @@
 #include "proc.h"
 #include "binder.h"
 #include "hle.h"
+#include "gpu.h"
 #include "gralloc.h"
 
 #include <dirent.h>
@@ -2264,6 +2265,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case AOI_SYS_GRALLOC:                                          /* guest/mapper.c: buffer references */
         r = aoi_gralloc_syscall(p, a0, a1);
+        break;
+    case AOI_SYS_GL:                                               /* guest/gles.c: OpenGL ES (core/gpu.h) */
+        r = p->gpu ? p->gpu(p->gpu_ctx, p, a0, a1) : err(L_ENOSYS);
         break;
     case NR_getrandom: {
         int u = open("/dev/urandom", O_RDONLY | O_CLOEXEC);

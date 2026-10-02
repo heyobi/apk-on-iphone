@@ -11,6 +11,9 @@
  * memory at the end; build/aoiproc-debug adds AOI_WATCH and AOI_PCRING (core/cpu.c). */
 #include "../core/binder.h"
 #include "../core/proc.h"
+#ifdef AOI_GPU
+#include "../gpu/host.h"
+#endif
 #ifdef AOI_ORACLE
 #include "../core/oracle.h"
 #endif
@@ -194,6 +197,9 @@ int main(int argc, char **argv)
     proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
     if (getenv("AOI_TAPS")) { proc.frame = first_frame; proc.frame_ctx = &proc; }
     if (getenv("AOI_CLIP")) { snprintf(clipbuf, sizeof clipbuf, "%s", getenv("AOI_CLIP")); proc.clip = clip; }
+#ifdef AOI_GPU
+    proc.gpu = aoi_gpu_call;                         /* the guest's OpenGL ES on the host's EGL/GLES */
+#endif
     if (getenv("AOI_SNAPSHOT_LOAD")) aoi_sf_redraw(&proc);      /* the frame it was showing: taps start */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     st = aoi_proc_run(&proc, getenv("AOI_STOP_AT") ? strtoull(getenv("AOI_STOP_AT"), NULL, 0) : 0);

@@ -70,6 +70,12 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "SoundPool (libsoundpool, audio service)" "soundpool: built and released" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.SoundPoolTest
+    # OpenGL ES: Android's libEGL -> our driver (/vendor/lib64/egl/libGLES_aoi.so) -> the host's GPU.
+    if [ -f "$R/vendor/lib64/egl/libGLES_aoi.so" ] && nm "$P" 2>/dev/null | grep -q aoi_gpu_call; then
+        # shellcheck disable=SC2086
+        check "OpenGL ES (libEGL, libGLES_aoi, host GPU)" "gles: red triangle on blue, both ways" $ENV $SCP \
+            -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.GlesTest
+    else echo "SKIP android: OpenGL ES (no host EGL/GLES or driver)"; fi
 else echo "SKIP android: in-process services (no javac)"; fi
 unset AOI_UFFD
 exit $fail

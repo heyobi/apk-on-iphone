@@ -17,7 +17,7 @@ build/test_scan: tests/test_scan.c $(CORE) core/*.h | build
 build/fixture.elf: tests/fixture.S | build
 	$(AARCH64) -o $@ $<
 
-test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf build/pipes.elf
+test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf build/pipes.elf build/libGLES_aoi.so
 	./build/test_vm
 	./build/test_scan build/fixture.elf
 	./build/apkscan build/fixture.elf
@@ -78,14 +78,20 @@ difftest: build/libstep1.so
 	$(PYTHON) tests/difftest.py 5000
 
 # Android programs with Android's own linker64 (needs a root from tools/android-root.sh).
-build/aoiproc: tools/aoiproc.c $(CORE) core/*.h | build
-	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) -lm -lpthread
+# With the host's EGL and GLES (pkg-config egl glesv2: Mesa) the guest gets OpenGL ES
+# (gpu/host.c, guest/gles.c); without them AOI_SYS_GL is ENOSYS.
+GPU ?= $(shell pkg-config --exists egl glesv2 2>/dev/null && echo 1)
+ifeq ($(GPU),1)
+AOIPROC_GPU := -DAOI_GPU gpu/host.c $(shell pkg-config --libs egl glesv2)
+endif
+build/aoiproc: tools/aoiproc.c $(CORE) core/*.h gpu/host.c gpu/gl_gen.h | build
+	$(CC) $(CFLAGS) -o $@ tools/aoiproc.c $(CORE) $(AOIPROC_GPU) -lm -lpthread
 
 # Debug knobs in the hot paths (AOI_WATCH, AOI_PCRING): off in every other build.
 build/aoiproc-debug: tools/aoiproc.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -DAOI_DEBUG -o $@ tools/aoiproc.c $(CORE) -lm -lpthread
 
-android-test: build/aoiproc build/mapper.aoi.so
+android-test: build/aoiproc build/mapper.aoi.so build/libGLES_aoi.so
 	sh tests/run_android.sh
 
 # The gralloc mapper libui loads in the guest (core/gralloc.c names it): guest code,
@@ -94,6 +100,11 @@ GUEST_LD ?= -fuse-ld=lld
 build/mapper.aoi.so: guest/mapper.c core/gralloc.h | build
 	clang --target=aarch64-linux-android29 -shared -nostdlib -ffreestanding -fno-stack-protector -fPIC -O2 \
 	    -fvisibility=hidden $(GUEST_LD) -Wl,--hash-style=both -Wl,-soname,mapper.aoi.so -Wall -Wextra -o $@ guest/mapper.c
+
+# The guest's OpenGL ES driver (guest/gles.c): /vendor/lib64/egl/libGLES_aoi.so.
+build/libGLES_aoi.so: guest/gles.c guest/gl_gen.h core/gpu.h core/gralloc.h | build
+	clang --target=aarch64-linux-android29 -shared -nostdlib -ffreestanding -fno-stack-protector -fPIC -O2 \
+	    -fvisibility=hidden $(GUEST_LD) -Wl,--hash-style=both -Wl,-soname,libGLES_aoi.so -Wall -Wextra -o $@ guest/gles.c
 
 # Signal delivery (SIGSEGV from a fault, sigreturn, tgkill, masks) through core/proc.c.
 build/signals.elf: tests/signals.c | build
