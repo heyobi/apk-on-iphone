@@ -392,6 +392,14 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Copy and Paste no longer kill the app (app 0.31).** On the phone, Qalculate's
+text toolbar (PopupWindow type 1005) came up, and tapping Copy or Paste killed the
+app: View.performClick plays the click sound, ViewRootImpl asks AudioManager
+areNavigationRepeatSoundEffectsEnabled, and with no "audio" service its IAudioService
+is null (NullPointerException). aoi.AudioService answers the calls views and
+AudioManager make (sound effects off, normal ringer/mode, stream volumes); no sound
+comes out yet.
+
 **The clipboard is the iPhone's (app 0.30).** Text an Android app copies goes to
 UIPasteboard, and its paste reads UIPasteboard, so copying works both ways between
 iOS apps and Android ones. aoi.Clipboard writes or reads the text in
