@@ -110,6 +110,13 @@ final class ActivityClientController extends IActivityClientController.Stub {
         return true;
     }
 
+    @Override
+    public boolean finishActivityAffinity(IBinder t) {
+        log("finish affinity requested");
+        if (!Activities.finishAffinity(t)) home();
+        return true;
+    }
+
     @Override public boolean moveActivityTaskToBack(IBinder t, boolean nonRoot) { home(); return true; }
     /** Back that the activity did not handle itself: the root activity leaves the app,
      *  one above it is asked to finish (as ActivityClientController does). */

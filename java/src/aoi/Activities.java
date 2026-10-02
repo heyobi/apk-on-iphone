@@ -58,8 +58,9 @@ final class Activities {
     }
 
     /** The app's activity an intent names: its component, or the first whose intent
-     *  filter takes its action; null for another app's (none here). An activity-alias
-     *  stands for its target. */
+     *  filter takes its action (the intent then names it); null for another app's (none
+     *  here). An activity-alias stays itself: ActivityThread instantiates its
+     *  targetActivity, as for the launcher. */
     static ActivityInfo resolve(Intent intent) {
         android.content.ComponentName c = intent.getComponent();
         ActivityInfo found = null;
@@ -74,11 +75,8 @@ final class Activities {
                 if (found != null) break;
             }
         }
-        if (found != null && found.targetActivity != null) {
-            ActivityInfo t = app.activity(found.targetActivity);
-            if (t != null) found = t;
-        }
-        return found;
+        if (found != null) intent.setComponent(new android.content.ComponentName(app.pkg.packageName, found.name));
+        return found;                                              /* an alias as it is: ActivityThread runs its targetActivity */
     }
 
     private static int find(IBinder t) {
@@ -99,6 +97,16 @@ final class Activities {
             send(android.app.servertransaction.ResumeActivityItem.obtain(below.token, true, false));
         }
         send(android.app.servertransaction.DestroyActivityItem.obtain(t, true, 0));
+        return true;
+    }
+
+    /** finishAffinity(): `t` and the activities below it go (the task has one affinity,
+     *  the app's); false when nothing is left above them (the app is left). */
+    static synchronized boolean finishAffinity(IBinder t) {
+        int i = find(t);
+        if (i < 0) return true;
+        if (i == stack.size() - 1) return false;
+        for (int k = i; k >= 0; k--) send(android.app.servertransaction.DestroyActivityItem.obtain(stack.remove(k).token, true, 0));
         return true;
     }
 

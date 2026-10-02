@@ -392,6 +392,23 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Kiwi's alias, WhatsApp's finishAffinity, native faults in the log (app 0.35).** On
+the phone 0.34 brought Qalculate back (copy/paste toolbar and handles stay up) and
+Kiwi got as far as starting its browser activity, then died: its launcher
+com.google.android.apps.chrome.Main is an activity-alias, Kiwi starts it again by
+that name, and our startActivity swapped the alias for its target's ActivityInfo
+while the intent still named the alias, so ActivityThread looked for a class
+"...chrome.Main". The alias now stays itself (ActivityThread runs targetActivity, as
+for the launcher) and an implicit intent gets the resolved component. WhatsApp
+reached its EULA activity (Main -> EULA, then finishActivityAffinity, now
+implemented: the activity and those below it go) and died of a native SIGSEGV
+(fb-breakpad) that the log did not place. A SIGSEGV whose pc is in a .so now goes to
+the app's log with pc and lr as library+offset (the first 40; ART's implicit null
+checks fault in .oat code and are left out). ART's JIT checked on the host:
+a hot-loop dex (arithmetic, doubles, floats, arrays, strings, virtual calls,
+exceptions, HashMap) gives the same output with -Xusejit:false and with
+-Xjitthreshold:50, so JIT code is not the suspect.
+
 **0.32 killed every app on the phone; activities on a stack (app 0.34).** 0.32's
 stand-in "connectivity" service gave ActivityThread a ConnectivityManager, and
 handleBindApplication's getDefaultProxy loads libframework-connectivity-jni.so

@@ -38,6 +38,7 @@ public interface IActivityClientController {
     void setImmersive(IBinder token, boolean immersive) throws RemoteException;
     void setTaskDescription(IBinder token, ActivityManager.TaskDescription values) throws RemoteException;
     boolean finishActivity(IBinder token, int code, Intent data, int finishTask) throws RemoteException;
+    boolean finishActivityAffinity(IBinder token) throws RemoteException;
     boolean moveActivityTaskToBack(IBinder token, boolean nonRoot) throws RemoteException;
     void onBackPressed(IBinder activityToken, IRequestFinishCallback callback) throws RemoteException;
     void splashScreenAttached(IBinder token) throws RemoteException;

@@ -765,6 +765,16 @@ static int sig_fault(struct aoi_proc *p)
     put32(info, 8, mapped_page ? 2 : 1);                           /* SEGV_ACCERR / SEGV_MAPERR */
     put64(info, 16, p->cpu.fault_addr);
     p->th[p->cur].sigmask &= ~SIGBIT(11);                          /* a synchronous fault is never blocked */
+    if (p->log) {                                                  /* the app's log: a fault in native code (ART's */
+        static int logged;                                         /* null checks fault in its compiled code: not those) */
+        char w[256], w2[256];
+        aoi_proc_where(p, p->cpu.pc, w, sizeof w);
+        if (strstr(w, ".so+") && logged++ < 40) {
+            fprintf(p->log, "I/aoi: SIGSEGV at %#llx in tid %d: pc %s, lr %s\n", (unsigned long long)p->cpu.fault_addr,
+                    p->th[p->cur].tid, w, aoi_proc_where(p, p->cpu.x[30], w2, sizeof w2));
+            fflush(p->log);
+        }
+    }
     if (p->trace) {
         char w[256], w2[256];
         int k;

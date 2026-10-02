@@ -5,4 +5,5 @@ public class Intent {
     public ComponentName getComponent() { return null; }
     public String getAction() { return null; }
     public String getPackage() { return null; }
+    public Intent setComponent(ComponentName component) { return this; }
 }
