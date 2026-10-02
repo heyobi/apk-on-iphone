@@ -1487,6 +1487,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (p->home) p->home(p->frame_ctx);
             r = err(L_ENOENT);
             break;
+        } else if (!strncmp(g, "/dev/aoi_clip/", 14)) {           /* aoi.Clipboard: the host's clipboard */
+            if (p->clip && g[14]) { to_host(p, "/data/local/tmp/aoi.clip", h); p->clip(p->frame_ctx, g[14], h); }
+            r = err(L_ENOENT);
+            break;
         } else if (!strncmp(g, "/dev/aoi_layer/", 15)) {         /* aoi.WindowSession: where a window goes */
             aoi_sf_place(p, g + 15);
             r = err(L_ENOENT);

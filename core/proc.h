@@ -94,6 +94,11 @@ struct aoi_proc {
     /* if set: called (with frame_ctx) when the app leaves for the launcher: aoi.Main
      * opens "/dev/aoi_home" (back on its root activity, finish) */
     void (*home)(void *ctx);
+    /* if set: the host's clipboard, for aoi.Clipboard, which opens "/dev/aoi_clip/OP":
+     * 's' set it to the UTF-8 text in the file `path` (guest /data/local/tmp/aoi.clip),
+     * 'g' write its text there (or remove the file: no text), 'h' write "1" or "0"
+     * there: whether it has text (without reading it: iOS asks the user on a read) */
+    void (*clip)(void *ctx, int op, const char *path);
     int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
     int input_pair;                 /* its pair id (the guest holds end 0) */
     int next_pair;                  /* pair ids of host pipes and socket pairs */

@@ -392,6 +392,17 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The clipboard is the iPhone's (app 0.30).** Text an Android app copies goes to
+UIPasteboard, and its paste reads UIPasteboard, so copying works both ways between
+iOS apps and Android ones. aoi.Clipboard writes or reads the text in
+/data/local/tmp/aoi.clip and opens /dev/aoi_clip/s (set), /g (get) or /h (has text)
+for the host (proc.h, p->clip; ios/main.m clipboard_cb; aoiproc's AOI_CLIP buffer).
+"Has text" uses hasStrings, which does not read: only a real paste reads the
+pasteboard, so iOS shows its "Allow Paste" question only then (Settings > LiquidAPK
+> Paste from Other Apps: Allow silences it). An app's own clip (non-text items too)
+is kept while the pasteboard still holds its text. tests/run_android.sh checks it
+(aoi.ClipboardTest: the host's text pastes in, a copy comes out).
+
 **Clipboard (app 0.29).** Qalculate died on a touch on the phone: its copy action
 asks for the "clipboard" service, ClipboardManager's constructor threw
 ServiceNotFoundException, getSystemService answered null and the app's own code

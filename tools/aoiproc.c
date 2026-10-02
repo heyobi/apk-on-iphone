@@ -29,6 +29,27 @@
 /* AOI_TAPS="x,y;x,y;...": after the first frame, taps in screen pixels 4 s apart
  * (aoi_proc_touch from another thread, as the iOS view sends them); "back" presses
  * the back key; "x,y,ms" holds the finger down that long (a long press). */
+/* The host clipboard (proc.h, clip): a buffer, AOI_CLIP at the start; each change is logged. */
+static char clipbuf[4096];
+static void clip(void *ctx, int op, const char *path)
+{
+    FILE *f;
+    (void)ctx;
+    if (op == 's' && (f = fopen(path, "rb"))) {
+        size_t n = fread(clipbuf, 1, sizeof clipbuf - 1, f);
+        clipbuf[n] = 0;
+        fclose(f);
+        fprintf(stderr, "[aoiproc] clipboard set: \"%s\"\n", clipbuf);
+    } else if (op == 'g') {
+        if (!clipbuf[0]) { remove(path); return; }
+        if ((f = fopen(path, "wb"))) { fputs(clipbuf, f); fclose(f); }
+        fprintf(stderr, "[aoiproc] clipboard read: \"%s\"\n", clipbuf);
+    } else if (op == 'h' && (f = fopen(path, "wb"))) {
+        fputs(clipbuf[0] ? "1" : "0", f);
+        fclose(f);
+    }
+}
+
 static void *taps(void *arg)
 {
     const char *s = getenv("AOI_TAPS");
@@ -167,6 +188,7 @@ int main(int argc, char **argv)
     if (profile && (proc.samples = calloc(1 << 20, sizeof *proc.samples))) proc.maxsamples = 1 << 20;
     proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
     if (getenv("AOI_TAPS")) { proc.frame = first_frame; proc.frame_ctx = &proc; }
+    if (getenv("AOI_CLIP")) { snprintf(clipbuf, sizeof clipbuf, "%s", getenv("AOI_CLIP")); proc.clip = clip; }
     if (getenv("AOI_SNAPSHOT_LOAD")) aoi_sf_redraw(&proc);      /* the frame it was showing: taps start */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     st = aoi_proc_run(&proc, getenv("AOI_STOP_AT") ? strtoull(getenv("AOI_STOP_AT"), NULL, 0) : 0);

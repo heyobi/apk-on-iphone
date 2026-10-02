@@ -43,6 +43,11 @@ void aoi_android_touch(int action, float x, float y);
 /* Android's back for the running app (its resumed activity's onBackPressed). */
 void aoi_android_back(void);
 
+/* The host's clipboard for apps (core/proc.h, clip): op 's' set it from the UTF-8 text
+ * in the file at path, 'g' write its text there (remove the file: none), 'h' write
+ * "1"/"0" there (has text). Called on the app's thread. */
+void aoi_android_set_clipboard(void (*fn)(int op, const char *path));
+
 /* The app is saved as it is now (a snapshot next to datadir, "<datadir>.snap"), so the
  * next launch resumes it in seconds instead of starting it again; the first one is
  * taken by itself once the app has started. Waits up to timeout s: 0 when written. */

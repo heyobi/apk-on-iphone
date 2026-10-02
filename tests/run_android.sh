@@ -59,6 +59,13 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "in-process services (Java binder, servicemanager)" "servicemanager: local binder ok" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ServiceTest
+    # aoi.Clipboard through the host's clipboard (aoiproc's AOI_CLIP): paste in, copy out.
+    # shellcheck disable=SC2086
+    export AOI_CLIP="from the host"
+    # shellcheck disable=SC2086
+    check "clipboard shared with the host" 'clipboard: after copy, paste gives "kopyalandı 42"' $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ClipboardTest
+    unset AOI_CLIP
 else echo "SKIP android: in-process services (no javac)"; fi
 unset AOI_UFFD
 exit $fail

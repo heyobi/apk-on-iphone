@@ -880,6 +880,26 @@ static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h)
     }
 }
 
+/* The Android app's clipboard is the iPhone's (aoi.Clipboard, core/proc.h): text it
+ * copies goes to UIPasteboard, a paste reads it (iOS may ask "Allow Paste"; "has
+ * text" does not read it). On the app's thread. */
+static void clipboard_cb(int op, const char *path) {
+    @autoreleasepool {
+        UIPasteboard *pb = UIPasteboard.generalPasteboard;
+        NSString *file = [NSString stringWithUTF8String:path];
+        if (op == 's') {
+            NSString *text = [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil];
+            if (text) pb.string = text;
+        } else if (op == 'g') {
+            NSString *text = pb.hasStrings ? pb.string : nil;
+            if (text) [text writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil];
+            else [NSFileManager.defaultManager removeItemAtPath:file error:nil];
+        } else if (op == 'h') {
+            [(pb.hasStrings ? @"1" : @"0") writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        }
+    }
+}
+
 /* The app left for its launcher (back on its root screen): ours comes up. */
 static void home_cb(void *ctx) {
     @autoreleasepool {
@@ -898,6 +918,7 @@ static void home_cb(void *ctx) {
 
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
+    aoi_android_set_clipboard(clipboard_cb);
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;   /* white on dark glass, in light mode too */
     self.window.rootViewController = [Launcher new];

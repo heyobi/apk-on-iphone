@@ -179,6 +179,10 @@ static int classpath_env(const char *datadir, char vals[3][4096], const char **e
 
 static struct aoi_proc *volatile running;   /* the app's process, while aoi_android_app runs */
 
+static void (*clipboard_fn)(int op, const char *path);
+void aoi_android_set_clipboard(void (*fn)(int op, const char *path)) { clipboard_fn = fn; }
+static void clipboard(void *ctx, int op, const char *path) { (void)ctx; if (clipboard_fn) clipboard_fn(op, path); }
+
 /* Where the guest's host memory is: the host pages of its chunks that exist (resident,
  * or compressed: MINCORE_PAGED_OUT on Apple), in total and for the 64 MB guest windows
  * holding the most, each named by the largest mapping in it (file pages count too:
@@ -405,6 +409,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     p->uffd = 1;                        /* ART's CMC GC and the boot image */
     p->frame = frame;
     p->home = home;
+    p->clip = clipboard;
     p->frame_ctx = frame_ctx;
     p->fd[1].host = fd;
     p->fd[2].host = fd;
