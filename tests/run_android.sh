@@ -66,6 +66,10 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     check "clipboard shared with the host" 'clipboard: after copy, paste gives "kopyalandı 42"' $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ClipboardTest
     unset AOI_CLIP
+    # Games' sound effects: android.media.SoundPool with libsoundpool.so and aoi.AudioService.
+    # shellcheck disable=SC2086
+    check "SoundPool (libsoundpool, audio service)" "soundpool: built and released" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.SoundPoolTest
 else echo "SKIP android: in-process services (no javac)"; fi
 unset AOI_UFFD
 exit $fail

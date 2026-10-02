@@ -28,6 +28,9 @@ public final class Main {
         ai.nativeLibraryDir = new File(new File(apk).getParentFile(), "lib/arm64").getPath();
         ai.primaryCpuAbi = "arm64-v8a";
         ai.uid = 10100;
+        if (ai.metaData == null) ai.metaData = pkg.mAppMetaData;   /* <application> <meta-data> (Play services' version check) */
+        new File(ai.dataDir).mkdirs();                             /* the app's data dirs: Kiwi found none (ENOENT) */
+        new File(ai.deviceProtectedDataDir).mkdirs();
         ActivityInfo launcher = null;
         for (PackageParser.Activity a : pkg.activities) {
             if (a.intents == null) continue;

@@ -392,6 +392,20 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Kiwi's Play-services check, app data dirs, SoundPool (app 0.36).** 0.35 on the
+phone: Kiwi went through its alias, ChromeTabbedActivity and FirstRunActivity, then
+died on GooglePlayServicesMissingManifestValueException: the <application>
+<meta-data> (com.google.android.gms.version) was not in our ApplicationInfo. aoi.Main
+now sets ai.metaData from PackageParser's mAppMetaData and creates the app's data dirs
+(/data/data/PKG, /data/user_de/0/PKG; Kiwi's SharedPreferences got ENOENT).
+cube.run: libsoundpool.so was not in ios/android-files.txt (its dependencies were);
+it is now, and aoi.SoundPoolTest (run_android.sh, 14 checks) builds and releases a
+SoundPool against aoi.AudioService (trackPlayer/releasePlayer get default answers).
+cube.run will next need OpenGL ES. WhatsApp: the new fault line places its SIGSEGV in
+libart.so (mirror::Class::FindInstanceField, address 0x480000008): a bad class
+reference while resolving a field, right after a JIT compile on its EULA screen;
+not reproduced on the host (no APK here).
+
 **Kiwi's alias, WhatsApp's finishAffinity, native faults in the log (app 0.35).** On
 the phone 0.34 brought Qalculate back (copy/paste toolbar and handles stay up) and
 Kiwi got as far as starting its browser activity, then died: its launcher

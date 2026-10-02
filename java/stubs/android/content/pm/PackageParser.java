@@ -14,6 +14,7 @@ public class PackageParser {
         public ApplicationInfo applicationInfo;
         public final ArrayList<Activity> activities = null;
         public final ArrayList<Provider> providers = null;
+        public android.os.Bundle mAppMetaData;
     }
 
     public static final class Activity {
