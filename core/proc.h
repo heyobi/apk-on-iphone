@@ -108,6 +108,7 @@ struct aoi_proc {
     uint64_t (*gpu)(void *ctx, struct aoi_proc *p, uint64_t op, uint64_t args);
     void *gpu_ctx;
     int gpu_live;                   /* the host's contexts and surfaces it holds: no snapshot while any */
+    int snap_gpu_free;              /* aoi.Snapshot: take it the moment gpu_live reaches 0 */
     int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
     int input_pair;                 /* its pair id (the guest holds end 0) */
     int next_pair;                  /* pair ids of host pipes and socket pairs */

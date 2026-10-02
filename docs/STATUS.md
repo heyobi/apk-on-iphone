@@ -392,6 +392,20 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Snapshots while the user taps (app 0.44).** 0.43 on the phone: cube.run's
+snapshot is saved now (the GPU free 5 and 58 ms after the trim). Qalculate's was
+refused once, and the thread dump showed no deadlock: the user was tapping, so HWUI
+drew again and made a new context between the trim's last destroy and aoi.Snapshot's
+next 50 ms look. Now the host takes the snapshot itself the moment its count of
+contexts and surfaces reaches 0 (/dev/aoi_snapshot_gpu_free, asked before the trim;
+the GL call that ends it also ends the time slice, so no other thread runs first).
+aoi.Snapshot waits on /dev/aoi_snapshot_pending and cancels after 10 s. Host test:
+Qalculate tapped every second through the snapshot: saved, drawing on after it.
+Also in the 0.43 logs: WhatsApp (at start) and cube.run (0.42, after long play)
+fault in libart's Class::FindInstanceField / FindStaticField. The "class" read
+there holds no class (its ifields_/sfields_ is 0x4_7ffffffc / 0x4_3ffffffc), which
+looks like a stale class reference after a CMC compaction (next).
+
 **A game on the phone's GPU, and its snapshot (app 0.43).** 0.42 on the iPhone:
 cube.run (libGDX) runs on ANGLE over Metal ("OGL renderer: ANGLE ... Apple A18 Pro
 GPU"), thousands of frames, playable; Qalculate's HWUI on the GPU reads back a frame

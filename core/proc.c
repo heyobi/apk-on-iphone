@@ -1563,6 +1563,18 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         } else if (!strcmp(g, "/dev/aoi_gpu_live")) {              /* aoi.Snapshot: EBUSY while it has GL state */
             r = err(p->gpu_live ? L_EBUSY : L_ENOENT);
             break;
+        } else if (!strcmp(g, "/dev/aoi_snapshot_gpu_free")) {     /* aoi.Snapshot: save when the GPU lets go; */
+            if (p->snap_path[0] && p->gpu_live) p->snap_gpu_free = 1;   /* a window drawing again a moment */
+            else if (p->snap_path[0]) p->snap_request = 1;              /* later cannot slip in between */
+            r = err(L_ENOENT);
+            break;
+        } else if (!strcmp(g, "/dev/aoi_snapshot_pending")) {      /* aoi.Snapshot: EBUSY until it is taken */
+            r = err(p->snap_gpu_free || p->snap_request ? L_EBUSY : L_ENOENT);
+            break;
+        } else if (!strcmp(g, "/dev/aoi_snapshot_cancel")) {       /* aoi.Snapshot: gave up waiting */
+            p->snap_gpu_free = 0;
+            r = err(L_ENOENT);
+            break;
         } else if (!strcmp(g, "/dev/aoi_snapshot")) {              /* aoi.Main: the app is up, save it */
             if (p->snap_path[0]) p->snap_request = 1;
             r = err(L_ENOENT);
@@ -2325,6 +2337,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case AOI_SYS_GL:                                               /* guest/gles.c: OpenGL ES (core/gpu.h) */
         r = p->gpu ? p->gpu(p->gpu_ctx, p, a0, a1) : err(L_ENOSYS);
+        if (p->snap_gpu_free && !p->gpu_live) {                    /* the last of it gone: the snapshot */
+            p->snap_gpu_free = 0;                                  /* now, before any thread draws again */
+            p->snap_request = 1;
+            c->stop = AOI_STOP_YIELD;
+        }
         break;
     case NR_getrandom: {
         int u = open("/dev/urandom", O_RDONLY | O_CLOEXEC);

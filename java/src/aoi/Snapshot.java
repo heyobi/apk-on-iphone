@@ -18,7 +18,9 @@ import java.util.concurrent.TimeUnit;
  *  snapshot, as when their activity stops (onPause releases the context, onResume
  *  makes a new one and the app's renderer gets onSurfaceCreated again; one that
  *  asked to keep its context on pause, libGDX, is told not to for that pause).
- *  /dev/aoi_gpu_live fails with EBUSY while the host still holds something. */
+ *  The host takes the snapshot the moment its last context or surface goes
+ *  (/dev/aoi_snapshot_gpu_free), so a window drawing again just after (the user
+ *  tapping) cannot get in between. */
 final class Snapshot {
     private static final int TRIM_MEMORY_COMPLETE = 80;
 
@@ -29,7 +31,9 @@ final class Snapshot {
         boolean gpu = System.getenv("AOI_HWUI") != null;
         final java.util.List<Object> gl = new java.util.ArrayList<Object>();
         if (gpu) {
-            onMain(new Runnable() {
+            long t0 = System.currentTimeMillis();                  /* the host saves it the moment the last */
+            busy("/dev/aoi_snapshot_gpu_free");                    /* context goes: a window drawing again */
+            onMain(new Runnable() {                                /* (a tap) can't slip in between */
                 @Override public void run() {
                     glViews(gl);
                     for (Object v : gl) {                          /* libGDX keeps its context on pause: not here */
@@ -39,21 +43,22 @@ final class Snapshot {
                     trim();
                 }
             });
-            long t0 = System.currentTimeMillis();
-            for (int i = 0; i < 200 && gpuLive(); i++) sleep(50);  /* RenderThread lets go in its own time */
-            if (gpuLive()) {
+            for (int i = 0; i < 200 && busy("/dev/aoi_snapshot_pending"); i++) sleep(50);
+            if (busy("/dev/aoi_snapshot_pending")) {
+                busy("/dev/aoi_snapshot_cancel");
                 System.out.println("aoi: snapshot: the GPU still holds state");
                 busy("/dev/aoi_threads");                          /* where everyone is, to the log */
+            } else {
+                System.out.println("aoi: snapshot: done after " + (System.currentTimeMillis() - t0) + " ms");
             }
-            else System.out.println("aoi: snapshot: GPU free after " + (System.currentTimeMillis() - t0) + " ms");
-        }
-        try {
-            new FileInputStream("/dev/aoi_snapshot").close();
-        } catch (IOException e) {
-            // expected: the host has taken it, or does not want one
+        } else {
+            try {
+                new FileInputStream("/dev/aoi_snapshot").close();
+            } catch (IOException e) {
+                // expected: the host has taken it, or does not want one
+            }
         }
         if (gpu) {
-            sleep(300);                                            /* taken at the next time slice */
             onMain(new Runnable() {
                 @Override public void run() {
                     for (Object v : gl) {
@@ -125,8 +130,6 @@ final class Snapshot {
             System.out.println("aoi: snapshot: " + method + " " + e);
         }
     }
-
-    private static boolean gpuLive() { return busy("/dev/aoi_gpu_live"); }
 
     /** The host's yes/no files: opening one fails, with EBUSY for yes. */
     private static boolean busy(String path) {
