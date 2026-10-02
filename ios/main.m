@@ -891,6 +891,7 @@ static void home_cb(void *ctx) {
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;   /* white on dark glass, in light mode too */
     self.window.rootViewController = [Launcher new];
     [self.window makeKeyAndVisible];
     UIApplicationShortcutItem *item = opts[UIApplicationLaunchOptionsShortcutItemKey];
