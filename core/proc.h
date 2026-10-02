@@ -103,6 +103,7 @@ struct aoi_proc {
      * ENOSYS when the host has no GPU for it. */
     uint64_t (*gpu)(void *ctx, struct aoi_proc *p, uint64_t op, uint64_t args);
     void *gpu_ctx;
+    int gpu_live;                   /* the host's contexts and surfaces it holds: no snapshot while any */
     int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
     int input_pair;                 /* its pair id (the guest holds end 0) */
     int next_pair;                  /* pair ids of host pipes and socket pairs */

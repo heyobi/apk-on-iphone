@@ -5,7 +5,7 @@ name: iOS IPA
 
 on:
   push:
-    paths: [ "core/**", "ios/**", "java/**", "guest/**", "tools/**", ".github/workflows/ios.yml" ]
+    paths: [ "core/**", "gpu/**", "ios/**", "java/**", "guest/**", "tools/**", ".github/workflows/ios.yml" ]
   workflow_dispatch:
 
 permissions:
@@ -57,6 +57,39 @@ jobs:
           brew install lld
           make build/mapper.aoi.so GUEST_LD="--ld-path=$(brew --prefix lld)/bin/ld.lld"
           cp build/mapper.aoi.so aroot-mini/vendor/lib64/hw/mapper.aoi.so
+          # the guest's OpenGL ES driver: Android's libEGL loads it for ro.hardware.egl=aoi
+          make build/libGLES_aoi.so GUEST_LD="--ld-path=$(brew --prefix lld)/bin/ld.lld"
+          mkdir -p aroot-mini/vendor/lib64/egl
+          cp build/libGLES_aoi.so aroot-mini/vendor/lib64/egl/libGLES_aoi.so
+
+      # OpenGL ES on the phone's GPU: ANGLE (BSD-3) on Metal, as static libraries built by
+      # Godot's godot-angle-static (MIT), and the Khronos EGL/GLES headers (gpu/host.c).
+      - name: Cache ANGLE
+        id: angle
+        uses: actions/cache@v4
+        with:
+          path: angle-ios
+          key: angle-ios-chromium-7578-khr-db3425b-1cdd228
+
+      - name: Fetch ANGLE
+        if: steps.angle.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          mkdir -p angle-ios/lib angle-ios/include/EGL angle-ios/include/GLES3 angle-ios/include/KHR angle-ios/licenses
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/angle.zip" \
+            "https://github.com/godotengine/godot-angle-static/releases/download/chromium%2F7578/godot-angle-static-arm64-ios-release.zip"
+          unzip -o -q "$RUNNER_TEMP/angle.zip" -d "$RUNNER_TEMP/angle"
+          for l in ANGLE EGL GLES; do cp "$(find "$RUNNER_TEMP/angle" -name "lib$l.ios.arm64.a" | head -1)" "angle-ios/lib/lib$l.a"; done
+          ls -la angle-ios/lib
+          EGL=https://raw.githubusercontent.com/KhronosGroup/EGL-Registry/db3425b8246136faccb5e2782b5694960bd6edf1/api
+          GLR=https://raw.githubusercontent.com/KhronosGroup/OpenGL-Registry/1cdd228e34966dd6b95bd203e9f84faba0f371a1/api
+          for h in EGL/egl.h EGL/eglext.h EGL/eglplatform.h KHR/khrplatform.h; do curl -fsSL --retry 3 -o "angle-ios/include/$h" "$EGL/$h"; done
+          for h in GLES3/gl3.h GLES3/gl32.h GLES3/gl3platform.h; do curl -fsSL --retry 3 -o "angle-ios/include/$h" "$GLR/$h"; done
+          curl -fsSL --retry 3 "https://chromium.googlesource.com/angle/angle/+/refs/heads/chromium/7578/LICENSE?format=TEXT" \
+            | base64 -d > angle-ios/licenses/ANGLE.txt
+          curl -fsSL --retry 3 -o angle-ios/licenses/godot-angle-static.txt \
+            https://raw.githubusercontent.com/godotengine/godot-angle-static/chromium/7578/LICENSE.md
+          head -3 angle-ios/licenses/ANGLE.txt
 
       - name: Build app binary
         run: |
@@ -77,9 +110,12 @@ jobs:
             ios/main.m ios/gmptest.c ios/vmprobe.c ios/androidtest.c \
             core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
             core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c core/snap.c core/hle.c \
-            -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics -lz
+            -DAOI_GPU -Iangle-ios/include gpu/host.c angle-ios/lib/libEGL.a angle-ios/lib/libGLES.a angle-ios/lib/libANGLE.a \
+            -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics \
+            -framework Metal -framework IOSurface -framework OpenGLES -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
           cp ios/icons/*.png "$APP/"
+          mkdir -p "$APP/licenses" && cp angle-ios/licenses/*.txt "$APP/licenses/"
           cp -RP aroot-mini "$APP/aroot"
           find "$APP/aroot" -type f -exec chmod a-x {} +   # ELF data for the interpreter, not code to sign
           du -sh "$APP/aroot"

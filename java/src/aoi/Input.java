@@ -16,7 +16,8 @@ import java.io.FileInputStream;
  *  modal one above it, a menu that closes on a touch outside), in its coordinates;
  *  windows above that watch outside touches get ACTION_OUTSIDE. A held finger gives
  *  its window focus (WindowSession.focus: text selection), a touch on it takes it.
- *  Action 4 cancels the gesture (the host took it), and action 3 is "back": the
+ *  Action 4 cancels the gesture (the host took it), action 5 asks for a snapshot
+ *  (the host's, as the app goes to the background: aoi.Snapshot), and action 3 is "back": the
  *  top activity's onBackPressed on the main thread (a KEYCODE_BACK event would
  *  need window focus, and focus makes text cursors blink: a full repaint twice a
  *  second). */
@@ -101,6 +102,14 @@ final class Input {
 
     private void send(int action, float x, float y) {
         if (action == 3) { back(); return; }
+        if (action == 5) {
+            Thread t = new Thread(new Runnable() {
+                @Override public void run() { Snapshot.take(); }
+            }, "aoi-snapshot");
+            t.setDaemon(true);
+            t.start();
+            return;
+        }
         long now = SystemClock.uptimeMillis();
         if (action == 0) {
             downTime = now;

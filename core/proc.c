@@ -935,7 +935,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
             const char *e;
             int64_t t0 = now_ns();
             p->snap_request = 0;
-            e = aoi_snap_save(p, p->snap_path);
+            e = p->gpu_live ? "the GPU holds its state (aoi.Snapshot drops it first)" : aoi_snap_save(p, p->snap_path);
             if (p->log) fprintf(p->log, "I/aoi: snapshot %s: %s (%.2f s)\n", p->snap_path, e ? e : "saved",
                                 (double)(now_ns() - t0) / 1e9);
             p->snap_path[0] = 0;
@@ -1505,6 +1505,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         } else if (!strncmp(g, "/dev/aoi_layer/", 15)) {         /* aoi.WindowSession: where a window goes */
             aoi_sf_place(p, g + 15);
             r = err(L_ENOENT);
+            break;
+        } else if (!strcmp(g, "/dev/aoi_gpu_live")) {              /* aoi.Snapshot: EBUSY while it has GL state */
+            r = err(p->gpu_live ? L_EBUSY : L_ENOENT);
             break;
         } else if (!strcmp(g, "/dev/aoi_snapshot")) {              /* aoi.Main: the app is up, save it */
             if (p->snap_path[0]) p->snap_request = 1;

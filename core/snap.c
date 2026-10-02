@@ -448,7 +448,7 @@ const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root
     snprintf(p->root, sizeof p->root, "%s", root);
     snprintf(p->data, sizeof p->data, "%s", data ? data : "");
     p->trace = NULL; p->log = NULL; p->frame = NULL; p->frame_ctx = NULL; p->home = NULL;
-    p->gpu = NULL; p->gpu_ctx = NULL;
+    p->gpu = NULL; p->gpu_ctx = NULL; p->gpu_live = 0;
     p->samples = NULL; p->nsamples = p->maxsamples = 0;
     p->stop_request = 0; p->snap_path[0] = 0; p->snap_request = 0;
     p->binder = NULL; p->sf = NULL; p->gralloc = NULL;

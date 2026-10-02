@@ -15,14 +15,17 @@
  * at eglSwapBuffers, when the guest's EGL asks for AOI_EGL_READBACK into the buffer
  * it dequeued (core/gralloc.c buffers are guest memory). One host thread runs every
  * guest thread (green threads), so the host context follows the calling thread. */
+#define _POSIX_C_SOURCE 200809L        /* clock_gettime */
 #include "host.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl32.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "../core/gpu.h"
 #include "../core/proc.h"
@@ -76,6 +79,21 @@ static GLsync syncs[MAXSYNC];
 static struct thr thr[MAXTHR];
 static int hdraw = -1, hread = -1, hctx = -1;   /* what the host has current */
 static int trace = -1;                           /* AOI_GL_TRACE: every GL call on stderr */
+struct cached { const char *host; uint64_t ga; };
+static struct cached strs[512];                  /* strings the GL returned, in guest memory */
+static int nstrs;
+
+/* Lines for the process's log (on iOS the only output anyone sees). */
+static void say(struct aoi_proc *p, const char *fmt, ...)
+{
+    va_list ap;
+    FILE *f = p && p->log ? p->log : stderr;
+    va_start(ap, fmt);
+    fputs("I/aoi-gpu: ", f);
+    vfprintf(f, fmt, ap);
+    fputc('\n', f);
+    va_end(ap);
+}
 
 struct temp { void *host; uint64_t ga, len; int out; };
 struct gl_call {
@@ -135,7 +153,7 @@ static void *gl_ptr(struct gl_call *c, uint64_t ga, GLsizeiptr len, int out, con
         for (k = 0; k < 64 && seen[k][0] && strcmp(seen[k], warn); k++) {}
         if (k < 64 && !seen[k][0]) {
             snprintf(seen[k], sizeof seen[k], "%s", warn);
-            fprintf(stderr, "[gpu] %s: pointer of unknown length (4 KiB assumed)\n", warn);
+            say(c->p, "%s: pointer of unknown length (4 KiB assumed)", warn);
         }
     }
     if (len <= 0) len = 1;
@@ -253,19 +271,16 @@ static GLsizeiptr img_size(GLsizei w, GLsizei h, GLsizei d, GLenum format, GLenu
 
 static uint64_t guest_string(struct gl_call *c, const char *s)
 {
-    struct cached { const char *host; uint64_t ga; };
-    static struct cached cache[512];
-    static int n;
     size_t len;
     uint64_t ga;
     int i;
     if (!s) return 0;
-    for (i = 0; i < n; i++) if (cache[i].host == s) return cache[i].ga;
+    for (i = 0; i < nstrs; i++) if (strs[i].host == s) return strs[i].ga;
     len = strlen(s) + 1;
     ga = guest_alloc(c->p, len);
     if (!ga) return 0;
     copy_out(&c->p->vm, ga, s, len);
-    if (n < 512) cache[n++] = (struct cached){ s, ga };
+    if (nstrs < 512) strs[nstrs++] = (struct cached){ s, ga };
     return ga;
 }
 
@@ -757,28 +772,59 @@ static int read_attribs(struct aoi_proc *p, uint64_t ga, EGLint *out, int max)
 
 static int put_i32(struct aoi_proc *p, uint64_t ga, EGLint v) { return ga && copy_out(&p->vm, ga, &v, 4) == 4; }
 
-static int egl_init(void)
+/* ANGLE (iOS): its Metal back end, asked for by name. */
+#ifndef EGL_PLATFORM_ANGLE_ANGLE
+#define EGL_PLATFORM_ANGLE_ANGLE 0x3202
+#define EGL_PLATFORM_ANGLE_TYPE_ANGLE 0x3203
+#endif
+#ifndef EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE
+#define EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE 0x3489
+#endif
+
+static int egl_init(struct aoi_proc *p)
 {
     EGLint maj, min, n = 0;
+    PFNEGLGETPLATFORMDISPLAYEXTPROC gpd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
     if (inited) return inited > 0;
     inited = -1;
-#ifdef EGL_PLATFORM_SURFACELESS_MESA
-    {
-        PFNEGLGETPLATFORMDISPLAYEXTPROC gpd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
-        if (gpd) dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+#ifdef __APPLE__
+    if (gpd) {
+        static const EGLint metal[] = { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE };
+        dpy = gpd(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, metal);
     }
 #endif
+#ifdef EGL_PLATFORM_SURFACELESS_MESA
+    if (gpd && dpy == EGL_NO_DISPLAY) dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+#endif
+    (void)gpd;
     if (dpy == EGL_NO_DISPLAY) dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &maj, &min)) {
-        fprintf(stderr, "[gpu] no EGL display (%#x)\n", eglGetError());
+        say(p, "no EGL display (%#x)", eglGetError());
         return 0;
     }
     eglBindAPI(EGL_OPENGL_ES_API);
     eglGetConfigs(dpy, cfg, MAXCFG, &n);
     ncfg = n;
-    fprintf(stderr, "[gpu] EGL %d.%d, %d configs: %s\n", maj, min, ncfg, eglQueryString(dpy, EGL_VENDOR));
+    say(p, "EGL %d.%d, %d configs: %s", maj, min, ncfg, eglQueryString(dpy, EGL_VENDOR));
     inited = 1;
     return 1;
+}
+
+int aoi_gpu_available(void) { return egl_init(NULL); }
+
+/* The process is gone: everything it had on the GPU goes too. */
+void aoi_gpu_end(void)
+{
+    int i;
+    if (inited <= 0) return;
+    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    hdraw = hread = hctx = -1;
+    memset(syncs, 0, sizeof syncs);                              /* they go with their contexts */
+    for (i = 0; i < MAXCTX; i++) if (ctxs[i]) { eglDestroyContext(dpy, ctxs[i]->h); free(ctxs[i]); ctxs[i] = NULL; }
+    for (i = 0; i < MAXSURF; i++) if (surfs[i].h) eglDestroySurface(dpy, surfs[i].h);
+    memset(surfs, 0, sizeof surfs);
+    memset(thr, 0, sizeof thr);
+    nstrs = 0;
 }
 
 static int config_id(EGLConfig c)
@@ -866,7 +912,9 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
     EGLint at[130];
     struct thr *t = thread_of(p);
     int i;
-    if (op == AOI_EGL_INIT) return (uint64_t)egl_init();
+    if (op == AOI_EGL_INIT || !inited) {             /* also after a snapshot: a new host */
+        if (!egl_init(p) || op == AOI_EGL_INIT) return inited > 0;
+    }
     if (inited <= 0) return 0;
     switch (op) {
     case AOI_EGL_CHOOSE_CONFIG: {
@@ -899,6 +947,7 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
                                 share ? share->h : EGL_NO_CONTEXT, at);
         if (x->h == EGL_NO_CONTEXT) { free(x); return 0; }
         ctxs[i] = x;
+        p->gpu_live++;
         return (uint64_t)i + 1;
     }
     case AOI_EGL_DESTROY_CONTEXT: {
@@ -908,6 +957,7 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
         eglDestroyContext(dpy, x->h);
         free(x);
         ctxs[s[0] - 1] = NULL;
+        if (p->gpu_live > 0) p->gpu_live--;
         return EGL_TRUE;
     }
     case AOI_EGL_CREATE_SURFACE: {
@@ -917,6 +967,7 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
         surfs[i].h = pbuffer(c, (int)s[1], (int)s[2]);
         if (surfs[i].h == EGL_NO_SURFACE) { surfs[i].h = NULL; return 0; }
         surfs[i].cfg = c; surfs[i].w = (int)s[1]; surfs[i].h_ = (int)s[2];
+        p->gpu_live++;
         return (uint64_t)i + 1;
     }
     case AOI_EGL_DESTROY_SURFACE: {
@@ -928,6 +979,7 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
         }
         eglDestroySurface(dpy, sf->h);
         memset(sf, 0, sizeof *sf);
+        if (p->gpu_live > 0) p->gpu_live--;
         return EGL_TRUE;
     }
     case AOI_EGL_RESIZE_SURFACE: {
@@ -960,8 +1012,18 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
         return (uint64_t)eglGetError();
     case AOI_EGL_READBACK: {
         struct surf *sf = surf_of(s[0]);
+        static int frames;
+        static double spent;
+        struct timespec t0, t1;
+        int ok;
         if (!sf || !follow(t) || t->draw != (int)s[0]) return EGL_FALSE;
-        return readback(p, sf, s[1], (int)s[2], (int)s[3]) ? EGL_TRUE : EGL_FALSE;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        ok = readback(p, sf, s[1], (int)s[2], (int)s[3]);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        spent += (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        if (++frames % 100 == 1)                                   /* what a frame's trip back costs */
+            say(p, "frame %d: %dx%d, readback %.1f ms on average", frames, sf->w, sf->h_, spent / frames);
+        return ok ? EGL_TRUE : EGL_FALSE;
     }
     }
     return 0;

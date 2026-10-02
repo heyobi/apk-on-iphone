@@ -8,6 +8,10 @@
 #include "androidtest.h"
 #include "../core/binder.h"
 #include "../core/proc.h"
+#ifdef AOI_GPU
+#include "../core/hle.h"
+#include "../gpu/host.h"
+#endif
 
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -150,6 +154,9 @@ int aoi_android_run_env(const char *root, const char *tmpdir, int argc, const ch
         say(log, ctx, "android: memory %.0f MB now, %.0f MB peak", now, peak);
     }
     if (p->log) fclose(p->log);
+#ifdef AOI_GPU
+    aoi_gpu_end();
+#endif
     aoi_proc_free(p);
     free(p);
     return rc;
@@ -281,6 +288,19 @@ static void *memory_watch(void *arg)
 }
 static char snap_path[1024];                /* where its snapshot goes */
 
+/* The guest's OpenGL ES on this device's GPU (gpu/host.c: ANGLE on Metal): apps then
+ * draw with HWUI's GPU pipeline (AOI_HWUI, aoi.Main). */
+static int gpu_on(void)
+{
+#ifdef AOI_GPU
+    static int on = -1;
+    if (on < 0) on = aoi_gpu_available() && !getenv("AOI_NO_GPU");
+    return on;
+#else
+    return 0;
+#endif
+}
+
 int aoi_android_snapshot(double timeout)
 {
     struct aoi_proc *p = running;
@@ -288,7 +308,8 @@ int aoi_android_snapshot(double timeout)
     double waited = 0;
     if (!p || !snap_path[0]) return -1;
     snprintf(p->snap_path, sizeof p->snap_path, "%s", snap_path);
-    p->snap_request = 1;
+    if (p->gpu_live) aoi_proc_touch(p, 5, 0, 0);       /* aoi.Snapshot: the GPU's state goes first */
+    else p->snap_request = 1;
     while (p->snap_request && running == p && waited < timeout) { nanosleep(&ts, NULL); waited += 0.02; }
     while (p->snap_path[0] && running == p && waited < timeout) { nanosleep(&ts, NULL); waited += 0.02; }   /* written */
     return running == p && !p->snap_path[0] ? 0 : -1;
@@ -330,8 +351,8 @@ static void snap_key(const char *datadir, char *key, size_t n)
         snprintf(d, sizeof d, "%s/local/tmp/aoi.display", datadir);
         if ((f = fopen(d, "r"))) { if (!fgets(disp, sizeof disp, f)) disp[0] = 0; fclose(f); }
         disp[strcspn(disp, "\n")] = 0;
-        snprintf(key, n, "apk %lld %lld odex %lld %lld display %s\n", (long long)sa.st_size, (long long)sa.st_mtime,
-                 (long long)so.st_size, (long long)so.st_mtime, disp);
+        snprintf(key, n, "apk %lld %lld odex %lld %lld display %s gpu %d\n", (long long)sa.st_size, (long long)sa.st_mtime,
+                 (long long)so.st_size, (long long)so.st_mtime, disp, gpu_on());
     }
 }
 
@@ -376,7 +397,11 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     if (!classpath_env(datadir, vals, cp)) { say(log, ctx, "%s: no %s/system/environ/classpath", what, datadir); free(p); return -1; }
     while (base[ne]) { envp[ne] = base[ne]; ne++; }
     for (i = 0; cp[i]; i++) envp[ne++] = cp[i];
+    if (frame && gpu_on()) envp[ne++] = "AOI_HWUI=1";
     envp[ne] = NULL;
+#ifdef AOI_GPU
+    aoi_hle_gpu = gpu_on();             /* libhwui's own GPU code, not the stand-ins (core/hle.c) */
+#endif
     if (snap) {                         /* resume the app where a snapshot left it, if it fits */
         char key[256];
         snap_key(datadir, key, sizeof key);
@@ -411,6 +436,9 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     p->home = home;
     p->clip = clipboard;
     p->frame_ctx = frame_ctx;
+#ifdef AOI_GPU
+    if (gpu_on()) p->gpu = aoi_gpu_call;
+#endif
     p->fd[1].host = fd;
     p->fd[2].host = fd;
     p->log = fdopen(dup(fd), "w");

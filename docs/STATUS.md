@@ -392,6 +392,31 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The GPU on the phone: ANGLE on Metal (app 0.37, not yet run on the phone).** The
+iOS build links gpu/host.c with ANGLE's static libraries (Godot's godot-angle-static
+release for iOS arm64, chromium/7578, BSD-3 + MIT; licence texts in the app's
+licenses/) and the Khronos headers, pinned in .github/workflows/ios.yml; the guest's
+driver libGLES_aoi.so goes into the bundle's /vendor/lib64/egl. gpu/host.c asks ANGLE
+for its Metal display (EGL_PLATFORM_ANGLE_ANGLE). If it comes up, ios/androidtest.c
+gives apps the GPU (p->gpu, aoi_hle_gpu, AOI_HWUI=1): HWUI draws with GLES on Metal and
+each frame comes back into the window's buffer. The log says it: "I/aoi-gpu: EGL ...,
+N configs: ..." at the start and every 100 frames "frame N: WxH, readback X ms on
+average" (the cost of the trip back, to be measured). The host's GL objects are freed
+when the process ends (aoi_gpu_end); the GPU is part of the snapshot key.
+
+**Snapshots with the GPU.** Host GL state cannot go into a snapshot, so core/snap.c
+is not asked while the process holds host contexts or surfaces (p->gpu_live; a save
+then logs "the GPU holds its state"). aoi.Snapshot does what Android does when an app
+goes to the background: WindowManagerGlobal.trimMemory(TRIM_MEMORY_COMPLETE)
+destroys the windows' renderers and RenderThread's EGL context; it waits for
+/dev/aoi_gpu_live to stop failing with EBUSY, opens /dev/aoi_snapshot, and has every
+window draw again (ViewRootImpl brings its renderer back). A process resumed from the
+snapshot carries on from there and draws again the same way; the host's EGL comes
+up lazily in the new process. The iOS app's own snapshot on going to the background
+(aoi_android_snapshot) sends input action 5, and aoi.Snapshot does the same. Host,
+Qalculate with AOI_HWUI=1: the snapshot saved after the trim (74 MB, 1.7 s), then
+resumed (0.7 s), redrawn by HWUI on the GPU, and taps computed 7x87x84+5 correctly.
+
 **Qalculate drawn by HWUI on the GPU (host).** With AOI_HWUI=1 aoi.Main leaves
 ThreadedRenderer on, and HWUI's SkiaGL pipeline runs on our driver: Qalculate's
 window is an EGL window surface, each frame Skia renders with GLES on the host GPU
@@ -411,7 +436,8 @@ What HWUI needed on the way:
 - core/hle.c's no-GPU stand-ins for HardwareRenderer.nSetSurface/nCopySurfaceInto
   stay out when the guest has a GPU (aoi_hle_gpu): HWUI and the text Magnifier get
   real surfaces.
-AOI_HWUI stays off by default until the phone has the GPU (ANGLE).
+AOI_HWUI stays off by default on the host (aoiproc); the iOS app turns it on when
+ANGLE's display comes up (0.37).
 
 **OpenGL ES for the guest, first light (host).** A GPU driver of our own, so apps
 and games can draw with OpenGL ES and HWUI can leave software rendering:
