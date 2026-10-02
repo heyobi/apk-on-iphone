@@ -320,6 +320,8 @@ ST_FN blit_row_s32a(struct aoi_cpu *c, uint64_t ctx)
  * Magnifier's PixelCopy of the window) return at once here, so that renderer never
  * gets a surface and never needs GL: it skips its frames, the loupe stays invisible,
  * and the drag goes on. */
+int aoi_hle_gpu;
+
 ST_FN no_gpu(struct aoi_cpu *c, uint64_t ctx)
 {
     (void)ctx;
@@ -389,7 +391,7 @@ static int find(struct aoi_cpu *c, uint64_t pc)
     int lo = 0, hi = NSTAGES - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
-        if (stages[mid].off == off) return stage_ok(c, mid) ? mid : -1;
+        if (stages[mid].off == off) return (stages[mid].call != 3 || !aoi_hle_gpu) && stage_ok(c, mid) ? mid : -1;
         if (stages[mid].off < off) lo = mid + 1; else hi = mid - 1;
     }
     return -1;

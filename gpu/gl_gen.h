@@ -750,12 +750,7 @@ static uint64_t gl_dispatch(struct gl_call *c, unsigned id, const uint64_t *slot
         glGetFramebufferAttachmentParameteriv(target, attachment, pname, params);
         return 0;
     }
-    case 63: {    /* glGetIntegerv */
-        GLenum pname = (GLenum)slot[0];
-        GLint * data = (GLint *)(gl_ptr(c, slot[1], (GLsizeiptr)(512), 1, NULL));
-        glGetIntegerv(pname, data);
-        return 0;
-    }
+    case 63: return special_glGetIntegerv(c, slot);
     case 64: {    /* glGetProgramiv */
         GLuint program = (GLuint)slot[0];
         GLenum pname = (GLenum)slot[1];

@@ -12,6 +12,7 @@
 #include "../core/binder.h"
 #include "../core/proc.h"
 #ifdef AOI_GPU
+#include "../core/hle.h"
 #include "../gpu/host.h"
 #endif
 #ifdef AOI_ORACLE
@@ -199,6 +200,7 @@ int main(int argc, char **argv)
     if (getenv("AOI_CLIP")) { snprintf(clipbuf, sizeof clipbuf, "%s", getenv("AOI_CLIP")); proc.clip = clip; }
 #ifdef AOI_GPU
     proc.gpu = aoi_gpu_call;                         /* the guest's OpenGL ES on the host's EGL/GLES */
+    aoi_hle_gpu = 1;
 #endif
     if (getenv("AOI_SNAPSHOT_LOAD")) aoi_sf_redraw(&proc);      /* the frame it was showing: taps start */
     clock_gettime(CLOCK_MONOTONIC, &t0);

@@ -33,7 +33,7 @@ SPECIAL = {
     "glDrawElementsInstanced", "glDrawElementsBaseVertex", "glDrawRangeElementsBaseVertex",
     "glDrawElementsInstancedBaseVertex",
     "glFenceSync", "glDeleteSync", "glIsSync", "glClientWaitSync", "glWaitSync", "glGetSynciv",
-    "glDebugMessageCallback",
+    "glDebugMessageCallback", "glGetIntegerv",
 }
 
 N4 = "4 * (GLsizeiptr)n"

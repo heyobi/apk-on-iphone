@@ -269,13 +269,84 @@ static uint64_t guest_string(struct gl_call *c, const char *s)
     return ga;
 }
 
+/* Extensions the guest is told about: those that add only enums or shader features,
+ * or whose functions are core GLES 3.2 ones under another name (guest/gles.c's
+ * eglGetProcAddress maps glFooEXT/OES/KHR to glFoo). The rest (EGLImage, memory
+ * objects, timer queries, multi-draw...) would send apps to functions we lack. */
+static const char *const ext_ok[] = {
+    "GL_APPLE_sync", "GL_APPLE_texture_max_level", "GL_ANGLE_pack_reverse_row_order",
+    "GL_ANGLE_texture_compression_dxt3", "GL_ANGLE_texture_compression_dxt5",
+    "GL_EXT_blend_minmax", "GL_EXT_color_buffer_float", "GL_EXT_color_buffer_half_float",
+    "GL_EXT_compressed_ETC1_RGB8_sub_texture", "GL_EXT_conservative_depth", "GL_EXT_copy_image",
+    "GL_EXT_depth_clamp", "GL_EXT_discard_framebuffer", "GL_EXT_draw_buffers", "GL_EXT_draw_buffers_indexed",
+    "GL_EXT_draw_instanced", "GL_EXT_float_blend", "GL_EXT_frag_depth", "GL_EXT_geometry_point_size",
+    "GL_EXT_geometry_shader", "GL_EXT_gpu_shader5", "GL_EXT_instanced_arrays", "GL_EXT_map_buffer_range",
+    "GL_EXT_occlusion_query_boolean", "GL_EXT_primitive_bounding_box", "GL_EXT_read_format_bgra",
+    "GL_EXT_render_snorm", "GL_EXT_robustness", "GL_EXT_sRGB_write_control", "GL_EXT_separate_shader_objects",
+    "GL_EXT_shader_framebuffer_fetch", "GL_EXT_shader_group_vote", "GL_EXT_shader_implicit_conversions",
+    "GL_EXT_shader_integer_mix", "GL_EXT_shader_io_blocks", "GL_EXT_shadow_samplers",
+    "GL_EXT_tessellation_point_size", "GL_EXT_tessellation_shader", "GL_EXT_texture_border_clamp",
+    "GL_EXT_texture_buffer", "GL_EXT_texture_compression_bptc", "GL_EXT_texture_compression_dxt1",
+    "GL_EXT_texture_compression_rgtc", "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_compression_s3tc_srgb",
+    "GL_EXT_texture_cube_map_array", "GL_EXT_texture_filter_anisotropic", "GL_EXT_texture_filter_minmax",
+    "GL_EXT_texture_format_BGRA8888", "GL_EXT_texture_mirror_clamp_to_edge", "GL_EXT_texture_norm16",
+    "GL_EXT_texture_query_lod", "GL_EXT_texture_rg", "GL_EXT_texture_sRGB_R8", "GL_EXT_texture_sRGB_RG8",
+    "GL_EXT_texture_sRGB_decode", "GL_EXT_texture_shadow_lod", "GL_EXT_texture_storage",
+    "GL_EXT_texture_type_2_10_10_10_REV", "GL_EXT_unpack_subimage", "GL_KHR_blend_equation_advanced",
+    "GL_KHR_blend_equation_advanced_coherent", "GL_KHR_context_flush_control", "GL_KHR_debug",
+    "GL_KHR_robust_buffer_access_behavior", "GL_KHR_robustness", "GL_KHR_texture_compression_astc_ldr",
+    "GL_NV_draw_buffers", "GL_NV_fbo_color_attachments", "GL_NV_generate_mipmap_sRGB", "GL_NV_image_formats",
+    "GL_NV_pack_subimage", "GL_NV_pixel_buffer_object", "GL_NV_read_buffer", "GL_NV_read_depth",
+    "GL_NV_read_depth_stencil", "GL_NV_read_stencil", "GL_NV_shader_noperspective_interpolation",
+    "GL_OES_compressed_ETC1_RGB8_texture", "GL_OES_copy_image", "GL_OES_depth24", "GL_OES_depth_texture",
+    "GL_OES_depth_texture_cube_map", "GL_OES_draw_buffers_indexed", "GL_OES_element_index_uint",
+    "GL_OES_fbo_render_mipmap", "GL_OES_geometry_point_size", "GL_OES_geometry_shader", "GL_OES_get_program_binary",
+    "GL_OES_gpu_shader5", "GL_OES_packed_depth_stencil", "GL_OES_primitive_bounding_box",
+    "GL_OES_required_internalformat", "GL_OES_rgb8_rgba8", "GL_OES_sample_shading", "GL_OES_sample_variables",
+    "GL_OES_shader_image_atomic", "GL_OES_shader_io_blocks", "GL_OES_shader_multisample_interpolation",
+    "GL_OES_standard_derivatives", "GL_OES_stencil8", "GL_OES_surfaceless_context", "GL_OES_tessellation_point_size",
+    "GL_OES_tessellation_shader", "GL_OES_texture_border_clamp", "GL_OES_texture_buffer",
+    "GL_OES_texture_cube_map_array", "GL_OES_texture_float", "GL_OES_texture_float_linear",
+    "GL_OES_texture_half_float", "GL_OES_texture_half_float_linear", "GL_OES_texture_npot",
+    "GL_OES_texture_stencil8", "GL_OES_texture_storage_multisample_2d_array", "GL_OES_vertex_array_object",
+    "GL_OES_vertex_half_float",
+};
+
+static const char *exts[256];       /* the host's extensions the guest sees */
+static int nexts = -1;
+static char *ext_string;
+
+static void load_extensions(void)
+{
+    GLint n = 0, i;
+    size_t len = 1, k;
+    if (nexts >= 0) return;
+    nexts = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+    for (i = 0; i < n && nexts < 256; i++) {
+        const char *e = (const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+        for (k = 0; e && k < sizeof ext_ok / sizeof ext_ok[0]; k++)
+            if (!strcmp(e, ext_ok[k])) { exts[nexts++] = ext_ok[k]; len += strlen(e) + 1; break; }
+    }
+    ext_string = calloc(1, len);
+    for (i = 0; ext_string && i < nexts; i++) {
+        if (i) strcat(ext_string, " ");
+        strcat(ext_string, exts[i]);
+    }
+}
+
 static uint64_t special_glGetString(struct gl_call *c, const uint64_t *s)
 {
+    if ((GLenum)s[0] == GL_EXTENSIONS) { load_extensions(); return guest_string(c, ext_string); }
     return guest_string(c, (const char *)glGetString((GLenum)s[0]));
 }
 
 static uint64_t special_glGetStringi(struct gl_call *c, const uint64_t *s)
 {
+    if ((GLenum)s[0] == GL_EXTENSIONS) {
+        load_extensions();
+        return (GLuint)s[1] < (GLuint)nexts ? guest_string(c, exts[s[1]]) : 0;
+    }
     return guest_string(c, (const char *)glGetStringi((GLenum)s[0], (GLuint)s[1]));
 }
 
@@ -651,6 +722,15 @@ static uint64_t special_glGetSynciv(struct gl_call *c, const uint64_t *s)
     GLsizei *len = gl_ptr(c, s[3], 4, 1, NULL);
     GLint *val = gl_ptr(c, s[4], 4 * (GLsizeiptr)count, 1, NULL);
     if (sync_of(s[0])) glGetSynciv(sync_of(s[0]), (GLenum)s[1], count, len, val);
+    return 0;
+}
+
+static uint64_t special_glGetIntegerv(struct gl_call *c, const uint64_t *s)
+{
+    GLint *v = gl_ptr(c, s[1], 512, 1, NULL);
+    if (!v) return 0;
+    if ((GLenum)s[0] == GL_NUM_EXTENSIONS) { load_extensions(); *v = nexts; return 0; }
+    glGetIntegerv((GLenum)s[0], v);
     return 0;
 }
 

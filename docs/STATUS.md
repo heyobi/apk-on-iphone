@@ -392,6 +392,27 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Qalculate drawn by HWUI on the GPU (host).** With AOI_HWUI=1 aoi.Main leaves
+ThreadedRenderer on, and HWUI's SkiaGL pipeline runs on our driver: Qalculate's
+window is an EGL window surface, each frame Skia renders with GLES on the host GPU
+(Mesa here) and eglSwapBuffers copies into the window's buffer. Same picture as the
+software path, taps work. Guest instructions per frame: ~2-3 M (a tap's first frame
+~20 M) where software rendering took ~65 M: the pixels are no longer the guest's job.
+What HWUI needed on the way:
+- extensions: the guest sees only the host's extensions that add enums/shader
+  features or whose functions are core GLES 3.2 under an EXT/OES/KHR/NV/APPLE name
+  (gpu/host.c's list; glGetString, glGetStringi and GL_NUM_EXTENSIONS agree), and
+  eglGetProcAddress maps those names to the core stubs (glDiscardFramebufferEXT ->
+  glInvalidateFramebuffer). Skia's GrGLInterface validates every advertised one.
+- core/sf.c: ISurfaceComposer getStaticDisplayInfo (12), getDynamicDisplayInfoFromId
+  (13, Android 14's layout read off libgui's readFromParcel: one 60 Hz mode, sRGB
+  only) and getCompositionPreference (34): HWUI aborted "Failed to acquire physical
+  displays for WCG support!" without them.
+- core/hle.c's no-GPU stand-ins for HardwareRenderer.nSetSurface/nCopySurfaceInto
+  stay out when the guest has a GPU (aoi_hle_gpu): HWUI and the text Magnifier get
+  real surfaces.
+AOI_HWUI stays off by default until the phone has the GPU (ANGLE).
+
 **OpenGL ES for the guest, first light (host).** A GPU driver of our own, so apps
 and games can draw with OpenGL ES and HWUI can leave software rendering:
 - guest/gles.c is /vendor/lib64/egl/libGLES_aoi.so, which Android's own libEGL loads

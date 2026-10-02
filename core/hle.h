@@ -9,6 +9,10 @@
  * the branch is taken as usual. */
 int aoi_hle_run(struct aoi_cpu *c, uint64_t target);
 
+/* Set when the guest has a GPU (core/gpu.h): libhwui's HardwareRenderer then gets
+ * its surfaces, and the no-GPU stand-ins (no_gpu in core/hle.c) stay out. */
+extern int aoi_hle_gpu;
+
 /* libhwui.so is mapped with load bias base: its stand-ins apply to this CPU. */
 void aoi_hle_attach(struct aoi_cpu *c, uint64_t base);
 

@@ -484,10 +484,28 @@ EXPORT EGLproc eglGetProcAddress(const char *name)
         { "eglPresentationTimeANDROID", (void *)eglPresentationTimeANDROID },
     };
     unsigned i;
+    static const char *const suffix[] = { "OES", "EXT", "KHR", "APPLE", "NV", "ANGLE" };
+    char core[96];
+    unsigned k, n;
     if (!name) return 0;
     for (i = 0; i < sizeof aoi_gl_procs / sizeof aoi_gl_procs[0]; i++)
         if (streq(aoi_gl_procs[i].name, name)) return (EGLproc)aoi_gl_procs[i].fn;
     for (i = 0; i < sizeof egl / sizeof egl[0]; i++)
         if (streq(egl[i].name, name)) return (EGLproc)egl[i].fn;
+    if (streq(name, "glDiscardFramebufferEXT")) return (EGLproc)glInvalidateFramebuffer;
+    /* an extension's name for a core function (the extensions the host reports are
+     * those whose functions are core, gpu/host.c) */
+    for (n = 0; name[n] && n < sizeof core - 1; n++) core[n] = name[n];
+    core[n] = 0;
+    for (k = 0; k < sizeof suffix / sizeof suffix[0]; k++) {
+        unsigned m = 0;
+        while (suffix[k][m]) m++;
+        if (n > m + 2 && streq(core + n - m, suffix[k])) {
+            core[n - m] = 0;
+            for (i = 0; i < sizeof aoi_gl_procs / sizeof aoi_gl_procs[0]; i++)
+                if (streq(aoi_gl_procs[i].name, core)) return (EGLproc)aoi_gl_procs[i].fn;
+            core[n - m] = name[n - m];
+        }
+    }
     return 0;
 }

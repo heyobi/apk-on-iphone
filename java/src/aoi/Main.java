@@ -53,11 +53,13 @@ public final class Main {
         ServiceManager.addService("clipboard", new Clipboard());
         ServiceManager.addService("audio", new AudioService());
         Services.standIns();                                       /* the rest: default answers */
-        /* No GPU in the guest yet (a GSI has no vendor GLES driver; its ANGLE needs Vulkan):
-         * windows draw in software, with Skia on the CPU, into buffers we can show. */
-        java.lang.reflect.Field hw = Class.forName("android.view.ThreadedRenderer").getDeclaredField("sRendererEnabled");
-        hw.setAccessible(true);
-        hw.setBoolean(null, false);
+        /* Windows draw in software (Skia on the CPU) unless AOI_HWUI is set: then HWUI's
+         * GPU pipeline runs on our OpenGL ES driver (guest/gles.c, gpu/host.c). */
+        if (System.getenv("AOI_HWUI") == null) {
+            java.lang.reflect.Field hw = Class.forName("android.view.ThreadedRenderer").getDeclaredField("sRendererEnabled");
+            hw.setAccessible(true);
+            hw.setBoolean(null, false);
+        }
         ActivityThread.main(new String[0]);
     }
 }

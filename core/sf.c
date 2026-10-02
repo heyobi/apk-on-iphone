@@ -232,6 +232,57 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
         aoi_p32(rep, 1);
         aoi_p64(rep, DISPLAY_ID);
         break;
+    case 12: {                                                 /* getStaticDisplayInfo(long id) -> StaticDisplayInfo */
+        float density = 2.0f;                                  /* (HWUI's GPU pipeline asks, for wide color) */
+        uint32_t bits;
+        memcpy(&bits, &density, 4);
+        ok(rep);
+        aoi_p32(rep, 1);                                       /* non-null */
+        aoi_p32(rep, 24);                                      /* the parcelable's size, this int included */
+        aoi_p32(rep, 0);                                       /* connectionType: Internal */
+        aoi_p32(rep, (int32_t)bits);                           /* density */
+        aoi_p32(rep, 1);                                       /* secure */
+        aoi_p32(rep, 0);                                       /* deviceProductInfo: null */
+        aoi_p32(rep, 0);                                       /* installOrientation: Rotation0 */
+        break;
+    }
+    case 13:                                                   /* getDynamicDisplayInfoFromId(long id) -> DynamicDisplayInfo */
+        /* Android 14's layout (libgui's readFromParcel): HWUI's GPU pipeline reads the
+         * color modes (sRGB only: no wide color) and the mode; Java gets the display
+         * from aoi.DisplayManager, so the resolution here is nominal. */
+        ok(rep);
+        aoi_p32(rep, 1);                                       /* non-null */
+        aoi_p32(rep, 140);                                     /* DynamicDisplayInfo, size included */
+        aoi_p32(rep, 1);                                       /* supportedDisplayModes: one */
+        aoi_p32(rep, 1);                                       /*   non-null */
+        aoi_p32(rep, 72);                                      /*   DisplayMode, size included */
+        aoi_p32(rep, 0);                                       /*   id */
+        aoi_p32(rep, 1); aoi_p32(rep, 12); aoi_p32(rep, 804); aoi_p32(rep, 1556);   /* resolution: Size */
+        aoi_pf32(rep, 460.0f); aoi_pf32(rep, 460.0f);          /*   xDpi, yDpi */
+        aoi_p32(rep, 0);                                       /*   supportedHdrTypes: none */
+        aoi_pf32(rep, 60.0f); aoi_pf32(rep, 60.0f);            /*   refresh rates */
+        aoi_p64(rep, 0); aoi_p64(rep, 0);                      /*   app/sf vsync offsets */
+        aoi_p64(rep, 16666666);                                /*   presentationDeadline */
+        aoi_p32(rep, 0);                                       /*   group */
+        aoi_p32(rep, 0);                                       /* activeDisplayModeId */
+        aoi_pf32(rep, 60.0f);                                  /* renderFrameRate */
+        aoi_p32(rep, 1); aoi_p32(rep, 0);                      /* supportedColorModes: NATIVE */
+        aoi_p32(rep, 0);                                       /* activeColorMode */
+        aoi_p32(rep, 1); aoi_p32(rep, 20);                     /* hdrCapabilities: non-null, size */
+        aoi_p32(rep, 0);                                       /*   supportedHdrTypes: none */
+        aoi_pf32(rep, 500.0f); aoi_pf32(rep, 500.0f); aoi_pf32(rep, 0.05f);
+        aoi_p32(rep, 0); aoi_p32(rep, 0);                      /* autoLowLatencyMode, gameContentType */
+        aoi_p32(rep, 0);                                       /* preferredBootDisplayMode */
+        break;
+    case 34:                                                   /* getCompositionPreference() -> CompositionPreference */
+        ok(rep);
+        aoi_p32(rep, 1);                                       /* non-null */
+        aoi_p32(rep, 20);                                      /* size included */
+        aoi_p32(rep, 142671872);                               /* defaultDataspace: V0_SRGB */
+        aoi_p32(rep, 1);                                       /* defaultPixelFormat: RGBA_8888 */
+        aoi_p32(rep, 142671872);                               /* wideColorGamutDataspace: none wider */
+        aoi_p32(rep, 1);                                       /* wideColorGamutPixelFormat */
+        break;
     default:
         if (p->trace)
             fprintf(p->trace, "[sf] ISurfaceComposer.%s (%u) not implemented\n",
