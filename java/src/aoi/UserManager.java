@@ -22,4 +22,5 @@ final class UserManager extends IUserManager.Stub {
     @Override public int[] getProfileIds(int u, boolean enabledOnly) { return new int[] { 0 }; }
     @Override public String getProfileType(int u) { return ""; }
     @Override public long getUserCreationTime(int u) { return 1700000000000L; }
+    @Override public Bundle getApplicationRestrictionsForUser(String pkg, int u) { return new Bundle(); }
 }

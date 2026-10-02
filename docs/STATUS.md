@@ -392,6 +392,15 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Clipboard (app 0.29).** Qalculate died on a touch on the phone: its copy action
+asks for the "clipboard" service, ClipboardManager's constructor threw
+ServiceNotFoundException, getSystemService answered null and the app's own code
+dereferenced it (NullPointerException in b5.a). aoi.Clipboard now serves
+IClipboard in the process (set/get/clear/has, listeners); not yet the iPhone's
+pasteboard. IUserManager.getApplicationRestrictionsForUser answers an empty Bundle
+(Kiwi's background task died on it). aoiproc's AOI_TAPS takes "x,y,ms" for a long
+press.
+
 **The snapshot's skip, made to work on iOS (app 0.28).** 0.27's lines settled it: a
 Qalculate resumed from its snapshot stays at ~405 MB, flat, while a fresh start jumps
 from 377 MB to 2.3 GB right when its first snapshot is saved, and closing an app (which

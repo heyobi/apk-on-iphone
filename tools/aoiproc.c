@@ -28,12 +28,12 @@
  * file mappings that were never touched). */
 /* AOI_TAPS="x,y;x,y;...": after the first frame, taps in screen pixels 4 s apart
  * (aoi_proc_touch from another thread, as the iOS view sends them); "back" presses
- * the back key. */
+ * the back key; "x,y,ms" holds the finger down that long (a long press). */
 static void *taps(void *arg)
 {
     const char *s = getenv("AOI_TAPS");
     float x, y;
-    int n;
+    int n, hold;
     for (;;) {
         if (!strncmp(s, "back", 4)) {                     /* "back": the back key */
             sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
@@ -44,12 +44,14 @@ static void *taps(void *arg)
             continue;
         }
         if (sscanf(s, "%f,%f%n", &x, &y, &n) != 2) break;
+        hold = 120;
+        { int h, m; if (sscanf(s + n, ",%d%n", &h, &m) == 1) { hold = h; n += m; } }
         sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
         { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
           fprintf(stderr, "[aoiproc] tap %.0f,%.0f at %.3f s, %llu instructions\n", x, y,
                   (double)ts.tv_sec + (double)ts.tv_nsec / 1e9, (unsigned long long)((struct aoi_proc *)arg)->cpu.steps); }
         aoi_proc_touch(arg, 0, x, y);
-        { struct timespec ts = { 0, 120000000 }; nanosleep(&ts, NULL); }   /* a finger stays ~0.1 s */
+        { struct timespec ts = { hold / 1000, (long)(hold % 1000) * 1000000 }; nanosleep(&ts, NULL); }   /* a tap: ~0.1 s */
         aoi_proc_touch(arg, 1, x, y);
         s += n;
         if (*s == ';') s++;

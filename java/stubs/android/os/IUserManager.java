@@ -19,6 +19,7 @@ public interface IUserManager {
     int[] getProfileIds(int userId, boolean enabledOnly) throws RemoteException;
     String getProfileType(int userId) throws RemoteException;
     long getUserCreationTime(int userId) throws RemoteException;
+    Bundle getApplicationRestrictionsForUser(String packageName, int userId) throws RemoteException;
 
     abstract class Stub extends Binder implements IUserManager {
         public Stub() {}
