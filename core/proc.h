@@ -91,6 +91,9 @@ struct aoi_proc {
      * packed 4-byte pixels (R, G, B, X/A) */
     void (*frame)(void *ctx, const uint8_t *pixels, uint32_t width, uint32_t height);
     void *frame_ctx;
+    /* if set: called (with frame_ctx) when the app leaves for the launcher: aoi.Main
+     * opens "/dev/aoi_home" (back on its root activity, finish) */
+    void (*home)(void *ctx);
     int input_w;                    /* host write end of /dev/aoi_input (touches for aoi.Input), or 0 */
     int input_pair;                 /* its pair id (the guest holds end 0) */
     int next_pair;                  /* pair ids of host pipes and socket pairs */

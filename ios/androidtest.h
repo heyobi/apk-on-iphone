@@ -26,10 +26,15 @@ int aoi_android_art_gc(const char *root, const char *tmpdir, aoi_log_fn log, voi
  * plus the APK). Every frame SurfaceFlinger shows goes to frame(). The app's
  * logcat and output go to logpath. Returns when the app's process ends. A snapshot
  * of the started app (aoi_android_snapshot) is loaded instead of starting it again
- * when it was taken for the same build, APK and compiled code. */
+ * when it was taken for the same build, APK, compiled code and display. display is
+ * "width height dpi" (aoi.DisplayManager); home() is called when the app leaves for the
+ * launcher (back on its root activity). */
 typedef void (*aoi_frame_fn)(void *ctx, const unsigned char *rgbx, unsigned width, unsigned height);
-int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
-                    void *frame_ctx, aoi_log_fn log, void *ctx);
+int aoi_android_app(const char *root, const char *datadir, const char *logpath, const char *display,
+                    aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx);
+
+/* Ends the running app's process (after aoi_android_snapshot, it resumes from there). */
+void aoi_android_stop(void);
 
 /* A touch for the running app (from any thread): action 0 down, 1 up, 2 move, 4
  * cancel, at (x, y) in its screen pixels (the frames' size). Ignored when no app runs. */

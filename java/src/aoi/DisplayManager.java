@@ -6,12 +6,27 @@ import android.hardware.display.IDisplayManagerCallback;
 import android.view.Display;
 import android.view.DisplayInfo;
 
-/** One display, 0: the iPhone's screen as Android sees it — 393 x 852 dp, the iPhone's
- *  points, at 2x: 786 x 1704 pixels, 320 dpi, 60 Hz, on. (The phone's panel is 3x, but
- *  every frame is drawn in software and Skia's rasterizing is ~90 % of a frame: 2x is
- *  2.25 times fewer pixels; the iPhone scales the frames up.) */
+/** One display, 0: the part of the iPhone's screen the app gets (its safe area, between
+ *  the Dynamic Island and the home indicator), in the iPhone's points at 2x: 320 dpi,
+ *  60 Hz, on. The host writes "width height dpi" to /data/local/tmp/aoi.display before
+ *  the launch; without it, 786 x 1704 (393 x 852 points). (The panel is 3x, but every
+ *  frame is drawn in software and rasterizing dominates a frame: 2x is 2.25 times fewer
+ *  pixels; the iPhone scales the frames up.) */
 final class DisplayManager extends IDisplayManager.Stub {
-    static final int WIDTH = 786, HEIGHT = 1704, DPI = 320;
+    static int WIDTH = 786, HEIGHT = 1704, DPI = 320;
+
+    static {
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader("/data/local/tmp/aoi.display"));
+            String[] f = r.readLine().trim().split("\\s+");
+            r.close();
+            int w = Integer.parseInt(f[0]), h = Integer.parseInt(f[1]), dpi = Integer.parseInt(f[2]);
+            if (w > 0 && h > 0 && dpi > 0) { WIDTH = w; HEIGHT = h; DPI = dpi; }
+        } catch (Exception e) {
+            // the default display
+        }
+        System.out.println("aoi: display " + WIDTH + "x" + HEIGHT + " " + DPI + " dpi");
+    }
     static final float HZ = 60f;
 
     DisplayManager() { super(GrantAll.INSTANCE); }

@@ -12,4 +12,9 @@ void *aoi_apk_extract(const void *zip, size_t size, const char *name, size_t *ou
 /* Calls fn for each entry name; stops early if fn returns nonzero. */
 void aoi_apk_list(const void *zip, size_t size, int (*fn)(const char *name, size_t len, void *ctx), void *ctx);
 
+/* The package name and application label from AndroidManifest.xml (binary XML). A
+ * label that is a resource reference is not resolved: the package's last part, capitalised,
+ * stands in. 0, or -1 if there is no manifest or package. */
+int aoi_apk_manifest(const void *zip, size_t size, char *pkg, size_t pkgn, char *label, size_t labeln);
+
 #endif

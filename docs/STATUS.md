@@ -392,6 +392,23 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**A launcher (app 0.19).** ios/main.m is now a launcher of installed APKs: glass cards
+(iOS 26's UIGlassEffect, looked up at run time; a blur material before), "APK ekle",
+and a developer page with the old tests and logs. Each app lives in Documents/apps/
+<package> (its /data; <package>.snap, .key, .log, .plist with its label; 0.17's
+Documents/adata moves there); `aoi_apk_manifest` (core/apk.c) reads the package and
+label from the binary AndroidManifest.xml. One process at a time: opening another app
+snapshots and ends the running one. Each app opens with aoi://open?app=<package> (the
+Info.plist URL scheme), from a Shortcuts home-screen icon (the tile's menu copies the
+link, saves the app's icon to Photos and opens Shortcuts) or the app icon's quick
+actions (the first four apps). The app's screen fills the safe area: the host writes
+"width height dpi" (safe area in points x2, 320 dpi; 804 x 1556 on an iPhone 16 Pro) to
+/data/local/tmp/aoi.display, aoi.DisplayManager reads it, the snapshot key includes it.
+Back is a glass drop pulled from the left edge (stretches, a haptic once it would go
+back). Back on the app's root activity (or finish) opens "/dev/aoi_home" -> p->home ->
+the launcher comes up; the process stays for the next open. App icon: an Android head
+on an iPhone, ios/icons (CFBundleIconFiles).
+
 **Skia's hot code natively (core/hle.c, app 0.18).** Software rendering spends its
 frames in a few libhwui.so functions: the highp raster pipeline's stages (seed_shader,
 matrix_2x3, a 2-stop gradient, clamps, dither, load_8888_dst, dstin, store_8888,
@@ -402,8 +419,9 @@ libhwui.so; each checked by an FNV hash of its code before use, so another libhw
 just runs interpreted); the stand-in does what the instructions do in the same order
 (fused where the code has fmla, no contraction elsewhere, ARM min/max on zeros, the
 NEON rounding of x/255) and declines (interpreted) on NaNs, a non-default FPCR or
-memory that is not plain. `AOI_HLE_CHECK=1` runs each stand-in against the
-interpreter (registers and pixels compared): 0 differences over the Qalculate taps.
+memory that is not plain. `AOI_HLE_CHECK=n` runs every n-th stand-in call against the
+interpreter too (registers and pixels compared): 371,132 checked over Qalculate taps
+and its drawer, 0 differ.
 The dither stage was also checked against Unicorn. libhwui's base comes from its
 executable mapping (sys_mmap with PROT_EXEC; an earlier non-exec mapping of the file
 gave a wrong one). Host, Qalculate taps from a snapshot: 37 -> 109 M guest

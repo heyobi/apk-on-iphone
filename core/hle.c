@@ -18,8 +18,8 @@
  * has fmul and fadd; this file must not contract them), with ARM's min/max on zeros.
  * Inputs or results the host could treat differently (NaNs, a non-default FPCR,
  * memory that is not plain) make it decline: the stage is then interpreted.
- * AOI_HLE_CHECK=1 runs every stand-in against the interpreter and reports
- * differences (host testing); AOI_HLE=0 turns them off. */
+ * AOI_HLE_CHECK=n runs every n-th stand-in call against the interpreter and reports
+ * differences (host testing; 1: all of them); AOI_HLE=0 turns them off. */
 #include "hle.h"
 #include "cpu_impl.h"
 
@@ -343,7 +343,9 @@ static const struct stage stages[] = {
 /* Per library base: which stages matched their hash (checked on first use). */
 static uint64_t checked_base;
 static signed char ok[NSTAGES];         /* 1 matches, 0 not (yet) checked, -1 differs */
-static int check_mode = -1;             /* AOI_HLE_CHECK */
+static int check_mode = -1;             /* AOI_HLE_CHECK=n: every n-th run is checked (0: none) */
+static uint64_t check_count;
+#define CHECK_NOW() (check_mode && check_count++ % (uint64_t)check_mode == 0)
 static uint64_t n_checked, n_bad;
 
 static int stage_ok(struct aoi_cpu *c, int i)
@@ -468,14 +470,14 @@ static int run(struct aoi_cpu *c)
             return 2;
         }
         if (stages[i].call) {                                       /* a function: runs, returns */
-            if (check_mode) { check_call(c, i); ran = 1; if (c->stop != AOI_RUN) break; continue; }
+            if (CHECK_NOW()) { check_call(c, i); ran = 1; if (c->stop != AOI_RUN) break; continue; }
             if (!stages[i].fn(c, 0)) break;
             c->pc = c->x[30];
             ran = 1;
             continue;
         }
         if (!hrd(c, c->x[0] + 8, &ctx, 8) || !hrd(c, c->x[0] + 16, &next, 8)) break;
-        if (check_mode) { check(c, i, ctx); ran = 1; if (c->stop != AOI_RUN) break; continue; }
+        if (CHECK_NOW()) { check(c, i, ctx); ran = 1; if (c->stop != AOI_RUN) break; continue; }
         if (!stages[i].fn(c, ctx)) break;                           /* declined: interpreted from here */
         c->x[0] += 16;
         c->x[4] = next;
@@ -515,7 +517,8 @@ static int pipeline_loop(struct aoi_cpu *c)
 
 int aoi_hle_run(struct aoi_cpu *c, uint64_t target)
 {
-    if (check_mode < 0 && (check_mode = getenv("AOI_HLE_CHECK") && *getenv("AOI_HLE_CHECK") == '1')) atexit(report);
+    if (check_mode < 0 && (check_mode = getenv("AOI_HLE_CHECK") ? atoi(getenv("AOI_HLE_CHECK")) : 0) > 0) atexit(report);
+    if (check_mode < 0) check_mode = 0;
     if (c->fpcr & 0x03c00000u) return 0;                            /* not round-to-nearest IEEE: interpret */
     c->pc = target;
     return run(c) != 0;

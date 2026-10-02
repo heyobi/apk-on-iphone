@@ -72,6 +72,7 @@ jobs:
             core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c core/snap.c core/hle.c \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics -lz
           cp ios/Info.plist "$APP/Info.plist"
+          cp ios/icons/*.png "$APP/"
           cp -RP aroot-mini "$APP/aroot"
           find "$APP/aroot" -type f -exec chmod a-x {} +   # ELF data for the interpreter, not code to sign
           du -sh "$APP/aroot"

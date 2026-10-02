@@ -83,14 +83,26 @@ final class ActivityClientController extends IActivityClientController.Stub {
     @Override public void setImmersive(IBinder t, boolean immersive) {}
     @Override public void setTaskDescription(IBinder t, ActivityManager.TaskDescription d) {}
 
+    /** Leaving the app (back on its root activity, finish, task to back): as Android's
+     *  launcher would come up, the host shows its own (open "/dev/aoi_home"); the
+     *  process stays as it is, ready to be shown again. */
+    private static void home() {
+        try {
+            new java.io.FileInputStream("/dev/aoi_home").close();
+        } catch (Exception e) {
+            // expected: the open always fails
+        }
+    }
+
     @Override
     public boolean finishActivity(IBinder t, int code, Intent data, int finishTask) {
         log("finish requested");
+        home();
         return true;
     }
 
-    @Override public boolean moveActivityTaskToBack(IBinder t, boolean nonRoot) { return true; }
-    @Override public void onBackPressed(IBinder t, IRequestFinishCallback cb) {}
+    @Override public boolean moveActivityTaskToBack(IBinder t, boolean nonRoot) { home(); return true; }
+    @Override public void onBackPressed(IBinder t, IRequestFinishCallback cb) { log("back at the root"); home(); }
     @Override public void splashScreenAttached(IBinder t) {}
     @Override public void reportActivityFullyDrawn(IBinder t, boolean restored) { log("fully drawn"); }
     @Override public void overridePendingTransition(IBinder t, String pkg, int enter, int exit, int bg) {}

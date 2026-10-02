@@ -1,6 +1,7 @@
 #include "apk.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
@@ -73,4 +74,73 @@ void *aoi_apk_extract(const void *zip, size_t size, const char *name, size_t *ou
     } else { free(out); *err = "unsupported compression method"; return NULL; }
     *out_size = usize;
     return out;
+}
+
+/* ---------- AndroidManifest.xml (binary XML) ---------- */
+
+/* String i of a string pool chunk at p (size n), as UTF-8 into out. */
+static void pool_string(const uint8_t *p, size_t n, uint32_t i, char *out, size_t outn)
+{
+    uint32_t count = u32(p + 8), flags = u32(p + 16), start = u32(p + 20), off;
+    size_t o = 0, k, len;
+    const uint8_t *s;
+    out[0] = 0;
+    if (i >= count || 28 + 4 * (size_t)i + 4 > n) return;
+    off = u32(p + 28 + 4 * i);
+    if ((size_t)start + off + 4 > n) return;
+    s = p + start + off;
+    if (flags & 0x100) {                                       /* UTF-8: char count, byte count, bytes */
+        s += (s[0] & 0x80) ? 2 : 1;
+        len = (s[0] & 0x80) ? (size_t)((s[0] & 0x7f) << 8 | s[1]) : s[0];
+        s += (s[0] & 0x80) ? 2 : 1;
+        for (k = 0; k < len && o + 1 < outn && s + k < p + n; k++) out[o++] = (char)s[k];
+    } else {                                                   /* UTF-16 units, kept when ASCII */
+        len = u16(s); s += 2;
+        if (len & 0x8000) { len = (len & 0x7fff) << 16 | u16(s); s += 2; }
+        for (k = 0; k < len && o + 1 < outn && s + 2 * k + 1 < p + n; k++) {
+            uint16_t ch = u16(s + 2 * k);
+            out[o++] = ch < 0x80 ? (char)ch : '?';
+        }
+    }
+    out[o] = 0;
+}
+
+int aoi_apk_manifest(const void *zip, size_t size, char *pkg, size_t pkgn, char *label, size_t labeln)
+{
+    const char *err;
+    size_t n = 0, o;
+    uint8_t *x = aoi_apk_extract(zip, size, "AndroidManifest.xml", &n, &err);
+    const uint8_t *pool = NULL;
+    size_t pooln = 0;
+    pkg[0] = label[0] = 0;
+    if (!x) return -1;
+    for (o = 8; o + 8 <= n; ) {                                /* chunks after the XML header */
+        uint16_t type = u16(x + o);
+        uint32_t csize = u32(x + o + 4);
+        if (csize < 8 || o + csize > n) break;
+        if (type == 0x0001 && !pool) { pool = x + o; pooln = csize; }
+        else if (type == 0x0102 && pool && csize >= 36) {      /* start element */
+            const uint8_t *e = x + o + 16;                     /* ns, name, attrStart, attrSize, attrCount */
+            char name[64], an[64];
+            uint16_t astart = u16(e + 8), asize = u16(e + 10), acount = u16(e + 12), a;
+            pool_string(pool, pooln, u32(e + 4), name, sizeof name);
+            for (a = 0; a < acount && 16 + astart + (size_t)(a + 1) * asize <= csize; a++) {
+                const uint8_t *at = e + astart + (size_t)a * asize;
+                pool_string(pool, pooln, u32(at + 4), an, sizeof an);
+                if (!strcmp(name, "manifest") && !strcmp(an, "package"))
+                    pool_string(pool, pooln, u32(at + 8), pkg, pkgn);
+                else if (!strcmp(name, "application") && !strcmp(an, "label") && at[15] == 0x03)
+                    pool_string(pool, pooln, u32(at + 16), label, labeln);   /* a plain string label */
+            }
+            if (!strcmp(name, "application")) break;
+        }
+        o += csize;
+    }
+    free(x);
+    if (pkg[0] && !label[0]) {                                 /* com.example.foo -> Foo */
+        const char *d = strrchr(pkg, '.');
+        snprintf(label, labeln, "%s", d ? d + 1 : pkg);
+        if (label[0] >= 'a' && label[0] <= 'z') label[0] = (char)(label[0] - 32);
+    }
+    return pkg[0] ? 0 : -1;
 }

@@ -194,6 +194,12 @@ void aoi_android_touch(int action, float x, float y)
     if (p) aoi_proc_touch(p, action, x, y);
 }
 
+void aoi_android_stop(void)
+{
+    struct aoi_proc *p = running;
+    if (p) p->stop_request = 1;                         /* aoi_proc_run returns; aoi_android_app ends */
+}
+
 void aoi_android_back(void)
 {
     struct aoi_proc *p = running;
@@ -212,8 +218,15 @@ static void snap_key(const char *datadir, char *key, size_t n)
     snprintf(o, sizeof o, "%s/app/apk/oat/arm64/base.odex", datadir);
     if (stat(a, &sa)) memset(&sa, 0, sizeof sa);
     if (stat(o, &so)) memset(&so, 0, sizeof so);
-    snprintf(key, n, "apk %lld %lld odex %lld %lld\n", (long long)sa.st_size, (long long)sa.st_mtime,
-             (long long)so.st_size, (long long)so.st_mtime);
+    {
+        char d[1024], disp[64] = "";                       /* the display the snapshot was laid out for */
+        FILE *f;
+        snprintf(d, sizeof d, "%s/local/tmp/aoi.display", datadir);
+        if ((f = fopen(d, "r"))) { if (!fgets(disp, sizeof disp, f)) disp[0] = 0; fclose(f); }
+        disp[strcspn(disp, "\n")] = 0;
+        snprintf(key, n, "apk %lld %lld odex %lld %lld display %s\n", (long long)sa.st_size, (long long)sa.st_mtime,
+                 (long long)so.st_size, (long long)so.st_mtime, disp);
+    }
 }
 
 static int snap_key_ok(const char *snap, const char *key)
@@ -236,7 +249,8 @@ static void snap_key_write(const char *snap, const char *key)
 }
 
 static int run_guest(const char *root, const char *datadir, int fd, const char *const *argv, int argc,
-                     aoi_frame_fn frame, void *frame_ctx, const char *what, const char *snap, aoi_log_fn log, void *ctx)
+                     aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, const char *what, const char *snap,
+                     aoi_log_fn log, void *ctx)
 {
     static const char *const base[] = {
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
@@ -288,6 +302,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     snprintf(p->data, sizeof p->data, "%s", datadir);
     p->uffd = 1;                        /* ART's CMC GC and the boot image */
     p->frame = frame;
+    p->home = home;
     p->frame_ctx = frame_ctx;
     p->fd[1].host = fd;
     p->fd[2].host = fd;
@@ -333,20 +348,23 @@ static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_f
     snprintf(dir, sizeof dir, "%s/app/apk/oat", datadir); mkdir(dir, 0755);
     snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", datadir); mkdir(dir, 0755);
     say(log, ctx, "dex2oat: the app's code is compiled once (a few minutes) ...");
-    if (run_guest(root, datadir, fd, argv, 6, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) unlink(odex);   /* run interpreted */
+    if (run_guest(root, datadir, fd, argv, 6, NULL, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) unlink(odex);   /* run interpreted */
 }
 
-int aoi_android_app(const char *root, const char *datadir, const char *logpath, aoi_frame_fn frame,
-                    void *frame_ctx, aoi_log_fn log, void *ctx)
+int aoi_android_app(const char *root, const char *datadir, const char *logpath, const char *display,
+                    aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx)
 {
     static const char *const argv[] = { "/system/bin/app_process64", "/system/bin", "aoi.Main",
                                         "/data/app/apk/base.apk", NULL };
     int fd, rc;
+    char snap[1100], path[1100];
+    FILE *f;
     if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
-    char snap[1100];
+    snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);   /* aoi.DisplayManager reads it */
+    if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }
     snprintf(snap, sizeof snap, "%s.snap", datadir);
     compile_apk(root, datadir, fd, log, ctx);
-    rc = run_guest(root, datadir, fd, argv, 4, frame, frame_ctx, "app", snap, log, ctx);
+    rc = run_guest(root, datadir, fd, argv, 4, frame, home, frame_ctx, "app", snap, log, ctx);
     close(fd);
     return rc;
 }

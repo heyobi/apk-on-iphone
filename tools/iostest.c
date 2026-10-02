@@ -22,7 +22,17 @@ static void *taps(void *arg)
     const char *s = arg;
     float x, y;
     int n;
-    while (sscanf(s, "%f,%f%n", &x, &y, &n) == 2) {
+    for (;;) {
+        if (!strncmp(s, "back", 4)) {                   /* "back": Android's back (aoi_android_back) */
+            sleep(4);
+            printf("back\n");
+            fflush(stdout);
+            aoi_android_back();
+            s += 4;
+            if (*s == ';') s++;
+            continue;
+        }
+        if (sscanf(s, "%f,%f%n", &x, &y, &n) != 2) break;
         sleep(4);
         printf("tap %.0f,%.0f\n", x, y);
         fflush(stdout);
@@ -62,6 +72,14 @@ static void frame(void *ctx, const unsigned char *px, unsigned w, unsigned h)
     fflush(stdout);
 }
 
+/* The app left for the launcher (AOI_APP_DISPLAY="w h dpi" sets its display). */
+static void home(void *ctx)
+{
+    (void)ctx;
+    printf("home\n");
+    fflush(stdout);
+}
+
 int main(int argc, char **argv)
 {
     FILE *f;
@@ -75,8 +93,8 @@ int main(int argc, char **argv)
 
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
-        return aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), "/tmp/aoi-app.log", frame,
-                               (void *)png, out, NULL) == 0 ? 0 : 1;
+        return aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), "/tmp/aoi-app.log",
+                               getenv("AOI_APP_DISPLAY"), frame, home, (void *)png, out, NULL) == 0 ? 0 : 1;
     }
     aoi_vm_probe(out, NULL);
     if (getenv("AOI_ANDROID_ROOT")) {               /* the app's "Android" button */

@@ -1483,6 +1483,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
         if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
+        } else if (!strcmp(g, "/dev/aoi_home")) {                  /* aoi: the app left for the launcher */
+            if (p->home) p->home(p->frame_ctx);
+            r = err(L_ENOENT);
+            break;
         } else if (!strcmp(g, "/dev/aoi_snapshot")) {              /* aoi.Main: the app is up, save it */
             if (p->snap_path[0]) p->snap_request = 1;
             r = err(L_ENOENT);
