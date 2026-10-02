@@ -27,7 +27,10 @@ const char *aoi_vm_init(struct aoi_vm *vm, uint64_t size)
     memset(vm, 0, sizeof *vm);
     size = up(size, AOI_VM_CHUNK);
     if (!(vm->prot = calloc(PG(size), 1))) return "no memory for the page table";
-    if (!(vm->chunk = calloc(CI(size), sizeof *vm->chunk))) { free(vm->prot); vm->prot = NULL; return "no memory for the chunk table"; }
+    if (!(vm->chunk = calloc(CI(size), sizeof *vm->chunk)) || !(vm->filemap = calloc(CI(size), 1))) {
+        free(vm->chunk); free(vm->prot); vm->chunk = NULL; vm->prot = NULL;
+        return "no memory for the chunk table";
+    }
     vm->size = size;
     vm->hint = 0x10000000;          /* keep low addresses free (null page, fixed loads) */
     return NULL;
@@ -44,6 +47,7 @@ void aoi_vm_free(struct aoi_vm *vm)
             }
     free(vm->chunk);
     free(vm->prot);
+    free(vm->filemap);
     memset(vm, 0, sizeof *vm);
 }
 
@@ -90,6 +94,7 @@ static void chunk_release(struct aoi_vm *vm, uint64_t ci)
     if (aoi_vm_chunk_hook) aoi_vm_chunk_hook(vm, ci << AOI_VM_CHUNK_SHIFT, vm->chunk[ci], 0);
     munmap(vm->chunk[ci], AOI_VM_CHUNK);
     vm->chunk[ci] = NULL;
+    vm->filemap[ci] = 0;
     vm->nchunks--;
 }
 
@@ -249,6 +254,7 @@ int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint
                 uint64_t head = hp - fo, tail = fo + n - he;
                 ssize_t g;
                 aoi_vm_mapped_bytes += he - hp;
+                vm->filemap[CI(a)] = 1;
                 aoi_vm_copied_bytes += head + tail;
                 if (head && (g = pread(fd, h, (size_t)head, (off_t)fo)) < 0) return -errno;
                 if (tail && fo + n - tail < fsize && (g = pread(fd, h + (he - fo), (size_t)tail, (off_t)he)) < 0)
@@ -300,6 +306,7 @@ void aoi_vm_move(struct aoi_vm *vm, uint64_t dst, uint64_t src, uint64_t len)
             }
             vm->chunk[CI(d)] = vm->chunk[CI(s)];
             vm->chunk[CI(s)] = t;
+            { uint8_t fm = vm->filemap[CI(d)]; vm->filemap[CI(d)] = vm->filemap[CI(s)]; vm->filemap[CI(s)] = fm; }
             chunk_clear(vm, s, AOI_VM_CHUNK);
             if (aoi_vm_chunk_hook) {
                 aoi_vm_chunk_hook(vm, d, vm->chunk[CI(d)], 1);

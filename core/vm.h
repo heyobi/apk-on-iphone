@@ -35,6 +35,7 @@ struct aoi_vm {
     uint8_t *prot;                  /* one byte per guest page; 0 = unmapped */
     uint64_t hint;                  /* where the next non-fixed mapping is searched from */
     uint64_t nchunks;               /* chunks currently allocated (diagnostics) */
+    uint8_t *filemap;               /* per chunk: a file was mapped into its host memory */
 };
 
 /* Debug hook (the Unicorn oracle): called when a chunk gets host memory

@@ -392,6 +392,21 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Snapshots no longer read untouched memory (app 0.26).** With 0.25 the footprint no
+longer grew while Qalculate was used (826 MB, flat), but a fresh start went from 421 MB
+to 2585 MB within 10 s, and back to ~800 MB half a minute later, where the host's peak
+for the same start is 412 MB. The jump came with the first snapshot: save_memory read
+every mapped guest page to see whether it was zero, and ART maps ~3 GB it never
+touches. On Linux such a read maps the shared zero page; XNU has none for anonymous
+memory, so every read allocated a page (and the phone slowed while the compressor
+caught up). The save now asks mincore() which host pages of a chunk exist: a page
+neither resident nor compressed (MINCORE_PAGED_OUT) was never written and is skipped,
+as it reads as zero. Only on Apple hosts (Linux reports swapped-out anonymous pages
+the same way; AOI_SNAP_MINCORE=1 forces it for a host test), and only in chunks no
+file was mapped into (vm.filemap, set by aoi_vm_map_file: a file page not yet read is
+not resident either). Host check: the snapshot is the same size (78.8 MB), its save
+took 0.9 s instead of 1.6 s, and it resumes and takes taps.
+
 **Windows on top of windows; the memory leak (app 0.25).** Qalculate's menus (the
 row's ⋮, a Compose DropdownMenu: "Pop-Up Window", type 1002) and dialogs (EXACT's
 "Approximation mode", type 2) turned the screen black: every window got a full-screen

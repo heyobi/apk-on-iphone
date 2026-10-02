@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -86,7 +87,13 @@ static const char *save_memory(struct aoi_proc *p, FILE *f)
     uint16_t *pm;
     int *mfd = NULL;
     static uint8_t cmp[PAGE];
+    static unsigned char incore[AOI_VM_CHUNK / 4096];
     const char *e = NULL;
+#ifdef __APPLE__
+    int snap_mincore = 1;
+#else
+    int snap_mincore = getenv("AOI_SNAP_MINCORE") != NULL;       /* host test of the Apple path */
+#endif
 
     if (!pos) return "out of memory";
     w(f, &vm->size, 8); w(f, &vm->hint, 8);
@@ -104,7 +111,18 @@ static const char *save_memory(struct aoi_proc *p, FILE *f)
     for (i = 0; i <= (uint64_t)p->nmaps; i++) mfd[i] = -2;   /* not opened yet */
 
     for (ci = 0; ci < nci; ci++) {
+        long hp = sysconf(_SC_PAGESIZE);
+        int resident = 0;
         if (!vm->chunk[ci]) continue;
+        /* Which host pages of an anonymous chunk exist: on iOS, reading a page that was
+         * never written allocates it (no shared zero page), and ART reserves gigabytes
+         * it never touches; reading all of it took the footprint from 0.4 to 2.5 GB.
+         * A page that is neither resident nor compressed (MINCORE_PAGED_OUT) was never
+         * written: it reads as zero. Only on Apple hosts (Linux reports a swapped-out
+         * anonymous page the same as an untouched one) and only in chunks no file was
+         * mapped into (a file page not yet read is not resident either). */
+        if (snap_mincore && !vm->filemap[ci] && hp > 0 && hp <= (long)AOI_VM_CHUNK && hp % PAGE == 0
+            && mincore((void *)vm->chunk[ci], AOI_VM_CHUNK, (void *)incore) == 0) resident = 1;
         for (k = 0; k < PER_CHUNK; k++) {
             uint64_t pg = ci * PER_CHUNK + k, a = pg * PAGE;
             uint8_t *b = vm->chunk[ci] + k * PAGE;
@@ -112,6 +130,7 @@ static const char *save_memory(struct aoi_proc *p, FILE *f)
             uint8_t kind;
             uint32_t one = 1;
             if (!vm->prot[pg]) continue;
+            if (resident && !incore[k * PAGE / (uint64_t)hp]) continue;   /* never written: zero */
             if (mi) {                                        /* the same bytes as its file? */
                 struct aoi_proc_map *m = &p->maps[mi - 1];
                 uint64_t fo = m->off + (a - m->start);
