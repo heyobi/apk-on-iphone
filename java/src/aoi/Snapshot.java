@@ -24,6 +24,7 @@ final class Snapshot {
     private Snapshot() {}
 
     static void take() {
+        if (!busy("/dev/aoi_snapshot_wanted")) return;            /* the host does not want one */
         boolean gpu = System.getenv("AOI_HWUI") != null;
         final java.util.List<Object> gl = new java.util.ArrayList<Object>();
         if (gpu) {
@@ -88,9 +89,12 @@ final class Snapshot {
         }
     }
 
-    private static boolean gpuLive() {
+    private static boolean gpuLive() { return busy("/dev/aoi_gpu_live"); }
+
+    /** The host's yes/no files: opening one fails, with EBUSY for yes. */
+    private static boolean busy(String path) {
         try {
-            new FileInputStream("/dev/aoi_gpu_live").close();
+            new FileInputStream(path).close();
         } catch (IOException e) {
             return String.valueOf(e.getMessage()).contains("EBUSY");
         }

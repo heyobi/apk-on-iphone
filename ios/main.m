@@ -230,11 +230,46 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 
 /* ---------- the app's screen ---------- */
 
-@interface AoiScreen : UIImageView
+@interface AoiScreen : UIImageView <UIKeyInput>
+@property(nonatomic) UITextAutocorrectionType autocorrectionType;
+@property(nonatomic) UITextAutocapitalizationType autocapitalizationType;
+@property(nonatomic) UITextSpellCheckingType spellCheckingType;
+@property(nonatomic) UITextSmartQuotesType smartQuotesType;
+@property(nonatomic) UITextSmartDashesType smartDashesType;
+@property(nonatomic, strong) UIView *keyBar;
 @end
 
-/* One-finger touches go to the app in its pixels (aoi_android_touch). */
+static __weak AoiScreen *current_screen;                /* the one showing an app: the keyboard's */
+
+/* One-finger touches go to the app in its pixels (aoi_android_touch). The iPhone's
+ * keyboard types into the app's text field (aoi.InputMethodManager): the screen is a
+ * UIKeyInput, first responder while the app wants the keyboard; each character, a
+ * backspace or return goes to aoi_android_key, and "Kapat" closes the keyboard. The
+ * app's text field keeps the text (its own editing: autocorrection is off here). */
 @implementation AoiScreen
+- (BOOL)canBecomeFirstResponder { return YES; }
+- (BOOL)hasText { return YES; }                         /* backspace always reaches the app */
+- (void)insertText:(NSString *)text {
+    NSData *d = [text dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
+    const uint32_t *c = d.bytes;
+    for (NSUInteger i = 0; i < d.length / 4; i++) aoi_android_key(c[i] == '\n' ? 8 : 6, (int)c[i]);
+}
+- (void)deleteBackward { aoi_android_key(7, 0); }
+- (UIView *)inputAccessoryView {
+    if (!self.keyBar) {
+        UIToolbar *bar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)];
+        UIBarButtonItem *close = [[UIBarButtonItem alloc] initWithTitle:@"Kapat" style:UIBarButtonItemStyleDone
+                                                                 target:self action:@selector(closeKeyboard)];
+        bar.items = @[ [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
+                                                                     target:nil action:nil], close ];
+        self.keyBar = bar;
+    }
+    return self.keyBar;
+}
+- (void)closeKeyboard {
+    [self resignFirstResponder];
+    aoi_android_key(9, 0);
+}
 - (BOOL)send:(int)action touches:(NSSet<UITouch *> *)touches {
     UITouch *t = touches.anyObject;
     CGSize img = self.image.size, v = self.bounds.size;
@@ -265,6 +300,12 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
     self.screen = [AoiScreen new];
+    self.screen.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.screen.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.screen.spellCheckingType = UITextSpellCheckingTypeNo;
+    self.screen.smartQuotesType = UITextSmartQuotesTypeNo;
+    self.screen.smartDashesType = UITextSmartDashesTypeNo;
+    current_screen = self.screen;
     self.screen.contentMode = UIViewContentModeScaleAspectFit;
     self.screen.userInteractionEnabled = YES;
     self.screen.translatesAutoresizingMaskIntoConstraints = NO;
@@ -900,6 +941,16 @@ static void clipboard_cb(int op, const char *path) {
     }
 }
 
+/* The app's text field wants the keyboard, or no longer (aoi.InputMethodManager). */
+static void keyboard_cb(int show) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AoiScreen *s = current_screen;
+        if (!s) return;
+        if (show) [s becomeFirstResponder];
+        else [s resignFirstResponder];
+    });
+}
+
 /* The app left for its launcher (back on its root screen): ours comes up. */
 static void home_cb(void *ctx) {
     @autoreleasepool {
@@ -919,6 +970,7 @@ static void home_cb(void *ctx) {
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     aoi_android_set_clipboard(clipboard_cb);
+    aoi_android_set_keyboard(keyboard_cb);
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;   /* white on dark glass, in light mode too */
     self.window.rootViewController = [Launcher new];

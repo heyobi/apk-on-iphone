@@ -99,6 +99,10 @@ struct aoi_proc {
      * 'g' write its text there (or remove the file: no text), 'h' write "1" or "0"
      * there: whether it has text (without reading it: iOS asks the user on a read) */
     void (*clip)(void *ctx, int op, const char *path);
+    /* if set: the host's keyboard, for aoi.InputMethodManager, which opens
+     * "/dev/aoi_ime/1" to show it and "/dev/aoi_ime/0" to hide it; what is typed
+     * comes back through aoi_proc_key. */
+    void (*ime)(void *ctx, int show);
     /* The guest's OpenGL ES (core/gpu.h): AOI_SYS_GL goes here (gpu/host.c), or is
      * ENOSYS when the host has no GPU for it. */
     uint64_t (*gpu)(void *ctx, struct aoi_proc *p, uint64_t op, uint64_t args);
@@ -148,6 +152,10 @@ int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind
  * screen pixels. Goes to /dev/aoi_input, which java/src/aoi/Input.java reads and
  * turns into MotionEvents on the window's input channel. Dropped until it is open. */
 void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y);
+/* A key from the host's keyboard to aoi.InputMethodManager: action 6 types the
+ * character `value` (a Unicode code point), 7 is backspace, 8 enter, 9 says the user
+ * closed the keyboard. */
+void aoi_proc_key(struct aoi_proc *p, int action, int32_t value);
 
 /* A host AF_UNIX pair that keeps message boundaries: SOCK_SEQPACKET, or where the
  * host has none (Darwin) SOCK_DGRAM with room for many messages. 0 or -1. */

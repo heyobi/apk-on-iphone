@@ -15,7 +15,8 @@ import java.io.FileInputStream;
  *  InputDispatcher would: the gesture goes to the window it went down in (or a touch
  *  modal one above it, a menu that closes on a touch outside), in its coordinates;
  *  windows above that watch outside touches get ACTION_OUTSIDE. A held finger gives
- *  its window focus (WindowSession.focus: text selection), a touch on it takes it.
+ *  its window focus (WindowSession.focus: text selection, the keyboard), so does a
+ *  touch, for a while. Actions 6-9 are the host's keyboard (aoi.InputMethodManager).
  *  Action 4 cancels the gesture (the host took it), action 5 asks for a snapshot
  *  (the host's, as the app goes to the background: aoi.Snapshot), and action 3 is "back": the
  *  top activity's onBackPressed on the main thread (a KEYCODE_BACK event would
@@ -37,7 +38,19 @@ final class Input {
      *  and Compose shows its selection's handles and toolbar only in a focused window. */
     private static final int HOLD = 800;
     private final Runnable hold = new Runnable() {
-        @Override public void run() { if (target != null) session.focus(target, true); }
+        @Override public void run() { if (target != null) { held = true; session.focus(target, true); } }
+    };
+    private boolean held;                                      /* this gesture became a long press */
+    /** After a tap the window keeps focus this long (ms) for the app to ask for the
+     *  keyboard (showSoftInput needs a focused window); then it goes, unless the
+     *  keyboard is up or a popup (selection handles, toolbar) is. */
+    private static final int TAP_FOCUS = 2000;
+    private WindowSession.Win tapped;
+    private final Runnable unfocus = new Runnable() {
+        @Override public void run() {
+            if (tapped != null && !InputMethodManager.showing() && !session.hasPopup(tapped)) session.focus(tapped, false);
+            tapped = null;
+        }
     };
 
     private Input(WindowSession session) { this.session = session; }
@@ -102,6 +115,7 @@ final class Input {
 
     private void send(int action, float x, float y) {
         if (action == 3) { back(); return; }
+        if (action >= 6 && action <= 9) { InputMethodManager.key(action, Float.floatToRawIntBits(y)); return; }
         if (action == 5) {
             Thread t = new Thread(new Runnable() {
                 @Override public void run() { Snapshot.take(); }
@@ -115,14 +129,19 @@ final class Input {
             downTime = now;
             target = session.target(x, y);
             downX = x; downY = y;
-            session.focus(target, false);                          /* a touch on the window itself: selecting is over */
+            held = false;
+            handler.removeCallbacks(unfocus);
+            session.focus(target, true);                           /* the tap may ask for the keyboard */
             handler.postDelayed(hold, HOLD);
             for (WindowSession.Win w : session.watchers(target)) event(w, 4, x, y, now);   /* ACTION_OUTSIDE */
         }
         if (action != 0 && (action != 2 || Math.abs(x - downX) + Math.abs(y - downY) > 24)) handler.removeCallbacks(hold);
         if (target == null) return;
         event(target, action == 4 ? 3 : action, x, y, now);   /* 4 from the host: MotionEvent.ACTION_CANCEL */
-        if (action == 1 || action == 4) target = null;
+        if (action == 1 || action == 4) {
+            if (!held) { tapped = target; handler.postDelayed(unfocus, TAP_FOCUS); }
+            target = null;
+        }
     }
 
     private void event(WindowSession.Win w, int action, float x, float y, long now) {

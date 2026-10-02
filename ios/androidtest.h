@@ -48,6 +48,14 @@ void aoi_android_back(void);
  * "1"/"0" there (has text). Called on the app's thread. */
 void aoi_android_set_clipboard(void (*fn)(int op, const char *path));
 
+/* The host's keyboard for apps (core/proc.h, ime): fn(1) when a text field asks for
+ * it, fn(0) when the app hides it. Called on the app's thread. */
+void aoi_android_set_keyboard(void (*fn)(int show));
+
+/* Typing on the host's keyboard, for the running app's text field: action 6 types
+ * the Unicode character `value`, 7 is backspace, 8 return, 9 the keyboard was closed. */
+void aoi_android_key(int action, int value);
+
 /* The app is saved as it is now (a snapshot next to datadir, "<datadir>.snap"), so the
  * next launch resumes it in seconds instead of starting it again; the first one is
  * taken by itself once the app has started. Waits up to timeout s: 0 when written. */

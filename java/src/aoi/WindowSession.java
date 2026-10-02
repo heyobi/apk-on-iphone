@@ -43,6 +43,9 @@ final class WindowSession extends IWindowSession.Stub {
         final java.util.HashMap<Integer, String> subs = new java.util.HashMap<Integer, String>();   /* SurfaceView layers */
     }
 
+    static WindowSession instance;
+    { instance = this; }
+
     private final SurfaceSession surfaces = new SurfaceSession();
     private final ArrayList<Win> windows = new ArrayList<Win>();       /* bottom to top */
     private int nextZ;
@@ -84,14 +87,17 @@ final class WindowSession extends IWindowSession.Stub {
     /** Window focus for app window `w` (its ViewRootImpl is in this process: the IWindow
      *  is its W). Compose shows a text field's selection handles and its copy/paste
      *  toolbar only in a focused window (and hides the toolbar as soon as it comes up in
-     *  an unfocused one), but in a focused window the field's cursor blinks, a full
-     *  repaint twice a second. So a window has focus only while text is being selected:
-     *  aoi.Input gives it on a held finger (a long press coming) and takes it on a touch
-     *  that goes to the window itself and when its last popup (toolbar, handles) goes;
-     *  a text toolbar coming up gives it too. */
+     *  an unfocused one), and an app can ask for the keyboard only from one; but in a
+     *  focused window a text cursor blinks, a full repaint twice a second. So a window
+     *  has focus while it may need it: aoi.Input gives it on a touch and takes it back
+     *  2 s after a tap unless the keyboard (aoi.InputMethodManager) or a popup came up;
+     *  a long press keeps it until its last popup (toolbar, handles) goes; a text
+     *  toolbar coming up gives it too; closing the keyboard takes it. */
     synchronized void focus(Win w, boolean on) {
         if (w == null || w.focused == on || w.attrs == null || w.attrs.type < 1 || w.attrs.type > 99) return;
         w.focused = on;
+        if (System.getenv("AOI_IME_DEBUG") != null)
+            System.out.println("aoi: focus " + on + " at " + android.os.SystemClock.uptimeMillis());
         try {
             java.lang.reflect.Field f = w.token.getClass().getDeclaredField("mViewAncestor");
             f.setAccessible(true);
@@ -100,9 +106,36 @@ final class WindowSession extends IWindowSession.Stub {
             java.lang.reflect.Method m = root.getClass().getDeclaredMethod("windowFocusChanged", boolean.class);
             m.setAccessible(true);
             m.invoke(root, on);
+            if (System.getenv("AOI_IME_DEBUG") != null) {
+                final Object r = root;
+                new Thread(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            Thread.sleep(1000);
+                            Object ai = field(r, r.getClass(), "mAttachInfo");
+                            Object v = field(r, r.getClass(), "mView");
+                            System.out.println("aoi: focus check: hasWindowFocus " + field(ai, ai.getClass(), "mHasWindowFocus")
+                                    + ", focused view " + v.getClass().getMethod("findFocus").invoke(v)
+                                    + ", added " + field(r, r.getClass(), "mAdded"));
+                        } catch (Exception e) { System.out.println("aoi: focus check " + e); }
+                    }
+                }).start();
+            }
         } catch (Exception e) {
             System.out.println("aoi: focus: " + e);
         }
+    }
+
+    /** Whether app window `w` has a popup up (a sub-window: selection handles, toolbar, menu). */
+    synchronized boolean hasPopup(Win w) {
+        for (Win o : windows) if (o != w && o.shown && o.attrs != null && o.attrs.token == w.token) return true;
+        return false;
+    }
+
+    /** The focused app window (the keyboard's), or null. */
+    synchronized Win focused() {
+        for (Win w : windows) if (w.focused) return w;
+        return null;
     }
 
     /** The app window a sub-window (a popup) belongs to. */
@@ -115,7 +148,7 @@ final class WindowSession extends IWindowSession.Stub {
      *  gone after a copy or paste), selecting is over and its window loses focus. */
     private void subGone(Win s) {
         Win p = s.attrs != null && s.attrs.type >= 1000 && s.attrs.type <= 1999 ? parent(s) : null;
-        if (p == null || !p.focused) return;
+        if (p == null || !p.focused || InputMethodManager.showing()) return;
         for (Win o : windows) if (o != s && o.shown && o.attrs != null && o.attrs.token == p.token) return;
         focus(p, false);
     }

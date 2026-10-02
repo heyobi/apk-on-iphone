@@ -189,6 +189,9 @@ static struct aoi_proc *volatile running;   /* the app's process, while aoi_andr
 static void (*clipboard_fn)(int op, const char *path);
 void aoi_android_set_clipboard(void (*fn)(int op, const char *path)) { clipboard_fn = fn; }
 static void clipboard(void *ctx, int op, const char *path) { (void)ctx; if (clipboard_fn) clipboard_fn(op, path); }
+static void (*keyboard_fn)(int show);
+void aoi_android_set_keyboard(void (*fn)(int show)) { keyboard_fn = fn; }
+static void keyboard(void *ctx, int show) { (void)ctx; if (keyboard_fn) keyboard_fn(show); }
 
 /* Where the guest's host memory is: the host pages of its chunks that exist (resident,
  * or compressed: MINCORE_PAGED_OUT on Apple), in total and for the 64 MB guest windows
@@ -321,6 +324,12 @@ void aoi_android_touch(int action, float x, float y)
     if (p) aoi_proc_touch(p, action, x, y);
 }
 
+void aoi_android_key(int action, int value)
+{
+    struct aoi_proc *p = running;
+    if (p) aoi_proc_key(p, action, value);
+}
+
 void aoi_android_stop(void)
 {
     struct aoi_proc *p = running;
@@ -435,6 +444,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     p->frame = frame;
     p->home = home;
     p->clip = clipboard;
+    p->ime = keyboard;
     p->frame_ctx = frame_ctx;
 #ifdef AOI_GPU
     if (gpu_on()) p->gpu = aoi_gpu_call;

@@ -392,6 +392,25 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The iPhone's keyboard in apps (app 0.41; host-tested, the iOS side not yet run).**
+aoi.InputMethodManager is now the input method: a focused window's editor starts
+input there (startInputOrWindowGainedFocus: its EditorInfo and the app's own
+RemoteInputConnectionImpl), showSoftInput/hideSoftInput show and hide the host's
+keyboard (/dev/aoi_ime/1|0 -> p->ime), and what is typed comes back as input records
+(aoi_proc_key: 6 a character, 7 backspace, 8 return, 9 closed) that go to the
+editor's InputConnection on the main thread: commitText, the selection or one code
+point deleted, performEditorAction for a single-line field with an action, else
+KEYCODE_ENTER. No IME session exists, so the InputConnection is called directly
+(in-process). Window focus, which asking for the keyboard needs: a touch gives it,
+2 s after a tap it goes again unless the keyboard or a popup is up (a cursor blinks
+in a focused window: repaints), a long press keeps it for selection as before,
+closing the keyboard takes it. iOS: the app's screen is a UIKeyInput (no
+autocorrection), first responder while the app wants the keyboard, with a "Kapat"
+bar. Host check (aoiproc AOI_TAPS "keys:TEXT", ~ backspace, | return): the test
+APK's EditText takes "hi", backspace, "ab" -> "hab", then "x" -> "habx"; Qalculate
+never asks for the keyboard (its taps work, the copy toolbar still stays). Snapshots
+are only prepared for when the host wants one (/dev/aoi_snapshot_wanted).
+
 **GL games' path: GLSurfaceView (host, app 0.40).** tools/mktestapk.py builds a test
 APK without the Android SDK (java/testapp: a binary AndroidManifest.xml written by
 the script, classes.dex by javac + dx against java/testapp/stubs): aoi.glapp, a plain

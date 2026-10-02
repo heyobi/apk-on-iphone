@@ -1047,6 +1047,13 @@ void aoi_proc_touch(struct aoi_proc *p, int action, float x, float y)
     if (write(w, rec, sizeof rec) != (ssize_t)sizeof rec) {}       /* a full pipe drops it */
 }
 
+void aoi_proc_key(struct aoi_proc *p, int action, int32_t value)
+{
+    float v;
+    memcpy(&v, &value, 4);                                         /* aoi.Input reads it as y's bits */
+    aoi_proc_touch(p, action, 0, v);
+}
+
 /* Writes back the shared file mappings that overlap [a, a+len); drop: forget the ones
  * that range covers (munmap). */
 static void shm_sync(struct aoi_proc *p, uint64_t a, uint64_t len, int drop)
@@ -1516,6 +1523,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         } else if (!strncmp(g, "/dev/aoi_layer/", 15)) {         /* aoi.WindowSession: where a window goes */
             aoi_sf_place(p, g + 15);
             r = err(L_ENOENT);
+            break;
+        } else if (!strncmp(g, "/dev/aoi_ime/", 13)) {            /* aoi.InputMethodManager: the host's keyboard */
+            if (p->ime) p->ime(p->frame_ctx, g[13] == '1');
+            r = err(L_ENOENT);
+            break;
+        } else if (!strcmp(g, "/dev/aoi_snapshot_wanted")) {       /* aoi.Snapshot: EBUSY if the host takes one */
+            r = err(p->snap_path[0] ? L_EBUSY : L_ENOENT);
             break;
         } else if (!strcmp(g, "/dev/aoi_gpu_live")) {              /* aoi.Snapshot: EBUSY while it has GL state */
             r = err(p->gpu_live ? L_EBUSY : L_ENOENT);

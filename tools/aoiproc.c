@@ -55,6 +55,13 @@ static void clip(void *ctx, int op, const char *path)
     }
 }
 
+/* The host keyboard (proc.h, ime): shown or hidden, logged. */
+static void ime(void *ctx, int show)
+{
+    (void)ctx;
+    fprintf(stderr, "[aoiproc] keyboard %s\n", show ? "shown" : "hidden");
+}
+
 static void *taps(void *arg)
 {
     const char *s = getenv("AOI_TAPS");
@@ -66,6 +73,17 @@ static void *taps(void *arg)
             fprintf(stderr, "[aoiproc] back\n");
             aoi_proc_touch(arg, 3, 0, 0);
             s += 4;
+            if (*s == ';') s++;
+            continue;
+        }
+        if (!strncmp(s, "keys:", 5)) {                   /* "keys:TEXT": typed on the keyboard; ~ backspace, | enter */
+            sleep(getenv("AOI_TAP_GAP") ? (unsigned)atoi(getenv("AOI_TAP_GAP")) : 4);
+            for (s += 5; *s && *s != ';'; s++) {
+                fprintf(stderr, "[aoiproc] key %c\n", *s);
+                if (*s == '~') aoi_proc_key(arg, 7, 0);
+                else if (*s == '|') aoi_proc_key(arg, 8, 0);
+                else aoi_proc_key(arg, 6, (unsigned char)*s);
+            }
             if (*s == ';') s++;
             continue;
         }
@@ -197,6 +215,7 @@ int main(int argc, char **argv)
     if (profile && (proc.samples = calloc(1 << 20, sizeof *proc.samples))) proc.maxsamples = 1 << 20;
     proc.log = stderr;                               /* guest liblog -> "P/tag: message" */
     if (getenv("AOI_TAPS")) { proc.frame = first_frame; proc.frame_ctx = &proc; }
+    proc.ime = ime;
     if (getenv("AOI_CLIP")) { snprintf(clipbuf, sizeof clipbuf, "%s", getenv("AOI_CLIP")); proc.clip = clip; }
 #ifdef AOI_GPU
     proc.gpu = aoi_gpu_call;                         /* the guest's OpenGL ES on the host's EGL/GLES */

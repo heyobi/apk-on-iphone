@@ -10,7 +10,8 @@ import javax.microedition.khronos.opengles.GL10;
 /** The test app of tools/mktestapk.py: what a GL game does, without the game. A
  *  GLSurfaceView (a SurfaceView: its own layer below the window, its own EGL
  *  window surface, a render thread) clears to a color that steps every frame and
- *  draws a white square in the middle with the scissor test. */
+ *  draws a white square in the middle with the scissor test. A text field on top
+ *  (the keyboard's path: InputMethodManager, the input connection) logs its text. */
 public final class GlActivity extends Activity {
     private GLSurfaceView view;
 
@@ -41,7 +42,18 @@ public final class GlActivity extends Activity {
                 if (frame % 30 == 0) System.out.println("glapp: frame " + frame);
             }
         });
-        setContentView(view);
+        android.widget.FrameLayout top = new android.widget.FrameLayout(this);
+        top.addView(view);
+        android.widget.EditText text = new android.widget.EditText(this);
+        text.setBackgroundColor(0xffffffff);
+        text.setTextSize(24);
+        text.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) { System.out.println("glapp: text '" + s + "'"); }
+        });
+        top.addView(text, new android.view.ViewGroup.LayoutParams(-1, -2));
+        setContentView(top);
     }
 
     @Override protected void onPause() { super.onPause(); view.onPause(); }
