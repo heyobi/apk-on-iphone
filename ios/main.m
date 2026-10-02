@@ -895,7 +895,7 @@ static void home_cb(void *ctx) {
     self.window.rootViewController = [Launcher new];
     [self.window makeKeyAndVisible];
     UIApplicationShortcutItem *item = opts[UIApplicationLaunchOptionsShortcutItemKey];
-    if (item) { [self open:item.userInfo[@"app"]]; return NO; }
+    if (item) { [self open:(NSString *)item.userInfo[@"app"]]; return NO; }
     return YES;
 }
 
@@ -909,7 +909,7 @@ static void home_cb(void *ctx) {
 
 - (void)application:(UIApplication *)app performActionForShortcutItem:(UIApplicationShortcutItem *)item
   completionHandler:(void (^)(BOOL))done {
-    [self open:item.userInfo[@"app"]];
+    [self open:(NSString *)item.userInfo[@"app"]];
     done(YES);
 }
 

@@ -115,8 +115,8 @@ jobs:
           name: ApkOnIphone ${{ steps.ver.outputs.tag }}
           files: build/ApkOnIphone.ipa
           body: |
-            Unsigned IPA of the iOS test app, built from ${{ github.sha }}.
+            LiquidAPK: Android apps on the iPhone. Unsigned IPA, built from ${{ github.sha }}.
             Install with SideStore, AltStore or Sideloadly (they sign it with your Apple ID),
-            then see docs/IOS.md. The app runs Android code from an APK in the interpreter
-            (no JIT, no debugger): libgmp.so ("Çalıştır"), Android programs and ART
-            ("Android"), and a whole app with its UI ("Uygulama").
+            then see docs/IOS.md. Add an APK ("APK ekle"); it runs in an AArch64 interpreter
+            (no JIT, no debugger). Swipe from the left edge for back; hold an app's card for
+            its home-screen link.
