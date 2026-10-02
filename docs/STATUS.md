@@ -1,4 +1,4 @@
-# Status and handoff (2026-10-01, evening)
+# Status and handoff (2026-10-02)
 
 ## What runs today
 
@@ -391,6 +391,27 @@ over the frames after taps; Skia's raster pipeline is NEON float code): 24.1 M/s
 of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats when no
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
+
+**Windows on top of windows; the memory leak (app 0.25).** Qalculate's menus (the
+row's ⋮, a Compose DropdownMenu: "Pop-Up Window", type 1002) and dialogs (EXACT's
+"Approximation mode", type 2) turned the screen black: every window got a full-screen
+frame and layer, and sf.c showed whichever buffer came last. Now aoi.WindowSession
+lays each window out as WindowManager would (MATCH_PARENT fills the screen, otherwise
+Gravity.apply with its x/y, kept on screen), keeps one layer per window (its buffer
+size includes surfaceInsets, the shadow) and tells sf.c where it goes by opening
+/dev/aoi_layer/ID/X/Y/Z/DIM (ENOENT, like /dev/aoi_home; .../ID/hide when the window
+goes away). sf.c keeps a buffer per layer (each buffer is matched to the layer_state
+record it sits in: our layer handle and id start each record), and composes them
+bottom to top, premultiplied source over, a FLAG_DIM_BEHIND window darkening what is
+below by its dimAmount. aoi.Input sends a gesture to the window it went down in, or to
+a touch-modal one above it (so a touch outside a menu or dialog closes it), in that
+window's coordinates, and ACTION_OUTSIDE to windows watching outside touches. Checked
+on the host from a snapshot: the dialog is centred over a dimmed screen and closes on
+an outside tap or a choice; the menu opens below its ⋮ with its shadow, and "Delete"
+deletes the row. The phone's footprint growth (+150 MB per 10 s, internal memory) was
+our frame callback: it runs on the emulator's thread for the whole session, so each
+frame's autoreleased UIImage (5 MB) waited for a pool that never drained. The
+callbacks now drain their own @autoreleasepool.
 
 **Other APKs, memory (app 0.24).** Kiwi Browser (Chromium) died in
 Context.createWindowContext: IWindowManager.attachWindowContextToDisplayArea was

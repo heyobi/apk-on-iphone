@@ -11,8 +11,10 @@ import java.io.FileInputStream;
 
 /** Touches from the host: /dev/aoi_input (core/proc.c, aoi_proc_touch) gives 16-byte
  *  records (action 0 down / 1 up / 2 move, x, y in screen pixels, little-endian); each
- *  becomes a MotionEvent sent on the server end of the newest window's input channel,
- *  as InputDispatcher would. Action 4 cancels the gesture (the host took it), and
+ *  becomes a MotionEvent sent on the server end of a window's input channel, as
+ *  InputDispatcher would: the gesture goes to the window it went down in (or a touch
+ *  modal one above it, a menu that closes on a touch outside), in its coordinates;
+ *  windows above that watch outside touches get ACTION_OUTSIDE. Action 4 cancels the gesture (the host took it), and
  *  action 3 is "back": the resumed activity's onBackPressed
  *  on the main thread (a KEYCODE_BACK event would need window focus, and focus makes
  *  text cursors blink: a full repaint twice a second). */
@@ -22,8 +24,9 @@ final class Input {
     private final WindowSession session;
     private Handler handler;
     private android.os.Looper looper;
-    private InputChannel channel;
-    private InputEventSender sender;
+    private final java.util.HashMap<InputChannel, InputEventSender> senders =
+            new java.util.HashMap<InputChannel, InputEventSender>();
+    private WindowSession.Win target;                          /* the gesture's window */
     private int seq;
     private long downTime;
 
@@ -92,20 +95,28 @@ final class Input {
 
     private void send(int action, float x, float y) {
         if (action == 3) { back(); return; }
-        InputChannel c = session.input;
-        if (c == null) return;
-        if (c != channel) {                                        /* a new window: a new sender */
-            channel = c;
-            sender = new InputEventSender(c, looper) {};
-        }
         long now = SystemClock.uptimeMillis();
-        if (action == 0) downTime = now;
-        if (action == 4) action = 3;                               /* MotionEvent.ACTION_CANCEL */
+        if (action == 0) {
+            downTime = now;
+            target = session.target(x, y);
+            for (WindowSession.Win w : session.watchers(target)) event(w, 4, x, y, now);   /* ACTION_OUTSIDE */
+        }
+        if (target == null) return;
+        event(target, action == 4 ? 3 : action, x, y, now);   /* 4 from the host: MotionEvent.ACTION_CANCEL */
+        if (action == 1 || action == 4) target = null;
+    }
+
+    private void event(WindowSession.Win w, int action, float x, float y, long now) {
+        InputEventSender sender = senders.get(w.input);
+        if (sender == null) {                                      /* a new window: a new sender */
+            sender = new InputEventSender(w.input, looper) {};
+            senders.put(w.input, sender);
+        }
         MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
         pp.id = 0;
         pp.toolType = 1;                                           /* TOOL_TYPE_FINGER: Compose's Touch */
         MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
-        pc.x = x; pc.y = y; pc.pressure = 1f; pc.size = 0.05f;
+        pc.x = x - w.frame.left; pc.y = y - w.frame.top; pc.pressure = 1f; pc.size = 0.05f;
         MotionEvent ev = MotionEvent.obtain(downTime, now, action, 1, new MotionEvent.PointerProperties[] { pp },
                 new MotionEvent.PointerCoords[] { pc }, 0, 0, 1f, 1f, 0, 0, SOURCE_TOUCHSCREEN, 0);
         sender.sendInputEvent(++seq, ev);

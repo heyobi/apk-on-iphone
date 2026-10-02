@@ -39,16 +39,27 @@ struct conn {
 
 #define LAYERS 256
 
-/* A layer: a name, an id, its handle (the IBinder apps pass in transactions). */
-struct layer { int used; uint32_t handle; int32_t id; char name[96]; };
+/* A layer: a name, an id, its handle (the IBinder apps pass in transactions); the
+ * buffer it shows (we hold a gralloc reference) with its GraphicBuffer id, frame
+ * number and release listener; where aoi.WindowSession placed it (/dev/aoi_layer):
+ * position, z order, how much it dims what is below. */
+struct layer {
+    int used;
+    uint32_t handle;
+    int32_t id;
+    char name[96];
+    uint32_t buf;
+    struct { uint64_t gb, number, ptr, cookie; } shown;
+    int32_t x, y, z;
+    int32_t dim;                                /* 0..1000 */
+    int hidden;
+};
 
 #define CACHED 64
 
 struct aoi_sf {
     uint32_t handle, client;                    /* ISurfaceComposer, the one ISurfaceComposerClient */
     uint32_t legacy;                            /* "SurfaceFlinger": android.ui.ISurfaceComposer */
-    uint32_t frame;                             /* the gralloc buffer on screen (we hold a reference), or 0 */
-    struct { uint64_t gb, number, ptr, cookie; } shown;   /* its GraphicBuffer id, frame number, release listener */
     uint64_t frames;                            /* how many were queued */
     struct { uint64_t gb; uint32_t id; } cache[CACHED];   /* GraphicBuffer id -> gralloc id (client buffer cache) */
     int ncache;
@@ -232,118 +243,211 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
 
 /* ---------- frames: the legacy ISurfaceComposer's setTransactionState ---------- */
 
-/* The newest frame as a PPM file at $AOI_SF_DUMP (host debugging); a "%d" in it
- * keeps every frame, numbered. */
-static void dump(struct aoi_proc *p, const struct aoi_gbuf *b, uint64_t n)
+/* The screen as a PPM file at $AOI_SF_DUMP (host debugging); a "%d" in it keeps
+ * every frame, numbered. */
+static void dump(struct aoi_proc *p, const uint8_t *px, uint32_t w, uint32_t h, uint32_t format, uint64_t n)
 {
     const char *path = getenv("AOI_SF_DUMP");
     char numbered[1024];
     FILE *f;
+    size_t i;
+    (void)p;
     if (path && strstr(path, "%d")) { snprintf(numbered, sizeof numbered, path, (int)n); path = numbered; }
-    uint8_t *row;
-    uint32_t y, x;
-    if (!path || !*path || b->bpp != 4 || !(f = fopen(path, "wb"))) return;
-    row = malloc((size_t)b->stride * 4);
-    fprintf(f, "P6\n%u %u\n255\n", b->width, b->height);
-    for (y = 0; row && y < b->height; y++) {
-        if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, row, (uint64_t)b->stride * 4, 0)) break;
-        for (x = 0; x < b->width; x++) {
-            uint8_t *px = row + 4 * x, rgb[3];
-            if (b->format == 5) { rgb[0] = px[2]; rgb[1] = px[1]; rgb[2] = px[0]; }   /* BGRA */
-            else { rgb[0] = px[0]; rgb[1] = px[1]; rgb[2] = px[2]; }
-            fwrite(rgb, 1, 3, f);
-        }
+    if (!path || !*path || !(f = fopen(path, "wb"))) return;
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (i = 0; i < (size_t)w * h; i++) {
+        const uint8_t *q = px + 4 * i;
+        uint8_t rgb[3];
+        if (format == 5) { rgb[0] = q[2]; rgb[1] = q[1]; rgb[2] = q[0]; }   /* BGRA */
+        else { rgb[0] = q[0]; rgb[1] = q[1]; rgb[2] = q[2]; }
+        fwrite(rgb, 1, 3, f);
     }
-    free(row);
     fclose(f);
 }
 
 /* ITransactionCompletedListener.onReleaseBuffer(ReleaseCallbackId{buffer id, frame
  * number}, no fence, max acquired 1), one-way: the app's BLASTBufferQueue may reuse
  * the buffer. As SurfaceFlinger does when the next buffer replaces it. */
-static void release(struct aoi_proc *p, struct aoi_sf *sf)
+static void release(struct aoi_proc *p, struct layer *ly)
 {
     struct aoi_parcel pc;
-    if (!sf->shown.ptr) return;
-    memset(&pc, 0, sizeof pc);
-    aoi_p32(&pc, 0); aoi_p32(&pc, 0xffffffffu); aoi_p32(&pc, 0x53595354u);   /* interface token */
-    aoi_pstr16(&pc, "android.gui.ITransactionComposerListener");
-    aoi_p32(&pc, 1);                                                           /* non-null ReleaseCallbackId: */
-    aoi_p64(&pc, sf->shown.gb); aoi_p64(&pc, sf->shown.number);              /*   buffer id, frame number */
-    aoi_p32(&pc, 4); aoi_p32(&pc, 0); aoi_p32(&pc, 0);                         /* Fence: no fd */
-    aoi_p32(&pc, 1);                                                           /* currentMaxAcquiredBufferCount */
-    aoi_binder_send(p, sf->shown.ptr, sf->shown.cookie, 2, &pc);              /* ON_RELEASE_BUFFER */
-    sf->shown.ptr = 0;
+    if (ly->shown.ptr) {
+        memset(&pc, 0, sizeof pc);
+        aoi_p32(&pc, 0); aoi_p32(&pc, 0xffffffffu); aoi_p32(&pc, 0x53595354u);   /* interface token */
+        aoi_pstr16(&pc, "android.gui.ITransactionComposerListener");
+        aoi_p32(&pc, 1);                                                           /* non-null ReleaseCallbackId: */
+        aoi_p64(&pc, ly->shown.gb); aoi_p64(&pc, ly->shown.number);              /*   buffer id, frame number */
+        aoi_p32(&pc, 4); aoi_p32(&pc, 0); aoi_p32(&pc, 0);                         /* Fence: no fd */
+        aoi_p32(&pc, 1);                                                           /* currentMaxAcquiredBufferCount */
+        aoi_binder_send(p, ly->shown.ptr, ly->shown.cookie, 2, &pc);              /* ON_RELEASE_BUFFER */
+        ly->shown.ptr = 0;
+    }
+    if (ly->buf) aoi_gralloc_release(p, ly->buf);
+    ly->buf = 0;
 }
 
-static void show(struct aoi_proc *p, struct aoi_sf *sf, uint32_t id, uint64_t gb, uint64_t number, uint64_t ptr,
-                 uint64_t cookie)
+/* The layers that show a buffer, bottom to top (z, then age). */
+static int visible(struct aoi_proc *p, struct aoi_sf *sf, struct layer **v)
+{
+    int k, n = 0, i;
+    for (k = 0; k < LAYERS; k++) {
+        struct layer *ly = &sf->l[k];
+        struct aoi_gbuf *b;
+        if (!ly->used || ly->hidden || !ly->buf || !(b = aoi_gralloc_find(p, ly->buf)) || b->bpp != 4) continue;
+        for (i = n; i > 0 && (v[i - 1]->z > ly->z || (v[i - 1]->z == ly->z && v[i - 1]->id > ly->id)); i--) v[i] = v[i - 1];
+        v[i] = ly;
+        n++;
+    }
+    return n;
+}
+
+/* The screen: the bottom layer's buffer, then each one above it, its dim first, drawn
+ * over it (premultiplied alpha, source over), clipped to the bottom one. As packed rows
+ * of RGBA (or BGRA, the bottom layer's format) to the host and to $AOI_SF_DUMP. */
+static void compose(struct aoi_proc *p, struct aoi_sf *sf)
+{
+    struct layer *v[LAYERS];
+    struct aoi_gbuf *base, *b;
+    uint8_t *px, *row = NULL;
+    uint32_t w, h, y, x;
+    int n = visible(p, sf, v), k;
+    if (!n || (!p->frame && !getenv("AOI_SF_DUMP"))) return;
+    base = aoi_gralloc_find(p, v[0]->buf);
+    w = base->width; h = base->height;
+    if (!(px = malloc((size_t)w * h * 4))) return;
+    for (y = 0; y < h; y++)
+        if (!aoi_vm_read(&p->vm, base->addr + (uint64_t)y * base->stride * 4, px + (size_t)y * w * 4, (uint64_t)w * 4, 0))
+            break;
+    if (y < h) { free(px); return; }
+    for (k = 1; k < n; k++) {
+        struct layer *ly = v[k];
+        int32_t x0, y0, x1, y1;
+        b = aoi_gralloc_find(p, ly->buf);
+        if (ly->dim > 0) {                                     /* FLAG_DIM_BEHIND: black at dimAmount */
+            uint32_t keep = (uint32_t)(1000 - (ly->dim > 1000 ? 1000 : ly->dim)) * 256 / 1000, i;
+            for (i = 0; i < w * h * 4; i++) if ((i & 3) != 3) px[i] = (uint8_t)(px[i] * keep >> 8);
+        }
+        x0 = ly->x < 0 ? -ly->x : 0; y0 = ly->y < 0 ? -ly->y : 0;
+        x1 = (int32_t)b->width; y1 = (int32_t)b->height;
+        if (ly->x + x1 > (int32_t)w) x1 = (int32_t)w - ly->x;
+        if (ly->y + y1 > (int32_t)h) y1 = (int32_t)h - ly->y;
+        if (x0 >= x1 || y0 >= y1 || !(row = realloc(row, (size_t)b->width * 4))) continue;
+        for (y = (uint32_t)y0; y < (uint32_t)y1; y++) {
+            uint8_t *d = px + ((size_t)(ly->y + (int32_t)y) * w + (size_t)(ly->x + x0)) * 4, *s = row + (size_t)x0 * 4;
+            if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, row, (uint64_t)b->width * 4, 0)) break;
+            for (x = (uint32_t)x0; x < (uint32_t)x1; x++, d += 4, s += 4) {
+                uint32_t a = s[3], c;
+                if (a == 255) { memcpy(d, s, 4); continue; }
+                if (!a) continue;
+                for (c = 0; c < 4; c++) d[c] = (uint8_t)(s[c] + (d[c] * (255 - a) + 127) / 255);
+            }
+        }
+    }
+    free(row);
+    dump(p, px, w, h, base->format, sf->frames);
+    if (p->frame) p->frame(p->frame_ctx, px, w, h);
+    free(px);
+}
+
+static void show(struct aoi_proc *p, struct aoi_sf *sf, struct layer *ly, uint32_t id, uint64_t gb, uint64_t number,
+                 uint64_t ptr, uint64_t cookie)
 {
     struct aoi_gbuf *b = aoi_gralloc_find(p, id);
     if (!b) return;
-    release(p, sf);
     aoi_gralloc_retain(p, id);                                 /* on screen: ours until the next one */
-    if (sf->frame) aoi_gralloc_release(p, sf->frame);
-    sf->frame = id;
-    sf->shown.gb = gb; sf->shown.number = number; sf->shown.ptr = ptr; sf->shown.cookie = cookie;
+    release(p, ly);
+    ly->buf = id;
+    ly->shown.gb = gb; ly->shown.number = number; ly->shown.ptr = ptr; ly->shown.cookie = cookie;
     sf->frames++;
-    if (p->trace) fprintf(p->trace, "[sf] frame %llu: buffer %u (%ux%u), frame number %llu, after %llu instructions, at %.3f s\n",
-                          (unsigned long long)sf->frames, id, b->width, b->height, (unsigned long long)number,
+    if (p->trace) fprintf(p->trace, "[sf] frame %llu: layer %d, buffer %u (%ux%u), frame number %llu, after %llu instructions, at %.3f s\n",
+                          (unsigned long long)sf->frames, ly->id, id, b->width, b->height, (unsigned long long)number,
                           (unsigned long long)p->cpu.steps, (double)now_ns() / 1e9);
-    dump(p, b, sf->frames);
-    if (p->frame && b->bpp == 4) {                             /* the host shows it: packed rows */
-        uint8_t *px = malloc((size_t)b->width * b->height * 4);
-        uint32_t y;
-        for (y = 0; px && y < b->height; y++)
-            if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, px + (size_t)y * b->width * 4,
-                             (uint64_t)b->width * 4, 0)) break;
-        if (px && y == b->height) p->frame(p->frame_ctx, px, b->width, b->height);
-        free(px);
-    }
 }
 
 /* setTransactionState carries layer_state_t records whose layout changes with every
- * release; we look for the buffer. A new one travels flattened: 'GB01', 12 words
- * (width, height, stride, format, layers, usage, id hi/lo, generation, fds, ints,
- * usage hi), then its native_handle ints, ours (gralloc.h). Then BufferData goes on
- * (LayerState.cpp): fence, frameNumber, releaseBufferListener, releaseBufferEndpoint,
- * cachedBuffer.token, cachedBuffer.id; binders are 28 bytes (flat object + stability).
+ * release; we look for the buffers. Each record starts with its layer: the handle
+ * (a flat binder object, 28 bytes with its stability) and the layer id. A new buffer
+ * travels flattened: 'GB01', 12 words (width, height, stride, format, layers, usage,
+ * id hi/lo, generation, fds, ints, usage hi), then its native_handle ints, ours
+ * (gralloc.h). Then BufferData goes on (LayerState.cpp): fence, frameNumber,
+ * releaseBufferListener, releaseBufferEndpoint, cachedBuffer.token, cachedBuffer.id.
  * The client caches buffers, so a known one travels as that cache token and id only:
  * the token's id names the buffer, and frameNumber and the listener sit at fixed
- * distances before it. */
+ * distances before it. A buffer belongs to the record it is in. */
 static void transaction_state(struct aoi_proc *p, struct aoi_sf *sf, struct aoi_reader *r)
 {
-    uint32_t o, w, id = 0;
-    uint64_t gb = 0, number = 0, ptr = 0, cookie = 0;
+    struct { uint32_t at; struct layer *ly; } st[32];
+    struct { struct layer *ly; uint32_t id; uint64_t gb, number, ptr, cookie; } nb[32];
+    uint32_t o, w;
+    int ns = 0, nn = 0, k, i;
+    for (o = r->pos & ~3u; o + 32 <= r->n && ns < 32; o += 4) {   /* the records: our layer handles */
+        uint32_t hd;
+        int32_t lid;
+        memcpy(&w, r->d + o, 4);
+        if (w != AOI_BINDER_TYPE_HANDLE) continue;
+        memcpy(&hd, r->d + o + 8, 4); memcpy(&lid, r->d + o + 28, 4);
+        for (k = 0; k < LAYERS && !(sf->l[k].used && sf->l[k].handle == hd && sf->l[k].id == lid); k++) {}
+        if (k < LAYERS) { st[ns].at = o; st[ns].ly = &sf->l[k]; ns++; }
+    }
     for (o = r->pos & ~3u; o + 4 <= r->n; o += 4) {           /* new buffers: learn their ids */
         memcpy(&w, r->d + o, 4);
         if (w == 0x47423031u && o + 4 * (13 + AOI_GB_INTS) <= r->n) {           /* 'GB01' */
             uint32_t v[13 + AOI_GB_INTS];
-            int k;
+            uint64_t gb;
             memcpy(v, r->d + o, sizeof v);
             if (v[11] != AOI_GB_INTS || v[13 + AOI_GB_I_MAGIC] != AOI_GB_MAGIC) continue;
             gb = (uint64_t)v[7] << 32 | v[8];
             for (k = 0; k < sf->ncache && sf->cache[k].gb != gb; k++) {}
             if (k == sf->ncache) { if (sf->ncache < CACHED) sf->ncache++; else k = (int)(gb % CACHED); }
             sf->cache[k].gb = gb; sf->cache[k].id = v[13 + AOI_GB_I_ID];
-            id = v[13 + AOI_GB_I_ID];
         }
     }
-    for (o = r->pos & ~3u; o + 36 <= r->n; o += 4) {          /* the cache token and what precedes it */
+    for (o = r->pos & ~3u; o + 36 <= r->n; o += 4) {          /* the cache tokens and what precedes them */
         uint64_t t;
-        int k;
+        struct layer *ly = NULL;
         memcpy(&w, r->d + o, 4);
         if (w != AOI_BINDER_TYPE_BINDER || o < 64) continue;
         memcpy(&t, r->d + o + 28, 8);
         for (k = 0; k < sf->ncache && !(t && sf->cache[k].gb == t); k++) {}
         if (k == sf->ncache) continue;
-        gb = t; id = sf->cache[k].id;
-        memcpy(&number, r->d + o - 64, 8);
+        for (i = 0; i < ns && st[i].at < o; i++) ly = st[i].ly;
+        if (!ly) {                                             /* no record found: the newest layer */
+            for (i = 0; i < LAYERS; i++) if (sf->l[i].used && (!ly || sf->l[i].id > ly->id)) ly = &sf->l[i];
+            if (!ly) continue;
+        }
+        for (i = 0; i < nn && nb[i].ly != ly; i++) {}
+        if (i == nn) { if (nn == 32) continue; nn++; }
+        nb[i].ly = ly; nb[i].gb = t; nb[i].id = sf->cache[k].id; nb[i].ptr = nb[i].cookie = 0;
+        memcpy(&nb[i].number, r->d + o - 64, 8);
         memcpy(&w, r->d + o - 56, 4);
-        if (w == AOI_BINDER_TYPE_BINDER) { memcpy(&ptr, r->d + o - 48, 8); memcpy(&cookie, r->d + o - 40, 8); }
-        break;
+        if (w == AOI_BINDER_TYPE_BINDER) { memcpy(&nb[i].ptr, r->d + o - 48, 8); memcpy(&nb[i].cookie, r->d + o - 40, 8); }
+        o += 32;
     }
-    if (id) show(p, sf, id, gb, number, ptr, cookie);
+    for (i = 0; i < nn; i++) show(p, sf, nb[i].ly, nb[i].id, nb[i].gb, nb[i].number, nb[i].ptr, nb[i].cookie);
+    if (nn) compose(p, sf);
+}
+
+/* /dev/aoi_layer/ID/X/Y/Z/DIM from aoi.WindowSession: where a window's layer goes
+ * (DIM in thousandths); /dev/aoi_layer/ID/hide: the window is gone. */
+void aoi_sf_place(struct aoi_proc *p, const char *cmd)
+{
+    struct aoi_sf *sf = p->sf;
+    int32_t id, x, y, z, dim;
+    int k;
+    char what[8];
+    if (!sf) return;
+    if (sscanf(cmd, "%d/%d/%d/%d/%d", &id, &x, &y, &z, &dim) == 5) {
+        for (k = 0; k < LAYERS && !(sf->l[k].used && sf->l[k].id == id); k++) {}
+        if (k == LAYERS) return;
+        sf->l[k].x = x; sf->l[k].y = y; sf->l[k].z = z; sf->l[k].dim = dim; sf->l[k].hidden = 0;
+    } else if (sscanf(cmd, "%d/%7s", &id, what) == 2 && !strcmp(what, "hide")) {
+        for (k = 0; k < LAYERS && !(sf->l[k].used && sf->l[k].id == id); k++) {}
+        if (k == LAYERS) return;
+        sf->l[k].hidden = 1;
+        release(p, &sf->l[k]);
+    } else return;
+    if (p->trace) fprintf(p->trace, "[sf] place %s\n", cmd);
+    compose(p, sf);
 }
 
 static void legacy(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
@@ -499,18 +603,8 @@ int aoi_sf_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_
     return -1;
 }
 
-/* The frame on screen, to the host again (after a snapshot is loaded). */
+/* The screen, to the host again (after a snapshot is loaded). */
 void aoi_sf_redraw(struct aoi_proc *p)
 {
-    struct aoi_sf *sf = p->sf;
-    struct aoi_gbuf *b;
-    uint8_t *px;
-    uint32_t y;
-    if (!sf || !sf->frame || !p->frame || !(b = aoi_gralloc_find(p, sf->frame)) || b->bpp != 4) return;
-    if (!(px = malloc((size_t)b->width * b->height * 4))) return;
-    for (y = 0; y < b->height; y++)
-        if (!aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, px + (size_t)y * b->width * 4,
-                         (uint64_t)b->width * 4, 0)) break;
-    if (y == b->height) p->frame(p->frame_ctx, px, b->width, b->height);
-    free(px);
+    if (p->sf) compose(p, p->sf);
 }

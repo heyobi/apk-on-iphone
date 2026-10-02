@@ -62,6 +62,7 @@ int aoi_sf_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *
 int aoi_sf_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface);
 int aoi_gralloc_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *kind, int32_t *idx);
 int aoi_gralloc_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface);
-void aoi_sf_redraw(struct aoi_proc *p);     /* the frame on screen to p->frame again */
+void aoi_sf_redraw(struct aoi_proc *p);     /* the screen to p->frame again */
+void aoi_sf_place(struct aoi_proc *p, const char *cmd);   /* /dev/aoi_layer/...: a window's place */
 
 #endif

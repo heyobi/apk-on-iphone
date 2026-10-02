@@ -1487,6 +1487,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (p->home) p->home(p->frame_ctx);
             r = err(L_ENOENT);
             break;
+        } else if (!strncmp(g, "/dev/aoi_layer/", 15)) {         /* aoi.WindowSession: where a window goes */
+            aoi_sf_place(p, g + 15);
+            r = err(L_ENOENT);
+            break;
         } else if (!strcmp(g, "/dev/aoi_snapshot")) {              /* aoi.Main: the app is up, save it */
             if (p->snap_path[0]) p->snap_request = 1;
             r = err(L_ENOENT);

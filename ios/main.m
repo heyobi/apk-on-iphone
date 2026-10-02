@@ -857,29 +857,37 @@ static Launcher *launcher;
 
 /* ---------- callbacks from the emulator (worker threads) ---------- */
 
+/* Each callback drains its own autorelease pool: the emulator's thread runs one app
+ * for as long as it is open, and its own pool would keep every frame's image (5 MB). */
 static void log_cb(void *ctx, const char *line) {
-    [(__bridge Launcher *)ctx append:[NSString stringWithUTF8String:line]];
+    @autoreleasepool {
+        [(__bridge Launcher *)ctx append:[NSString stringWithUTF8String:line]];
+    }
 }
 
 /* A frame from the guest's SurfaceFlinger: RGBX rows -> UIImage (2x), to that app's screen. */
 static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h) {
-    CFDataRef d = CFDataCreate(NULL, px, (CFIndex)w * h * 4);
-    CGDataProviderRef prov = CGDataProviderCreateWithCFData(d);
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGImageRef cg = CGImageCreate(w, h, 8, 32, w * 4, cs, kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast,
-                                  prov, NULL, false, kCGRenderingIntentDefault);
-    UIImage *img = [UIImage imageWithCGImage:cg scale:2 orientation:UIImageOrientationUp];
-    CGImageRelease(cg); CGColorSpaceRelease(cs); CGDataProviderRelease(prov); CFRelease(d);
-    ScreenVC *vc = (__bridge ScreenVC *)ctx;
-    dispatch_async(dispatch_get_main_queue(), ^{ [vc showFrame:img]; });
+    @autoreleasepool {
+        CFDataRef d = CFDataCreate(NULL, px, (CFIndex)w * h * 4);
+        CGDataProviderRef prov = CGDataProviderCreateWithCFData(d);
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGImageRef cg = CGImageCreate(w, h, 8, 32, w * 4, cs, kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast,
+                                      prov, NULL, false, kCGRenderingIntentDefault);
+        UIImage *img = [UIImage imageWithCGImage:cg scale:2 orientation:UIImageOrientationUp];
+        CGImageRelease(cg); CGColorSpaceRelease(cs); CGDataProviderRelease(prov); CFRelease(d);
+        ScreenVC *vc = (__bridge ScreenVC *)ctx;
+        dispatch_async(dispatch_get_main_queue(), ^{ [vc showFrame:img]; });
+    }
 }
 
 /* The app left for its launcher (back on its root screen): ours comes up. */
 static void home_cb(void *ctx) {
-    ScreenVC *vc = (__bridge ScreenVC *)ctx;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (launcher.presentedViewController == vc) [launcher dismissViewControllerAnimated:YES completion:nil];
-    });
+    @autoreleasepool {
+        ScreenVC *vc = (__bridge ScreenVC *)ctx;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (launcher.presentedViewController == vc) [launcher dismissViewControllerAnimated:YES completion:nil];
+        });
+    }
 }
 
 /* ---------- the application ---------- */

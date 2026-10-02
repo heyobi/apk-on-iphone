@@ -12,35 +12,103 @@ import android.view.InputChannel;
 import android.view.InsetsSourceControl;
 import android.view.InsetsState;
 import android.view.SurfaceControl;
+import android.view.Gravity;
 import android.view.SurfaceSession;
 import android.view.WindowManager;
 import android.window.ClientWindowFrames;
 import android.window.OnBackInvokedCallbackInfo;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 /** The app's windows: each is added with an input channel (we keep the server end,
- *  touches will be written to it) and laid out full screen; relayout gives it a BLAST
- *  layer created through our SurfaceFlinger (core/sf.c). */
+ *  aoi.Input writes touches to it) and laid out by its gravity, size and offset in
+ *  the screen (an activity fills it; a dialog is centred, a popup menu sits where it
+ *  asked); relayout gives it a BLAST layer created through our SurfaceFlinger
+ *  (core/sf.c) and tells it where that layer goes: /dev/aoi_layer/ID/X/Y/Z/DIM, newer
+ *  windows above older ones, a FLAG_DIM_BEHIND window darkening what is below. */
 final class WindowSession extends IWindowSession.Stub {
+    private static final int FLAG_DIM_BEHIND = 0x2;
+
+    /** One window: its attributes, frame in the screen, layer, input channel. */
+    static final class Win {
+        IBinder token;
+        WindowManager.LayoutParams attrs;
+        final Rect frame = new Rect();
+        SurfaceControl sc;
+        InputChannel input;
+        int z;
+        boolean shown;
+    }
+
     private final SurfaceSession surfaces = new SurfaceSession();
-    InputChannel input;                                            /* the last window's server end */
+    private final ArrayList<Win> windows = new ArrayList<Win>();       /* bottom to top */
+    private int nextZ;
 
     private static Rect screen() { return new Rect(0, 0, DisplayManager.WIDTH, DisplayManager.HEIGHT); }
 
     /** The configuration a window sees: the phone's (its window bounds are the screen). */
     static Configuration windowConfig() { return ActivityManager.phone(); }
 
+    private Win find(IWindow window) {
+        IBinder t = window != null ? window.asBinder() : null;
+        for (Win w : windows) if (w.token == t) return w;
+        return null;
+    }
+
+    /** The visible window a touch at (x, y) goes to, top first: the one under it, or
+     *  one above it that is touch modal (not FLAG_NOT_TOUCH_MODAL: a popup menu or
+     *  dialog that closes on a touch outside it). */
+    synchronized Win target(float x, float y) {
+        for (int i = windows.size() - 1; i >= 0; i--) {
+            Win w = windows.get(i);
+            if (!w.shown || w.input == null || w.attrs == null || (w.attrs.flags & 0x10) != 0) continue;   /* NOT_TOUCHABLE */
+            if (w.frame.contains((int) x, (int) y) || (w.attrs.flags & 0x20) == 0) return w;            /* NOT_TOUCH_MODAL */
+        }
+        return null;
+    }
+
+    /** The windows above `w` that watch touches outside them (FLAG_WATCH_OUTSIDE_TOUCH). */
+    synchronized ArrayList<Win> watchers(Win w) {
+        ArrayList<Win> r = new ArrayList<Win>();
+        for (int i = windows.size() - 1; i >= 0 && windows.get(i) != w; i--) {
+            Win o = windows.get(i);
+            if (o.shown && o.input != null && o.attrs != null && (o.attrs.flags & 0x40000) != 0) r.add(o);
+        }
+        return r;
+    }
+
+    private static void layer(String cmd) {
+        try { new FileInputStream("/dev/aoi_layer/" + cmd).close(); } catch (IOException e) { /* always ENOENT */ }
+    }
+
+    private void place(Win w) {
+        WindowManager.LayoutParams a = w.attrs;
+        Rect in = a != null ? a.surfaceInsets : null;
+        int dim = a != null && (a.flags & FLAG_DIM_BEHIND) != 0 ? Math.round(a.dimAmount * 1000) : 0;
+        layer(w.sc.getLayerId() + "/" + (w.frame.left - (in != null ? in.left : 0)) + "/"
+                + (w.frame.top - (in != null ? in.top : 0)) + "/" + w.z + "/" + dim);
+    }
+
     @Override
-    public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs, int visibility, int layerStack,
-            int userId, int requestedVisibleTypes, InputChannel outInputChannel, InsetsState insets,
+    public synchronized int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs, int visibility,
+            int layerStack, int userId, int requestedVisibleTypes, InputChannel outInputChannel, InsetsState insets,
             InsetsSourceControl.Array controls, Rect attachedFrame, float[] sizeCompatScale) {
-        System.out.println("aoi: window added: " + attrs.getTitle());
+        System.out.println("aoi: window added: " + attrs.getTitle() + " type " + attrs.type);
+        Win w = new Win();
+        w.token = window.asBinder();
+        w.attrs = attrs;
+        w.z = ++nextZ;
+        w.frame.set(screen());
+        windows.add(w);
         if (outInputChannel != null) {
             InputChannel[] pair = InputChannel.openInputChannelPair(String.valueOf(attrs.getTitle()));
-            input = pair[0];
+            w.input = pair[0];
             pair[1].copyTo(outInputChannel);
         }
         if (insets != null) insets.setDisplayFrame(screen());
+        if (attachedFrame != null) attachedFrame.set(screen());   /* a sub-window's parent: an activity */
         if (sizeCompatScale != null && sizeCompatScale.length > 0) sizeCompatScale[0] = 1f;
         return 0x3;                                                /* ADD_OKAY | IN_TOUCH_MODE | APP_VISIBLE */
     }
@@ -53,14 +121,36 @@ final class WindowSession extends IWindowSession.Stub {
                 insets, controls, attachedFrame, sizeCompatScale);
     }
 
+    /** Where a window of the requested size goes, as WindowManager's layout does it:
+     *  MATCH_PARENT fills the screen, otherwise its gravity and x/y offset place it,
+     *  kept on the screen. */
+    private static void frame(WindowManager.LayoutParams a, int w, int h, Rect out) {
+        Rect s = screen();
+        if (a == null || w <= 0 || h <= 0) { out.set(s); return; }
+        if (a.width == -1) w = s.width();
+        if (a.height == -1) h = s.height();
+        if (w >= s.width() && h >= s.height()) { out.set(s); return; }
+        Gravity.apply(a.gravity != 0 ? a.gravity : 0x33, w, h, s, a.x, a.y, out);   /* default TOP|LEFT */
+        if ((a.flags & 0x200) == 0) Gravity.applyDisplay(a.gravity, s, out);      /* not LAYOUT_NO_LIMITS */
+    }
+
     @Override
-    public int relayout(IWindow window, WindowManager.LayoutParams attrs, int w, int h, int visibility, int flags,
-            int seq, int lastSyncSeqId, ClientWindowFrames frames, MergedConfiguration merged,
+    public synchronized int relayout(IWindow window, WindowManager.LayoutParams attrs, int w, int h, int visibility,
+            int flags, int seq, int lastSyncSeqId, ClientWindowFrames frames, MergedConfiguration merged,
             SurfaceControl outSurface, InsetsState insets, InsetsSourceControl.Array controls, Bundle bundle) {
-        System.out.println("aoi: relayout " + (attrs != null ? attrs.getTitle() : "") + " " + w + "x" + h
-                + " visibility " + visibility);
+        Win win = find(window);
+        if (win == null) {
+            win = new Win();
+            win.token = window != null ? window.asBinder() : null;
+            win.z = ++nextZ;
+            windows.add(win);
+        }
+        if (attrs != null) win.attrs = attrs;
+        frame(win.attrs, w, h, win.frame);
+        System.out.println("aoi: relayout " + (win.attrs != null ? win.attrs.getTitle() : "") + " " + w + "x" + h
+                + " visibility " + visibility + " at " + win.frame.left + "," + win.frame.top);
         if (frames != null) {
-            frames.frame.set(0, 0, DisplayManager.WIDTH, DisplayManager.HEIGHT);
+            frames.frame.set(win.frame);
             frames.displayFrame.set(0, 0, DisplayManager.WIDTH, DisplayManager.HEIGHT);
             frames.parentFrame.set(0, 0, DisplayManager.WIDTH, DisplayManager.HEIGHT);
             frames.compatScale = 1f;
@@ -68,16 +158,37 @@ final class WindowSession extends IWindowSession.Stub {
         if (merged != null) merged.setConfiguration(windowConfig(), new Configuration());
         if (insets != null) insets.setDisplayFrame(screen());
         if (outSurface != null && visibility == 0) {               /* VISIBLE: it gets a layer to draw into */
-            SurfaceControl sc = new SurfaceControl.Builder(surfaces)
-                    .setName(String.valueOf(attrs != null ? attrs.getTitle() : "window"))
-                    .setBufferSize(DisplayManager.WIDTH, DisplayManager.HEIGHT)
-                    .setFormat(-3)                                 /* PixelFormat.TRANSLUCENT */
-                    .setBLASTLayer()
-                    .setCallsite("aoi.WindowSession.relayout")
-                    .build();
-            outSurface.copyFrom(sc, "aoi.WindowSession.relayout");
+            if (win.sc == null) {
+                Rect in = win.attrs != null ? win.attrs.surfaceInsets : null;
+                win.sc = new SurfaceControl.Builder(surfaces)
+                        .setName(String.valueOf(win.attrs != null ? win.attrs.getTitle() : "window"))
+                        .setBufferSize(win.frame.width() + (in != null ? in.left + in.right : 0),
+                                win.frame.height() + (in != null ? in.top + in.bottom : 0))
+                        .setFormat(-3)                             /* PixelFormat.TRANSLUCENT */
+                        .setBLASTLayer()
+                        .setCallsite("aoi.WindowSession.relayout")
+                        .build();
+            }
+            outSurface.copyFrom(win.sc, "aoi.WindowSession.relayout");
+            win.shown = true;
+            place(win);
+        } else if (visibility != 0 && win.sc != null && win.shown) {
+            win.shown = false;
+            layer(win.sc.getLayerId() + "/hide");
         }
         return 0;
+    }
+
+    @Override
+    public synchronized void remove(IBinder token) {
+        for (int i = 0; i < windows.size(); i++) {
+            Win w = windows.get(i);
+            if (w.token != token) continue;
+            System.out.println("aoi: window removed: " + (w.attrs != null ? w.attrs.getTitle() : ""));
+            windows.remove(i);
+            if (w.sc != null) layer(w.sc.getLayerId() + "/hide");
+            return;
+        }
     }
 
     @Override public void relayoutAsync(IWindow window, WindowManager.LayoutParams attrs, int w, int h, int v, int f, int s, int l) {}
@@ -87,7 +198,6 @@ final class WindowSession extends IWindowSession.Stub {
         System.out.println("aoi: finishDrawing");
     }
 
-    @Override public void remove(IBinder token) {}
     @Override public boolean outOfMemory(IWindow window) { return false; }
     @Override public void setInsets(IWindow window, int touchable, Rect content, Rect visible, Region area) {}
     @Override public void clearTouchableRegion(IWindow window) {}
