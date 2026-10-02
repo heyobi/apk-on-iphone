@@ -3,17 +3,21 @@
  * stderr go to a temporary file whose text is logged. Shared by the iOS app and
  * tools/iostest.c. */
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE                 /* mincore */
+#define _DARWIN_C_SOURCE
 #include "androidtest.h"
 #include "../core/binder.h"
 #include "../core/proc.h"
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#include <malloc/malloc.h>
 #else
 #include <sys/resource.h>
 #endif
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -175,6 +179,51 @@ static int classpath_env(const char *datadir, char vals[3][4096], const char **e
 
 static struct aoi_proc *volatile running;   /* the app's process, while aoi_android_app runs */
 
+/* Where the guest's host memory is: the host pages of its chunks that exist (resident,
+ * or compressed: MINCORE_PAGED_OUT on Apple), in total and for the 64 MB guest windows
+ * holding the most, each named by the largest mapping in it (file pages count too:
+ * they are "external" in the footprint; chunks with no file mapped are anonymous). */
+#define WIN_SHIFT 26
+static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
+{
+    static unsigned char vec[AOI_VM_CHUNK / 4096];
+    static uint32_t win[1 << 12];                    /* host pages per window */
+    long hp = sysconf(_SC_PAGESIZE);
+    uint64_t nci = p->vm.size >> AOI_VM_CHUNK_SHIFT, ci, total = 0, anon = 0, mapped = 0, i;
+    uint64_t nwin = (p->vm.size >> WIN_SHIFT) < (1 << 12) ? (p->vm.size >> WIN_SHIFT) : (1 << 12);
+    size_t o;
+    int k;
+    if (hp <= 0 || hp > (long)AOI_VM_CHUNK) { snprintf(out, outn, "?"); return; }
+    memset(win, 0, sizeof win);
+    for (ci = 0; ci < nci; ci++) {
+        uint8_t *c = p->vm.chunk[ci];
+        uint64_t n = 0, j;
+        if (!c || mincore((void *)c, AOI_VM_CHUNK, (void *)vec)) continue;
+        for (j = 0; j < AOI_VM_CHUNK / (uint64_t)hp; j++) if (vec[j]) n++;
+        total += n;
+        if (!p->vm.filemap[ci]) anon += n;
+        if ((ci << AOI_VM_CHUNK_SHIFT >> WIN_SHIFT) < nwin) win[ci << AOI_VM_CHUNK_SHIFT >> WIN_SHIFT] += (uint32_t)n;
+    }
+    for (i = 0; i < p->vm.size / AOI_VM_PAGE; i++) if (p->vm.prot[i]) mapped++;
+    o = (size_t)snprintf(out, outn, "guest in host memory %llu MB (%llu MB in chunks without files) of %llu MB mapped;",
+                         (unsigned long long)(total * (uint64_t)hp >> 20), (unsigned long long)(anon * (uint64_t)hp >> 20),
+                         (unsigned long long)(mapped * AOI_VM_PAGE >> 20));
+    for (k = 0; k < 6 && o < outn; k++) {           /* the biggest windows */
+        uint64_t best = 0, w, bl = 0;
+        const char *name = "anonymous";
+        for (w = 1; w < nwin; w++) if (win[w] > win[best]) best = w;
+        if (!win[best]) break;
+        for (i = 0; i < (uint64_t)p->nmaps; i++) {
+            const struct aoi_proc_map *m = &p->maps[i];
+            uint64_t ws = best << WIN_SHIFT, we = ws + (1ULL << WIN_SHIFT);
+            if (m->start < we && m->start + m->len > ws && m->len > bl) { bl = m->len; name = m->path; }
+        }
+        o += (size_t)snprintf(out + o, outn - o, " %#llx: %llu MB (%s);", (unsigned long long)(best << WIN_SHIFT),
+                              (unsigned long long)((uint64_t)win[best] * (uint64_t)hp >> 20), name);
+        win[best] = 0;
+    }
+}
+
 /* While an app runs: its memory every 10 s (phys_footprint and what it is made of,
  * the guest's host chunks, file pages mapped/copied), to find where it goes. */
 struct watch { aoi_log_fn log; void *ctx; struct aoi_proc *p; };
@@ -202,6 +251,17 @@ static void *memory_watch(void *arg)
 #else
         (void)aoi_vm_mapped_bytes; (void)aoi_vm_copied_bytes;
 #endif
+        {
+            char b[1200];
+#ifdef __APPLE__
+            malloc_statistics_t ms;
+            memset(&ms, 0, sizeof ms);
+            malloc_zone_statistics(NULL, &ms);
+            say(w.log, w.ctx, "memory: malloc %.0f MB in use", ms.size_in_use / 1e6);
+#endif
+            guest_breakdown(w.p, b, sizeof b);
+            say(w.log, w.ctx, "memory: %s", b);
+        }
     }
 }
 static char snap_path[1024];                /* where its snapshot goes */

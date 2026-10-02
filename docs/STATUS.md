@@ -392,6 +392,15 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Where the phone's memory goes (app 0.27).** 0.26 still showed a fresh Qalculate
+at 2.4 GB footprint (1.8 GB internal) where the host's RSS for the same run is 412 MB,
+and it stayed there: the snapshot's reads were not (all of) it. The memory lines now
+also give malloc's bytes in use (Apple) and the guest's share: the host pages of its
+chunks that exist (mincore: resident or compressed), those in chunks with no file
+mapped (anonymous), the guest bytes mapped, and the six 64 MB guest windows holding
+the most, named by their largest mapping. On the host: 258 MB (179 anonymous) of
+14.9 GB mapped.
+
 **Snapshots no longer read untouched memory (app 0.26).** With 0.25 the footprint no
 longer grew while Qalculate was used (826 MB, flat), but a fresh start went from 421 MB
 to 2585 MB within 10 s, and back to ~800 MB half a minute later, where the host's peak
