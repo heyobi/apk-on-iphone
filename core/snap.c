@@ -19,6 +19,7 @@
 #define _GNU_SOURCE                 /* pread */
 #define _DARWIN_C_SOURCE
 #include "binder.h"
+#include "hle.h"
 #include "proc.h"
 
 #include <dirent.h>
@@ -358,6 +359,7 @@ static void fix_cpu(struct aoi_proc *p, struct aoi_cpu *c)
     c->host_call = NULL;
     c->trace = NULL; c->trace_ctx = NULL;
     c->stop_name = NULL;
+    aoi_hle_attach(c, c->hle_base);                          /* this build's stand-ins (core/hle.c) */
 }
 
 /* ---------- the file ---------- */

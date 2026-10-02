@@ -7,6 +7,7 @@
 #define _DARWIN_C_SOURCE
 #include "proc.h"
 #include "binder.h"
+#include "hle.h"
 #include "gralloc.h"
 
 #include <dirent.h>
@@ -1175,6 +1176,14 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
         int e = fstat(f->host, &st) ? -errno : aoi_vm_map_file(&p->vm, a, len, f->host, off, (uint64_t)st.st_size);
         if (e < 0) { aoi_vm_unmap(&p->vm, a, len); errno = -e; return herr(); }
         note_map(p, a, len, off, f->path);
+        {                                                          /* Skia's raster stages natively (core/hle.c): */
+            size_t n = strlen(f->path);                            /* libhwui's code segment (vaddr = offset) */
+            if ((prot & 4) && n >= 24 && !strcmp(f->path + n - 24, "/system/lib64/libhwui.so") && a >= off) {
+                int k;
+                aoi_hle_attach(&p->cpu, a - off);
+                for (k = 0; k < AOI_PROC_THREADS; k++) aoi_hle_attach(&p->th[k].cpu, a - off);
+            }
+        }
         if ((flags & 3) == 1 && (prot & 2) && p->nshm < (int)(sizeof p->shm / sizeof p->shm[0])) {   /* MAP_SHARED, writable */
             int d = dup(f->host);
             if (d >= 0) {

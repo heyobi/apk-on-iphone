@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "cpu_impl.h"
+#include "hle.h"
 
 #ifdef AOI_DEBUG
 /* Debug build (make build/aoiproc-debug): AOI_WATCH=value logs every store of that
@@ -252,17 +253,24 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         /* ---- branches ---- */
         if ((insn & 0xfc000000u) == 0x14000000u) { BODY(0)                 /* b */
             next = c->pc + (sextn(insn & 0x3ffffff, 26) << 2);
+            if (next - c->hle_lo < c->hle_hi - c->hle_lo && aoi_hle_run(c, next)) next = c->pc;   /* a tail call */
         } else if ((insn & 0xfc000000u) == 0x94000000u) { BODY(1)          /* bl */
             c->x[30] = c->pc + 4;
             next = c->pc + (sextn(insn & 0x3ffffff, 26) << 2);
+            if (next - c->hle_lo < c->hle_hi - c->hle_lo && aoi_hle_run(c, next)) next = c->pc;
         } else if ((insn & 0xfffffc1fu) == 0xd63f0000u) { BODY(2)          /* blr */
             uint64_t t = X(c, (insn >> 5) & 31); c->x[30] = c->pc + 4; next = t;
+            if (t - c->hle_lo < c->hle_hi - c->hle_lo && aoi_hle_run(c, t)) next = c->pc;
         } else if ((insn & 0xfffffc1fu) == 0xd61f0000u) { BODY(3)          /* br */
             next = X(c, (insn >> 5) & 31);
+            if (next - c->hle_lo < c->hle_hi - c->hle_lo && aoi_hle_run(c, next)) next = c->pc;
         } else if ((insn & 0xfffffc1fu) == 0xd65f0000u) { BODY(4)          /* ret */
             next = X(c, (insn >> 5) & 31);             /* Rn is always encoded; x30 is only the default */
         } else if ((insn & 0xff000010u) == 0x54000000u) { BODY(5)          /* b.cond */
-            if (cond_holds(c, insn & 0xf)) next = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
+            if (cond_holds(c, insn & 0xf)) {
+                next = c->pc + (sextn((insn >> 5) & 0x7ffff, 19) << 2);
+                if (next - c->hle_lo < c->hle_hi - c->hle_lo && aoi_hle_run(c, next)) next = c->pc;   /* a loop's back edge */
+            }
         } else if ((insn & 0x7e000000u) == 0x34000000u) { BODY(6)          /* cbz/cbnz */
             int is64 = insn >> 31, nz = (insn >> 24) & 1;
             uint64_t v = X(c, insn & 31); if (!is64) v &= 0xffffffffu;

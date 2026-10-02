@@ -392,6 +392,25 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Skia's hot code natively (core/hle.c, app 0.18).** Software rendering spends its
+frames in a few libhwui.so functions: the highp raster pipeline's stages (seed_shader,
+matrix_2x3, a 2-stop gradient, clamps, dither, load_8888_dst, dstin, store_8888,
+just_return) and the loop that runs them over 4-pixel chunks, plus rect_memset32,
+blit_row_color32 and blit_row_s32a_opaque. A br/blr/bl/b/b.cond into libhwui's range
+asks `aoi_hle_run` whether the target is one of them (offsets of the bundled
+libhwui.so; each checked by an FNV hash of its code before use, so another libhwui
+just runs interpreted); the stand-in does what the instructions do in the same order
+(fused where the code has fmla, no contraction elsewhere, ARM min/max on zeros, the
+NEON rounding of x/255) and declines (interpreted) on NaNs, a non-default FPCR or
+memory that is not plain. `AOI_HLE_CHECK=1` runs each stand-in against the
+interpreter (registers and pixels compared): 0 differences over the Qalculate taps.
+The dither stage was also checked against Unicorn. libhwui's base comes from its
+executable mapping (sys_mmap with PROT_EXEC; an earlier non-exec mapping of the file
+gave a wrong one). Host, Qalculate taps from a snapshot: 37 -> 109 M guest
+instructions/s equivalent, the first frame after a tap 1.8 -> 0.7 s; callgrind 199 ->
+78 host instructions per guest instruction. What is left: scudo malloc/free (~10 %),
+text and other blits, ART.
+
 **Usable app (0.17):** the iOS app starts the installed APK by itself (from its
 snapshot: about a second); picking an APK installs and starts it. A swipe from the
 left edge is Android's back: `aoi_android_back` -> record 3 on /dev/aoi_input ->
@@ -555,6 +574,7 @@ none occur in Qalculate; other apps will tell (isacheck).
 - `core/proc.c` — a Linux process: execve-style loader (PT_INTERP, auxv) and the
   syscall layer for unmodified Android programs (`tools/aoiproc.c`).
 - `core/snap.c` — snapshots of a whole process (save/load), for fast relaunch.
+- `core/hle.c` — native stand-ins for hot guest functions (Skia's raster pipeline).
 - `tools/fetch-android.sh`, `tools/android-root.sh` — the AOSP 14 guest root.
 - `core/load.c` — static-ELF loader + initial stack (for the `aoirun` path).
 - `tools/gmpdemo.c` — the end-to-end demo: APK library → linked → GMP computes.

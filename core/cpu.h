@@ -68,6 +68,11 @@ struct aoi_cpu {
     /* Optional per-instruction hook (the reference-CPU oracle, core/oracle.c):
      * called with after=0 before and after=1 after each guest instruction.
      * While it is set, wr() logs the stores of the current instruction. */
+    /* Native stand-ins (core/hle.c): a br/blr into [hle_lo, hle_hi) asks aoi_hle_run
+     * whether the target is a guest function it runs on the host; hle_base is the
+     * load bias of the library they belong to (0: none). */
+    uint64_t hle_lo, hle_hi, hle_base;
+
     void (*trace)(struct aoi_cpu *cpu, int after);
     void *trace_ctx;
     uint64_t wlog_addr[4];
