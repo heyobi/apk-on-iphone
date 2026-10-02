@@ -781,6 +781,7 @@
 /system/lib64/libshmemcompat.so
 /system/lib64/libshmemutil.so
 /system/lib64/libsoundpool.so
+/system/lib64/libjnigraphics.so
 /system/lib64/libspeexresampler.so
 /system/lib64/libsqlite.so
 /system/lib64/libstagefright.so

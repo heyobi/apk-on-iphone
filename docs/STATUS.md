@@ -392,6 +392,16 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**The GPU on the phone, first try (app 0.37 -> 0.38).** On the iPhone, Qalculate,
+WhatsApp's EULA and Kiwi all got as far as HWUI's EGL setup on ANGLE (configs chosen;
+ANGLE has no 1010102 config, a warning) and then died the same way: SIGSEGV at
+0x53b626008 on the RenderThread, pc in libc (+0x61990, a copy), lr in libc++
+(+0xa3c60), right after the context came up. The host (Mesa) does not do it. 0.38 logs
+what is needed to find it: on iOS every guest EGL operation and each GL function's
+first call with its arguments and result (glGetString's text too; AOI_GL_FIRST=1 on
+the host), and a native fault now logs x0-x2 and the callers along the frame-pointer
+chain. Also: libjnigraphics.so in the bundle (Kiwi's libchrome.so needs it).
+
 **The GPU on the phone: ANGLE on Metal (app 0.37, not yet run on the phone).** The
 iOS build links gpu/host.c with ANGLE's static libraries (Godot's godot-angle-static
 release for iOS arm64, chromium/7578, BSD-3 + MIT; licence texts in the app's

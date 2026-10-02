@@ -82,6 +82,8 @@ static int trace = -1;                           /* AOI_GL_TRACE: every GL call 
 struct cached { const char *host; uint64_t ga; };
 static struct cached strs[512];                  /* strings the GL returned, in guest memory */
 static int nstrs;
+static int first_log = -1;                       /* each GL function's first call in the log (iOS; AOI_GL_FIRST) */
+static unsigned char called[1024];
 
 /* Lines for the process's log (on iOS the only output anyone sees). */
 static void say(struct aoi_proc *p, const char *fmt, ...)
@@ -824,6 +826,7 @@ void aoi_gpu_end(void)
     for (i = 0; i < MAXSURF; i++) if (surfs[i].h) eglDestroySurface(dpy, surfs[i].h);
     memset(surfs, 0, sizeof surfs);
     memset(thr, 0, sizeof thr);
+    memset(called, 0, sizeof called);
     nstrs = 0;
 }
 
@@ -907,7 +910,21 @@ static int readback(struct aoi_proc *p, struct surf *sf, uint64_t ga, int stride
     return 1;
 }
 
+static uint64_t egl_op1(struct aoi_proc *p, uint64_t op, const uint64_t *s);
+
 static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
+{
+    static const char *const names[] = { "init", "choose_config", "config_attrib", "create_context", "destroy_context",
+        "create_surface", "destroy_surface", "resize_surface", "make_current", "query_context", "get_error", "readback" };
+    uint64_t r = egl_op1(p, op, s);
+    if (first_log > 0 && op != AOI_EGL_CONFIG_ATTRIB && op != AOI_EGL_READBACK && op != AOI_EGL_MAKE_CURRENT
+        && op - AOI_EGL_INIT < sizeof names / sizeof names[0])
+        say(p, "egl %s(%#llx, %#llx, %#llx) -> %#llx", names[op - AOI_EGL_INIT], (unsigned long long)s[0],
+            (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)r);
+    return r;
+}
+
+static uint64_t egl_op1(struct aoi_proc *p, uint64_t op, const uint64_t *s)
 {
     EGLint at[130];
     struct thr *t = thread_of(p);
@@ -1035,6 +1052,13 @@ uint64_t aoi_gpu_call(void *unused, struct aoi_proc *p, uint64_t op, uint64_t ar
 {
     uint64_t s[16];
     (void)unused;
+    if (first_log < 0) {
+#ifdef __APPLE__
+        first_log = 1;
+#else
+        first_log = getenv("AOI_GL_FIRST") != NULL;
+#endif
+    }
     memset(s, 0, sizeof s);
     copy_in(&p->vm, args, s, sizeof s);
     if (op < sizeof gl_names / sizeof gl_names[0]) {
@@ -1048,6 +1072,16 @@ uint64_t aoi_gpu_call(void *unused, struct aoi_proc *p, uint64_t op, uint64_t ar
         if (trace) fprintf(stderr, "[gl] %s\n", gl_names[op]);
         r = gl_dispatch(c, (unsigned)op, s);
         finish(c);
+        if (first_log && op < sizeof called && !called[op]) {     /* where a guest crash after it started */
+            char str[200] = "";
+            called[op] = 1;
+            if ((!strcmp(gl_names[op], "glGetString") || !strcmp(gl_names[op], "glGetStringi")) && r) {
+                copy_in(&p->vm, r, str, sizeof str - 1);
+                str[sizeof str - 1] = 0;
+            }
+            say(p, "first %s(%#llx, %#llx, %#llx) -> %#llx %s", gl_names[op], (unsigned long long)s[0],
+                (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)r, str);
+        }
         return r;
     }
     return egl_op(p, op, s);

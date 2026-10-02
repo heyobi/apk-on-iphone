@@ -773,6 +773,17 @@ static int sig_fault(struct aoi_proc *p)
         if (strstr(w, ".so+") && logged++ < 40) {
             fprintf(p->log, "I/aoi: SIGSEGV at %#llx in tid %d: pc %s, lr %s\n", (unsigned long long)p->cpu.fault_addr,
                     p->th[p->cur].tid, w, aoi_proc_where(p, p->cpu.x[30], w2, sizeof w2));
+            fprintf(p->log, "I/aoi:   x0 %#llx x1 %#llx x2 %#llx\n", (unsigned long long)p->cpu.x[0],
+                    (unsigned long long)p->cpu.x[1], (unsigned long long)p->cpu.x[2]);
+            {                                                      /* the callers, by the frame pointer chain */
+                uint64_t fp = p->cpu.x[29], fr[2];
+                int k;
+                for (k = 0; k < 12 && fp && aoi_vm_read(&p->vm, fp & 0x00ffffffffffffffULL, fr, 16, 0); k++) {
+                    fprintf(p->log, "I/aoi:   #%d %s\n", k, aoi_proc_where(p, fr[1], w2, sizeof w2));
+                    if (fr[0] <= fp) break;
+                    fp = fr[0];
+                }
+            }
             fflush(p->log);
         }
     }
