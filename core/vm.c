@@ -228,6 +228,8 @@ int aoi_vm_write(struct aoi_vm *vm, uint64_t addr, const void *src, uint64_t len
     return 1;
 }
 
+uint64_t aoi_vm_mapped_bytes, aoi_vm_copied_bytes;     /* statistics: file pages mapped / copied */
+
 int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize)
 {
     uint64_t o = 0;
@@ -246,6 +248,8 @@ int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint
                                 (off_t)hp) != MAP_FAILED) {
                 uint64_t head = hp - fo, tail = fo + n - he;
                 ssize_t g;
+                aoi_vm_mapped_bytes += he - hp;
+                aoi_vm_copied_bytes += head + tail;
                 if (head && (g = pread(fd, h, (size_t)head, (off_t)fo)) < 0) return -errno;
                 if (tail && fo + n - tail < fsize && (g = pread(fd, h + (he - fo), (size_t)tail, (off_t)he)) < 0)
                     return -errno;
@@ -255,6 +259,7 @@ int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint
         }
         {                                                           /* copy */
             uint64_t k = 0;
+            aoi_vm_copied_bytes += n;
             while (k < n && fo + k < fsize) {
                 ssize_t g = pread(fd, h + k, (size_t)(n - k), (off_t)(fo + k));
                 if (g < 0) { if (errno == EINTR) continue; return -errno; }

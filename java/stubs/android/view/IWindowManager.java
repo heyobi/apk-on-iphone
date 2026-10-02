@@ -9,6 +9,13 @@ import android.os.RemoteException;
 /** Hidden; only the calls our WindowManager implements. */
 public interface IWindowManager {
     IWindowSession openSession(IWindowSessionCallback callback) throws RemoteException;
+    android.window.WindowContextInfo attachWindowContextToDisplayArea(android.app.IApplicationThread appThread,
+            IBinder clientToken, int type, int displayId, android.os.Bundle options) throws RemoteException;
+    android.window.WindowContextInfo attachWindowContextToDisplayContent(android.app.IApplicationThread appThread,
+            IBinder clientToken, int displayId) throws RemoteException;
+    void attachWindowContextToWindowToken(android.app.IApplicationThread appThread, IBinder clientToken,
+            IBinder token) throws RemoteException;
+    void detachWindowContext(IBinder clientToken) throws RemoteException;
     boolean hasNavigationBar(int displayId) throws RemoteException;
     void getInitialDisplaySize(int displayId, Point size) throws RemoteException;
     void getBaseDisplaySize(int displayId, Point size) throws RemoteException;

@@ -392,6 +392,17 @@ of a 60-pattern chain) and 4 x single fadd/fsub/fmul/fmax/fmin on host floats wh
 NaN is involved, 37.0 M/s with the chain started at the instruction's group (op0):
 +54 %. difftest WRONG 0, isacheck 0 missing / 0 wrong.
 
+**Other APKs, memory (app 0.24).** Kiwi Browser (Chromium) died in
+Context.createWindowContext: IWindowManager.attachWindowContextToDisplayArea was
+missing (AbstractMethodError); aoi.WindowManager now answers it (and the display-content
+and window-token forms) with display 0's configuration. cube.run dies loading
+libsoundpool.so (not in the bundle; it needs GL anyway). On the phone a Qalculate
+process resumed from its snapshot showed a 2.1 GB footprint where the host has 364 MB
+RSS (file pages: 61 MB mapped, 272 MB copied at load): the app now logs, every 10 s
+while an app runs, phys_footprint with internal/compressed/external/resident, the guest's
+host chunks and the file pages mapped/copied (aoi_vm_mapped_bytes/copied_bytes), to
+find where it goes.
+
 **Name: LiquidAPK (app 0.21).** The home-screen name and the launcher's title; links are
 liquidapk://open?app=<package> (aoi:// still opens). The bundle id stays
 com.heyobi.apkoniphone, so an update keeps the installed apps and their data.

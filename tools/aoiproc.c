@@ -135,6 +135,9 @@ int main(int argc, char **argv)
             return 1;
         }
         clock_gettime(CLOCK_MONOTONIC, &t1);
+        { extern uint64_t aoi_vm_mapped_bytes, aoi_vm_copied_bytes;
+          fprintf(stderr, "[aoiproc] snapshot: file pages %llu MB mapped, %llu MB copied\n",
+                  (unsigned long long)(aoi_vm_mapped_bytes >> 20), (unsigned long long)(aoi_vm_copied_bytes >> 20)); }
         fprintf(stderr, "[aoiproc] snapshot loaded in %.2f s, at %llu instructions\n",
                 (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9,
                 (unsigned long long)proc.cpu.steps);

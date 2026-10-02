@@ -21,6 +21,21 @@ final class WindowManager extends IWindowManager.Stub {
     WindowManager() { super(GrantAll.INSTANCE); }
 
     @Override public IWindowSession openSession(IWindowSessionCallback cb) { return session; }
+
+    /* Window contexts (Context.createWindowContext: Chromium, dialogs, toasts): the
+     * display's configuration, display 0. */
+    @Override
+    public android.window.WindowContextInfo attachWindowContextToDisplayArea(android.app.IApplicationThread t,
+            IBinder token, int type, int displayId, android.os.Bundle options) {
+        return new android.window.WindowContextInfo(WindowSession.windowConfig(), 0);
+    }
+    @Override
+    public android.window.WindowContextInfo attachWindowContextToDisplayContent(android.app.IApplicationThread t,
+            IBinder token, int displayId) {
+        return new android.window.WindowContextInfo(WindowSession.windowConfig(), 0);
+    }
+    @Override public void attachWindowContextToWindowToken(android.app.IApplicationThread t, IBinder token, IBinder w) {}
+    @Override public void detachWindowContext(IBinder token) {}
     @Override public boolean hasNavigationBar(int displayId) { return false; }
 
     @Override

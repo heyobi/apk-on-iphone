@@ -13,6 +13,7 @@
 #include <sys/resource.h>
 #endif
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -173,6 +174,36 @@ static int classpath_env(const char *datadir, char vals[3][4096], const char **e
 }
 
 static struct aoi_proc *volatile running;   /* the app's process, while aoi_android_app runs */
+
+/* While an app runs: its memory every 10 s (phys_footprint and what it is made of,
+ * the guest's host chunks, file pages mapped/copied), to find where it goes. */
+struct watch { aoi_log_fn log; void *ctx; struct aoi_proc *p; };
+static void *memory_watch(void *arg)
+{
+    struct watch w = *(struct watch *)arg;
+    extern uint64_t aoi_vm_mapped_bytes, aoi_vm_copied_bytes;
+    free(arg);
+    for (;;) {
+        int i;
+        for (i = 0; i < 100 && running == w.p; i++) { struct timespec ts = { 0, 100000000 }; nanosleep(&ts, NULL); }
+        if (running != w.p) return NULL;
+#ifdef __APPLE__
+        {
+            task_vm_info_data_t vi;
+            mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+            memset(&vi, 0, sizeof vi);
+            if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &cnt) == KERN_SUCCESS)
+                say(w.log, w.ctx, "memory: footprint %.0f MB (internal %.0f, compressed %.0f, external %.0f, resident %.0f), "
+                    "guest chunks %llu MB, file pages %llu MB mapped / %llu MB copied",
+                    vi.phys_footprint / 1e6, vi.internal / 1e6, vi.compressed / 1e6, vi.external / 1e6,
+                    vi.resident_size / 1e6, (unsigned long long)(w.p->vm.nchunks * (AOI_VM_CHUNK >> 20)),
+                    (unsigned long long)(aoi_vm_mapped_bytes >> 20), (unsigned long long)(aoi_vm_copied_bytes >> 20));
+        }
+#else
+        (void)aoi_vm_mapped_bytes; (void)aoi_vm_copied_bytes;
+#endif
+    }
+}
 static char snap_path[1024];                /* where its snapshot goes */
 
 int aoi_android_snapshot(double timeout)
@@ -310,7 +341,15 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
     if (resumed) aoi_sf_redraw(p);      /* the screen it was showing */
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    if (frame) running = p;
+    if (frame) {
+        struct watch *w = malloc(sizeof *w);
+        pthread_t th;
+        running = p;
+        if (w) {
+            w->log = log; w->ctx = ctx; w->p = p;
+            if (!pthread_create(&th, NULL, memory_watch, w)) pthread_detach(th); else free(w);
+        }
+    }
     st = aoi_proc_run(p, 0);
     running = NULL;
     clock_gettime(CLOCK_MONOTONIC, &t1);
