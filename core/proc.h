@@ -128,6 +128,7 @@ struct aoi_proc {
     struct { uint64_t addr, len, off; int fd; } shm[32];
     int nshm;
     volatile int stop_request;      /* set from another host thread: aoi_proc_run returns AOI_RUN */
+    volatile int pause_request;     /* set from another host thread: it waits between time slices */
     char snap_path[AOI_PATH];       /* if set: where the guest's open("/dev/aoi_snapshot") saves a snapshot */
     volatile int snap_request;      /* that open happened: saved at the next time slice (core/snap.c) */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */

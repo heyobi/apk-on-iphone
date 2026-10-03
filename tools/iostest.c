@@ -86,6 +86,13 @@ static void home(void *ctx)
     fflush(stdout);
 }
 
+static void *compile_let_go(void *arg)
+{
+    sleep((unsigned)atoi(arg));
+    aoi_android_compile_hold(0);
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     FILE *f;
@@ -97,6 +104,11 @@ int main(int argc, char **argv)
     char *r;
     double t = 0;
 
+    if (getenv("AOI_COMPILE_HOLD")) {               /* as when the phone is hot: dex2oat waits */
+        pthread_t t;                                /* for the first N s */
+        aoi_android_compile_hold(1);
+        pthread_create(&t, NULL, compile_let_go, getenv("AOI_COMPILE_HOLD"));
+    }
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
         const char *log = getenv("AOI_APP_LOG") ? getenv("AOI_APP_LOG") : "/tmp/aoi-app.log";

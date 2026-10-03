@@ -561,6 +561,18 @@ for the compile after the app ends. NewPipe here, fresh install: first frame at 
 launch (compiled, cold) first frame at 21 s (runtime + framework start 7 s, app init
 to activity idle 13 s); later launches resume from the snapshot in ~1 s.
 
+**The background compile, kind to the phone (app 0.55).** dex2oat next to the app
+means two busy cores for a few minutes, once per app. Now: its thread has
+QOS_CLASS_UTILITY (behind the app's threads, iOS prefers the efficiency cores); it
+waits while the phone is hot (thermal state serious or critical) or in Low Power
+Mode (ios/main.m tells aoi_android_compile_hold; struct aoi_proc pause_request makes
+aoi_proc_run wait between time slices); it does not start with less than 900 MB
+(speed) / 1100 MB (verify, speed-profile) available (os_proc_available_memory: the
+app starts uncompiled); and when available memory falls under 200 MB with both
+running, it is ended (no .state is written: a later launch compiles again) before
+iOS ends the app. tools/iostest.c AOI_COMPILE_HOLD=N holds it for N s. NewPipe here
+with the compile held: first frame at ~40 s instead of 56 s with it running.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

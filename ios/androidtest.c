@@ -17,6 +17,8 @@
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <malloc/malloc.h>
+#include <os/proc.h>
+#include <pthread/qos.h>
 #else
 #include <sys/resource.h>
 #endif
@@ -255,6 +257,8 @@ static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
 /* While an app runs: its memory every 10 s (phys_footprint and what it is made of,
  * the guest's host chunks, file pages mapped/copied), to find where it goes. */
 struct watch { aoi_log_fn log; void *ctx; struct aoi_proc *p; };
+static void compile_cut(void);
+
 static void *memory_watch(void *arg)
 {
     struct watch w = *(struct watch *)arg;
@@ -265,6 +269,7 @@ static void *memory_watch(void *arg)
         for (i = 0; i < 100 && running == w.p; i++) { struct timespec ts = { 0, 100000000 }; nanosleep(&ts, NULL); }
         if (running != w.p) return NULL;
 #ifdef __APPLE__
+        if (os_proc_available_memory() < (size_t)200 << 20) compile_cut(); /* iOS would end the app itself */
         {
             task_vm_info_data_t vi;
             mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
@@ -277,7 +282,7 @@ static void *memory_watch(void *arg)
                     (unsigned long long)(aoi_vm_mapped_bytes >> 20), (unsigned long long)(aoi_vm_copied_bytes >> 20));
         }
 #else
-        (void)aoi_vm_mapped_bytes; (void)aoi_vm_copied_bytes;
+        (void)aoi_vm_mapped_bytes; (void)aoi_vm_copied_bytes; (void)compile_cut;
 #endif
         {
             char b[4000];
@@ -387,6 +392,8 @@ static void snap_key_write(const char *snap, const char *key)
     if ((f = fopen(path, "w"))) { fputs(key, f); fclose(f); }
 }
 
+static void compile_attach(struct aoi_proc *p);
+
 static int run_guest(const char *root, const char *datadir, int fd, const char *const *argv, int argc,
                      aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, const char *what, const char *snap,
                      aoi_log_fn log, void *ctx)
@@ -468,7 +475,9 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
             if (!pthread_create(&th, NULL, memory_watch, w)) pthread_detach(th); else free(w);
         }
     }
+    if (!strcmp(what, "dex2oat")) compile_attach(p);
     st = aoi_proc_run(p, 0);
+    if (!strcmp(what, "dex2oat")) compile_attach(NULL);
     running = NULL;
     clock_gettime(CLOCK_MONOTONIC, &t1);
     secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
@@ -564,6 +573,44 @@ struct compile_job {
 
 static pthread_mutex_t compile_lock = PTHREAD_MUTEX_INITIALIZER;
 static int compiling;                       /* one dex2oat at a time */
+static struct aoi_proc *compile_proc;       /* its process while it runs */
+static int compile_hold;                    /* aoi_android_compile_hold: the phone is hot, Low Power Mode */
+static int compile_stopped;                 /* compile_cut ended it: memory was short */
+static aoi_log_fn compile_log;
+static void *compile_ctx;
+
+static void compile_attach(struct aoi_proc *p)
+{
+    pthread_mutex_lock(&compile_lock);
+    compile_proc = p;
+    if (p) p->pause_request = compile_hold;
+    pthread_mutex_unlock(&compile_lock);
+}
+
+void aoi_android_compile_hold(int hold)
+{
+    int changed;
+    pthread_mutex_lock(&compile_lock);
+    changed = compile_hold != !!hold;
+    compile_hold = !!hold;
+    if (compile_proc) compile_proc->pause_request = compile_hold;
+    else changed = 0;
+    pthread_mutex_unlock(&compile_lock);
+    if (changed) say(compile_log, compile_ctx, hold ? "dex2oat: paused (the phone is hot or in Low Power Mode)"
+                                                    : "dex2oat: going on");
+}
+
+/* Memory is short with the app and dex2oat both running: dex2oat ends (its memory goes
+ * back), the app keeps running, and a later launch compiles again. */
+static void compile_cut(void)
+{
+    pthread_mutex_lock(&compile_lock);
+    if (compile_proc && !compile_proc->stop_request) {
+        compile_proc->stop_request = 1;
+        compile_stopped = 1;
+    }
+    pthread_mutex_unlock(&compile_lock);
+}
 
 static void remove_dir(const char *dir)
 {
@@ -591,6 +638,9 @@ static void *compile_thread(void *arg)
     const char *filter = j->filter;
     int argc = 7, rc;
     FILE *f;
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);   /* behind the app's threads, on the cooler cores */
+#endif
     snprintf(fa, sizeof fa, "--compiler-filter=%s", j->filter);
     argv[4] = fa;
     if (j->prof[0]) { snprintf(profarg, sizeof profarg, "--profile-file=%s", j->prof); argv[argc++] = profarg; }
@@ -613,8 +663,13 @@ static void *compile_thread(void *arg)
     snprintf(newdir, sizeof newdir, "%s/app/apk/oat.new", j->datadir);
     remove_dir(newdir);
     snprintf(state, sizeof state, "%s/app/apk/oat/.state", j->datadir);
-    if ((f = fopen(state, "w"))) { fprintf(f, "%s\n", filter); fclose(f); }
-    if (!strcmp(filter, "failed")) say(j->log, j->ctx, "dex2oat: failed; the app runs uncompiled");
+    pthread_mutex_lock(&compile_lock);
+    if (compile_stopped && rc) filter = NULL;           /* no state: compiled again at a later launch */
+    compile_stopped = 0;
+    pthread_mutex_unlock(&compile_lock);
+    if (filter && (f = fopen(state, "w"))) { fprintf(f, "%s\n", filter); fclose(f); }
+    if (!filter) say(j->log, j->ctx, "dex2oat: stopped, memory is short; a later launch compiles the app");
+    else if (!strcmp(filter, "failed")) say(j->log, j->ctx, "dex2oat: failed; the app runs uncompiled");
     else say(j->log, j->ctx, "dex2oat: done (%s): the next launch uses it", filter);
     close(j->fd);
     free(j);
@@ -661,6 +716,15 @@ static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_f
         filter = dex > 16u << 20 ? "verify" : "speed";
     }
     if (!filter) return;
+#ifdef __APPLE__
+    {   /* dex2oat's peak (WhatsApp verify 409 MB, Molly speed-profile 313 MB) next to the app's */
+        size_t avail = os_proc_available_memory(), need = (size_t)(strcmp(filter, "speed") ? 1100 : 900) << 20;
+        if (avail < need) {
+            say(log, ctx, "dex2oat: %zu MB free now: the app starts uncompiled, a later launch compiles it", avail >> 20);
+            return;
+        }
+    }
+#endif
     pthread_mutex_lock(&compile_lock);
     if (compiling) { pthread_mutex_unlock(&compile_lock); return; }   /* (another app's, or this one's from before) */
     compiling = 1;
@@ -672,6 +736,7 @@ static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_f
     if (!strcmp(filter, "speed-profile")) snprintf(j->prof, sizeof j->prof, "%s", prof);
     j->fd = dup(fd);
     j->log = log; j->ctx = ctx;
+    compile_log = log; compile_ctx = ctx;
     if (!strcmp(filter, "speed-profile"))
         say(log, ctx, "dex2oat: the app's hot code is compiled in the background, with its profile");
     else if (!strcmp(filter, "verify"))

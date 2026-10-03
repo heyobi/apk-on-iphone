@@ -64,4 +64,8 @@ int aoi_android_snapshot(double timeout);
 /* Whether a dex2oat run (aoi_android_app starts one in the background) is still going. */
 int aoi_android_compiling(void);
 
+/* Hold (1) or let go on (0) the background dex2oat: the iOS app calls it when the phone
+ * gets hot (thermal state serious or critical) or enters Low Power Mode, and back. */
+void aoi_android_compile_hold(int hold);
+
 #endif

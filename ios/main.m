@@ -968,9 +968,21 @@ static void home_cb(void *ctx) {
 @end
 
 @implementation AppDelegate
+/* The background dex2oat waits while the phone is hot or in Low Power Mode. */
+static void compile_hold_update(void)
+{
+    NSProcessInfo *pi = NSProcessInfo.processInfo;
+    aoi_android_compile_hold(pi.thermalState >= NSProcessInfoThermalStateSerious || pi.lowPowerModeEnabled);
+}
+
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     aoi_android_set_clipboard(clipboard_cb);
     aoi_android_set_keyboard(keyboard_cb);
+    for (NSNotificationName n in @[ NSProcessInfoThermalStateDidChangeNotification,
+                                    NSProcessInfoPowerStateDidChangeNotification ])
+        [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:nil
+                                                    usingBlock:^(NSNotification *note) { compile_hold_update(); }];
+    compile_hold_update();
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;   /* white on dark glass, in light mode too */
     self.window.rootViewController = [Launcher new];

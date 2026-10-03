@@ -968,6 +968,10 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         if (max_steps && end > max_steps) end = max_steps;
         if (!sig_pending(p)) return p->cpu.stop;
         if (p->stop_request) return AOI_RUN;
+        while (p->pause_request && !p->stop_request) {             /* (a background compile: the phone is hot) */
+            struct timespec ts = { 0, 250000000 };
+            nanosleep(&ts, NULL);
+        }
         if (p->snap_request) {                                     /* every thread is between instructions */
             const char *e;
             int64_t t0 = now_ns();
