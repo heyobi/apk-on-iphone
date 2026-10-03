@@ -43,6 +43,8 @@ public interface IWindowSession {
     void performHapticFeedbackAsync(int effectId, boolean always, boolean fromIme) throws RemoteException;
     void updatePointerIcon(IWindow window) throws RemoteException;
 
+    IWindowId getWindowId(IBinder window) throws RemoteException;
+
     abstract class Stub extends Binder implements IWindowSession {
         public Stub() {}
     }

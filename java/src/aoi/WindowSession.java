@@ -132,6 +132,54 @@ final class WindowSession extends IWindowSession.Stub {
         return false;
     }
 
+    /* The rest of IWindowSession, answered with nothing (drag and drop, wallpapers,
+     * embedded windows, moving tasks): the framework calls this object directly, so a
+     * method left out would be an AbstractMethodError in the app. */
+    public int addToDisplayWithoutInputChannel(IWindow w, WindowManager.LayoutParams a, int vis, int display,
+            InsetsState state, Rect frame, float[] scale) { return 0; }
+    public void cancelDragAndDrop(IBinder t, boolean skip) {}
+    public void dragRecipientEntered(IWindow w) {}
+    public void dragRecipientExited(IWindow w) {}
+    public boolean dropForAccessibility(IWindow w, int x, int y) { return false; }
+    public void finishMovingTask(IWindow w) {}
+    public void generateDisplayHash(IWindow w, Rect r, String alg, android.os.RemoteCallback cb) {}
+    public void grantEmbeddedWindowFocus(IWindow w, android.window.InputTransferToken t, boolean grant) {}
+    public void grantInputChannel(int display, SurfaceControl sc, IBinder clientToken, android.window.InputTransferToken host,
+            int flags, int privateFlags, int inputFeatures, int type, IBinder focusGrant,
+            android.window.InputTransferToken token, String name, InputChannel out) {}
+    public boolean moveFocusToAdjacentWindow(IWindow w, int direction) { return false; }
+    public IBinder performDrag(IWindow w, int flags, SurfaceControl sc, int source, int pointer, int pointerId,
+            float x, float y, float tx, float ty, android.content.ClipData data) { return null; }
+    public void reportDropResult(IWindow w, boolean consumed) {}
+    public void sendWallpaperCommand(IBinder w, String action, int x, int y, int z, Bundle extras, boolean sync) {}
+    public void setShouldZoomOutWallpaper(IBinder w, boolean on) {}
+    public void setWallpaperDisplayOffset(IBinder w, int x, int y) {}
+    public void setWallpaperPosition(IBinder w, float x, float y, float xs, float ys) {}
+    public void setWallpaperZoomOut(IBinder w, float zoom) {}
+    public boolean startMovingTask(IWindow w, float x, float y) { return false; }
+    public void updateInputChannel(IBinder channel, int display, SurfaceControl sc, int flags, int privateFlags,
+            int inputFeatures, Region region) {}
+    public void updateTapExcludeRegion(IWindow w, Region region) {}
+    public void wallpaperCommandComplete(IBinder w, Bundle result) {}
+    public void wallpaperOffsetsComplete(IBinder w) {}
+
+    /** View.getWindowId (a Transition asks for it as it starts): the window's id, which
+     *  answers whether it has focus; focus observers are not called. */
+    @Override
+    public android.view.IWindowId getWindowId(IBinder window) {
+        final IBinder token = window;
+        return new android.view.IWindowId.Stub() {
+            @Override public void registerFocusObserver(android.view.IWindowFocusObserver o) {}
+            @Override public void unregisterFocusObserver(android.view.IWindowFocusObserver o) {}
+            @Override public boolean isFocused() {
+                synchronized (WindowSession.this) {
+                    for (Win w : windows) if (w.token == token) return w.focused;
+                }
+                return false;
+            }
+        };
+    }
+
     /** The focused app window (the keyboard's), or null. */
     synchronized Win focused() {
         for (Win w : windows) if (w.focused) return w;

@@ -535,6 +535,17 @@ phone: aoi.Main does now); ART adds the methods its JIT finds hot
 (speed, verify, speed-profile, failed). core/apk.c aoi_apk_dex_bytes. Molly here:
 verify 169 s, then speed-profile 323 s / 313 MB, then the app as before.
 
+**On the phone (0.52 log) and every IWindowSession call (app 0.53).** WhatsApp's 86 MB of
+dex verified in 249 s (409 MB peak); it reached RegisterAsCompanionActivity and ran
+for minutes. Kiwi, with --single-process, got through its native start, the network
+and its first-run screens. Both then died the same way, when a Transition started:
+AbstractMethodError IWindowSession.getWindowId. The framework calls aoi.WindowSession
+directly (no proxy, so no default answer for a method we left out): it now has
+getWindowId (an IWindowId that knows whether the window has focus) and every other
+method of the real interface (22 more, answered with nothing: drag and drop,
+wallpapers, embedded windows, moving tasks), checked descriptor by descriptor against
+framework.jar's IWindowSession (0 missing).
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:
