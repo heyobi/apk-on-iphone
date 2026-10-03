@@ -64,6 +64,11 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "stand-in services answer empty lists" "stand-in: getShortcuts 0, getAllPendingJobsInNamespace 0" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ServiceTest
+    # Shared storage (aoi.StorageService's volume) and ashmem regions as memfds
+    # (SharedMemory, a CursorWindow with a 100 KB blob: SQLite queries need one).
+    # shellcheck disable=SC2086
+    check "storage volume, ashmem as memfd" "storage: mounted at /data/media/0, shared memory 8192 41534d21, cursor window true 42" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.StorageTest
     # aoi.Clipboard through the host's clipboard (aoiproc's AOI_CLIP): paste in, copy out.
     # shellcheck disable=SC2086
     export AOI_CLIP="from the host"

@@ -307,7 +307,7 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
         if (!p->fd[i].used) {
             p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
             p->fd[i].nonblock = 0; p->fd[i].count = 0; p->fd[i].sem = 0; p->fd[i].ep = NULL;
-            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = 0;
+            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = p->fd[i].seals = 0;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
@@ -997,7 +997,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 /* ---------- syscalls ---------- */
 
 enum {
-    NR_getcwd = 17, NR_pipe2 = 59, NR_eventfd2 = 19, NR_epoll_create1 = 20, NR_epoll_ctl = 21,
+    NR_getcwd = 17, NR_pipe2 = 59, NR_eventfd2 = 19, NR_memfd_create = 279, NR_epoll_create1 = 20, NR_epoll_ctl = 21,
     NR_epoll_pwait = 22, NR_ppoll = 73, NR_mincore = 232, NR_msync = 227, NR_flock = 32, NR_userfaultfd = 282, NR_rt_sigreturn = 139, NR_rt_sigtimedwait = 137, NR_setpriority = 140, NR_getpriority = 141, NR_clone = 220, NR_membarrier = 283, NR_socket = 198, NR_socketpair = 199, NR_connect = 203, NR_sendto = 206, NR_recvfrom = 207,
     NR_bind = 200, NR_listen = 201, NR_accept = 202, NR_getsockname = 204, NR_getpeername = 205,
     NR_shutdown = 210, NR_sendmsg = 211, NR_recvmsg = 212, NR_accept4 = 242,
@@ -2112,7 +2112,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             int d = dup(f->host), n;
             if (d < 0) { r = herr(); break; }
             if ((n = fd_new(p, d, f->path, (int)a2)) < 0) { close(d); r = err(L_EMFILE); break; }
-            p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
+            p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock; p->fd[n].seals = f->seals;
             p->fd[n].pair = f->pair; p->fd[n].end = f->end; p->fd[n].ptype = f->ptype;
             if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
@@ -2127,6 +2127,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         case 6: case 7: case 37: case 38: r = 0; break;            /* F_SETLK(W), F_OFD_SETLK(W): granted (SQLite) */
+        case 1033: case 1034:                                      /* F_ADD_SEALS, F_GET_SEALS: memfds only */
+            if (strncmp(f->path, "memfd:", 6)) { r = err(L_EINVAL); break; }
+            if (a1 == 1034) { r = (uint64_t)f->seals; break; }
+            if (f->seals & 1) { r = err(L_EPERM); break; }
+            f->seals |= (int)a2; r = 0;
+            break;
         default: r = err(L_EINVAL); break;
         }
         break;
@@ -2144,17 +2150,39 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (a1 <= 2) { dup2(d, (int)a1); close(d); d = (int)a1; }
             if (t->used && t->kind == AOI_FD_EPOLL) epoll_unref(t->ep);
             t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
-            t->pair = f->pair; t->end = f->end; t->ptype = f->ptype;
+            t->pair = f->pair; t->end = f->end; t->ptype = f->ptype; t->seals = f->seals;
             if ((t->ep = f->ep)) f->ep->refs++;
             join(t->path, AOI_PATH, "", f->path);
             r = a1;
         } else {
             if ((n = fd_new(p, d, f->path, 0)) < 0) { close(d); r = err(L_EMFILE); break; }
-            p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock;
+            p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock; p->fd[n].seals = f->seals;
             p->fd[n].pair = f->pair; p->fd[n].end = f->end; p->fd[n].ptype = f->ptype;
             if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
         }
+        break;
+    }
+    case NR_memfd_create: {
+        /* An unlinked host file under the guest's /data/local/tmp. libcutils makes
+         * ashmem regions this way (sys.use_memfd): CursorWindow, MemoryHeapBase.
+         * Seals are recorded, not enforced. Its path has no leading '/': a
+         * snapshot keeps its mapped pages and reopens the fd on /dev/null.
+         * ART's JIT code cache is refused (ENOSYS, as before memfds): it would map
+         * one twice, RX and RW, and our MAP_SHARED is a copy per mapping. */
+        char name[256], g[AOI_PATH], h[AOI_PATH];
+        int d, n;
+        if (!gstr(p, a0, name, sizeof name)) { r = err(L_EFAULT); break; }
+        if (strstr(name, "jit") || strstr(name, "code-cache")) { r = err(L_ENOSYS); break; }
+        snprintf(g, sizeof g, "/data/local/tmp/.memfd-XXXXXX");
+        to_host(p, g, h);
+        if (!h[0] || (d = mkstemp(h)) < 0) { r = err(L_ENOMEM); break; }
+        unlink(h);
+        fcntl(d, F_SETFD, FD_CLOEXEC);
+        snprintf(g, sizeof g, "memfd:%s", name);
+        if ((n = fd_new(p, d, g, 0)) < 0) { close(d); r = err(L_EMFILE); break; }
+        p->fd[n].seals = (a1 & 2) ? 0 : 1;                        /* no MFD_ALLOW_SEALING: F_SEAL_SEAL */
+        r = (uint64_t)n;
         break;
     }
     case NR_eventfd2: case NR_epoll_create1: {

@@ -136,7 +136,9 @@ def main():
              # past its space here: left at ART's defaults.)
              b"dalvik.vm.heapgrowthlimit": b"128m", b"dalvik.vm.heapsize": b"256m",
              # OpenGL ES: libEGL loads /vendor/lib64/egl/libGLES_aoi.so (guest/gles.c)
-             b"ro.hardware.egl": b"aoi"}
+             b"ro.hardware.egl": b"aoi",
+             # libcutils makes ashmem regions as memfds (core/proc.c), not /dev/ashmem
+             b"sys.use_memfd": b"true"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

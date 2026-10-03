@@ -36,6 +36,7 @@ struct aoi_proc_fd {
     int peer;                       /* AOI_FD_DNS: host end the answer is written to (-1 once sent) */
     int nreq;                       /* AOI_FD_DNS: bytes of the request so far, in req */
     char *req;
+    int seals;                      /* memfd: F_ADD_SEALS so far (not enforced) */
 };
 
 enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,

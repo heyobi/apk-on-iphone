@@ -440,6 +440,24 @@ IJobScheduler.getAllPendingJobsInNamespace through the framework's proxies.
 Kiwi: bindServiceInstance (missing) and then a Chromium CHECK (brk #0 in libchrome)
 on the fallback to SandboxedProcessService1: it needs a renderer process. open.
 
+**Shared storage and ashmem (app 0.49).** From the 0.48 log:
+- WhatsApp died in Environment.getExternalStorageState (an index into an empty
+  volume list). aoi.StorageService now answers getVolumeList with one volume: the
+  primary emulated shared storage, mounted, at /data/media/0 (inside the app's data,
+  so writable). The framework's own StorageVolume, made by reflection.
+- Uptodown's SQLite queries failed ("Row too big to fit into CursorWindow": the
+  window's ashmem region could not be made) and SoundPool's MemoryHeapBase too:
+  no /dev/ashmem. libcutils makes ashmem regions as memfds when sys.use_memfd is
+  true (tools/mkprops.py now sets it): core/proc.c implements memfd_create (an
+  unlinked host file under the guest's /data/local/tmp) and F_ADD_SEALS/F_GET_SEALS
+  (recorded, not enforced). ART's JIT code cache ("jit-cache"...) still gets ENOSYS:
+  with a memfd it maps its cache twice (RX and RW) and our MAP_SHARED is a copy per
+  mapping (it aborted in debugger_interface).
+tests/run_android.sh "storage volume, ashmem as memfd": the volume through the
+IStorageManager proxy, SharedMemory written and read, a CursorWindow with a 100 KB blob.
+Still open from the log: Uptodown's WebView ("not allowed in privileged processes":
+the guest runs as uid 0), Kiwi's renderer process, ECB's certificate chain.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:
