@@ -520,6 +520,21 @@ Realm and the keystore, then a thread of libmaplibre recurses until its stack ru
 out (open: a deep recursion or one of ours). And dex2oat `speed` took 41 min (Molly)
 and 50 min (Element, 917 MB peak) here: too long and too big for the phone - next.
 
+**Big apps compiled in two steps (app 0.52).** dex2oat `speed` on a big app took 41 min
+and 750 MB (Molly, 59 MB of dex) or 50 min and 917 MB (Element, 68 MB): the phone would
+end it (memory) or the user would give up; WhatsApp is of that size. Measured here:
+Molly `verify` 172 s / 250 MB, `speed-profile` with the app's profile 337 s / 305 MB
+(9.6 MB of compiled code: its startup and hot paths). ios/androidtest.c compile_apk:
+- up to 16 MB of dex (Qalculate 2.9, NewPipe 11, Cromite 11): `speed` once, as before;
+- more: `verify` at install, then at a later launch, once the app has a profile in
+  /data/misc/profiles/cur/0/<package>/primary.prof, `speed-profile` with it.
+The profile: ProfileInstaller (androidx, in most apps) writes the APK's baseline
+profile there at the first launch when the directory exists (installd makes it on a
+phone: aoi.Main does now); ART adds the methods its JIT finds hot
+(dalvik.vm.usejitprofiles, tools/mkprops.py). oat/arm64/.done records the last filter
+(speed, verify, speed-profile, failed). core/apk.c aoi_apk_dex_bytes. Molly here:
+verify 169 s, then speed-profile 323 s / 313 MB, then the app as before.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

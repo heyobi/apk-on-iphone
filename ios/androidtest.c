@@ -20,6 +20,7 @@
 #else
 #include <sys/resource.h>
 #endif
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/mman.h>
@@ -518,32 +519,88 @@ static void install_libs(const char *datadir, aoi_log_fn log, void *ctx)
     if ((fd = open(stamp, O_WRONLY | O_CREAT | O_TRUNC, 0644)) >= 0) close(fd);
 }
 
-/* The APK's code compiled ahead of time (dex2oat, `speed`), once per APK: oat/arm64/
- * next to it, where ART looks. In the interpreter the app's dex code would otherwise
- * be interpreted twice (by ART, inside ours): 63 % of a frame. oat/arm64/.done says it
- * ran to its end for this APK (ok or failed): a run cut short (iOS ends the app in the
- * background) leaves a partial odex, which is removed and compiled again. */
+/* The app's profile (ProfileInstaller's from the APK's baseline profile, ART's own
+ * from the methods its JIT found hot): data/misc/profiles/cur/0/<package>/primary.prof,
+ * aoi.Main makes the directory. Its guest path in `guest`, or 0. */
+static int app_profile(const char *datadir, char *guest, size_t n)
+{
+    char dir[1024], path[1300];
+    struct dirent *e;
+    struct stat st;
+    DIR *d;
+    int found = 0;
+    snprintf(dir, sizeof dir, "%s/misc/profiles/cur/0", datadir);
+    if (!(d = opendir(dir))) return 0;
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s/primary.prof", dir, e->d_name);
+        if (!stat(path, &st) && st.st_size > 16) {
+            snprintf(guest, n, "/data/misc/profiles/cur/0/%s/primary.prof", e->d_name);
+            found = 1;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* The APK's code compiled ahead of time by dex2oat, into oat/arm64/ next to it, where
+ * ART looks. In the interpreter the app's dex code would otherwise be interpreted twice
+ * (by ART, inside ours): 63 % of a frame.
+ *   - up to 16 MB of dex: everything (`speed`), once: Qalculate 3.7 min.
+ *   - more (Molly 59 MB: 41 min, 750 MB with `speed`, too long and too big for the
+ *     phone): first `verify` (3 min), then, at the next launch once the app has a
+ *     profile, `speed-profile`: its startup and hot code (5.6 min).
+ * oat/arm64/.done holds the filter of the last run that finished for this APK (a run
+ * cut short, as iOS ends the app in the background, leaves a partial odex: removed,
+ * compiled again). */
 static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_fn log, void *ctx)
 {
-    static const char *const argv[] = { "/apex/com.android.art/bin/dex2oat64", "--dex-file=/data/app/apk/base.apk",
-        "--oat-file=/data/app/apk/oat/arm64/base.odex", "--instruction-set=arm64", "--compiler-filter=speed",
-        "--class-loader-context=PCL[]", "--no-watch-dog", NULL };   /* its 9.5 min limit: big apps take longer */
-    char odex[1024], vdex[1024], done[1024], dir[1024], apk[1024];
+    const char *argv[10] = { "/apex/com.android.art/bin/dex2oat64", "--dex-file=/data/app/apk/base.apk",
+        "--oat-file=/data/app/apk/oat/arm64/base.odex", "--instruction-set=arm64", NULL,
+        "--class-loader-context=PCL[]", "--no-watch-dog", NULL, NULL };   /* its 9.5 min limit: big apps take longer */
+    char odex[1024], vdex[1024], done[1024], dir[1024], apk[1024], prof[400], profarg[450], last[32] = "";
+    const char *filter;
     struct stat sd, sa;
-    int d;
+    size_t dex = 0;
+    int d, argc = 7;
+    FILE *f;
     snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
     snprintf(odex, sizeof odex, "%s/app/apk/oat/arm64/base.odex", datadir);
     snprintf(vdex, sizeof vdex, "%s/app/apk/oat/arm64/base.vdex", datadir);
     snprintf(done, sizeof done, "%s/app/apk/oat/arm64/.done", datadir);
-    if (stat(apk, &sa) || (!stat(done, &sd) && sd.st_mtime >= sa.st_mtime)) return;   /* done */
-    unlink(odex); unlink(vdex);
+    if (stat(apk, &sa)) return;
+    if (!stat(done, &sd) && sd.st_mtime >= sa.st_mtime && (f = fopen(done, "r"))) {
+        if (!fgets(last, sizeof last, f)) last[0] = 0;
+        fclose(f);
+        last[strcspn(last, "\n")] = 0;
+        if (strcmp(last, "verify") || !app_profile(datadir, prof, sizeof prof)) return;   /* done */
+        filter = "speed-profile";                                   /* the second step */
+        snprintf(profarg, sizeof profarg, "--profile-file=%s", prof);
+        argv[argc++] = profarg;
+    } else {
+        if ((d = open(apk, O_RDONLY)) >= 0) {
+            void *z = mmap(NULL, (size_t)sa.st_size, PROT_READ, MAP_PRIVATE, d, 0);
+            close(d);
+            if (z != MAP_FAILED) { dex = aoi_apk_dex_bytes(z, (size_t)sa.st_size); munmap(z, (size_t)sa.st_size); }
+        }
+        filter = dex > 16u << 20 ? "verify" : "speed";
+    }
+    argv[4] = !strcmp(filter, "speed") ? "--compiler-filter=speed"
+            : !strcmp(filter, "verify") ? "--compiler-filter=verify" : "--compiler-filter=speed-profile";
+    unlink(done); unlink(odex); unlink(vdex);
     snprintf(dir, sizeof dir, "%s/app/apk/oat", datadir); mkdir(dir, 0755);
     snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", datadir); mkdir(dir, 0755);
-    say(log, ctx, "dex2oat: the app's code is compiled once (minutes; a big app much longer) ...");
-    if (run_guest(root, datadir, fd, argv, 7, NULL, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) {
+    if (!strcmp(filter, "speed-profile"))
+        say(log, ctx, "dex2oat: the app's hot code is compiled, with its profile (a few minutes) ...");
+    else if (!strcmp(filter, "verify"))
+        say(log, ctx, "dex2oat: a big app (%zu MB of code): verified now, its hot code compiled at a later launch ...", dex >> 20);
+    else
+        say(log, ctx, "dex2oat: the app's code is compiled once (a few minutes) ...");
+    if (run_guest(root, datadir, fd, (const char *const *)argv, argc, NULL, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) {
         unlink(odex); unlink(vdex);                                /* run interpreted */
+        filter = "failed";
     }
-    if ((d = open(done, O_WRONLY | O_CREAT | O_TRUNC, 0644)) >= 0) close(d);
+    if ((f = fopen(done, "w"))) { fprintf(f, "%s\n", filter); fclose(f); }
 }
 
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, const char *display,

@@ -112,6 +112,25 @@ int aoi_apk_extract_libs(const void *zip, size_t size, const char *dir, const ch
     return l.n;
 }
 
+struct dex { const uint8_t *z; size_t size, total; };
+
+static int count_dex(const char *name, size_t len, void *ctx)
+{
+    struct dex *d = ctx;
+    const uint8_t *e;
+    if (len < 11 || len > 20 || memcmp(name, "classes", 7) || memcmp(name + len - 4, ".dex", 4)) return 0;
+    if ((e = walk(d->z, d->size, name, len, NULL, NULL))) d->total += u32(e + 24);
+    return 0;
+}
+
+size_t aoi_apk_dex_bytes(const void *zip, size_t size)
+{
+    struct dex d;
+    d.z = zip; d.size = size; d.total = 0;
+    walk(zip, size, NULL, 0, count_dex, &d);
+    return d.total;
+}
+
 /* ---------- AndroidManifest.xml (binary XML) ---------- */
 
 /* String i of a string pool chunk at p (size n), as UTF-8 into out. */

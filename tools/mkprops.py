@@ -138,7 +138,10 @@ def main():
              # OpenGL ES: libEGL loads /vendor/lib64/egl/libGLES_aoi.so (guest/gles.c)
              b"ro.hardware.egl": b"aoi",
              # libcutils makes ashmem regions as memfds (core/proc.c), not /dev/ashmem
-             b"sys.use_memfd": b"true"}
+             b"sys.use_memfd": b"true",
+             # ART saves the methods its JIT finds hot into the app's profile, which a
+             # big app's second dex2oat (speed-profile, ios/androidtest.c) compiles
+             b"dalvik.vm.usejitprofiles": b"true"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

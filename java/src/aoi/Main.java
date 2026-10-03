@@ -31,6 +31,8 @@ public final class Main {
         if (ai.metaData == null) ai.metaData = pkg.mAppMetaData;   /* <application> <meta-data> (Play services' version check) */
         new File(ai.dataDir).mkdirs();                             /* the app's data dirs: Kiwi found none (ENOENT) */
         new File(ai.deviceProtectedDataDir).mkdirs();
+        new File("/data/misc/profiles/cur/0/" + pkg.packageName).mkdirs();   /* the app's profile: ProfileInstaller, */
+        new File("/data/misc/profiles/ref/" + pkg.packageName).mkdirs();     /* ART's JIT (dex2oat speed-profile) */
         ActivityInfo launcher = null;
         for (PackageParser.Activity a : pkg.activities) {
             if (a.intents == null) continue;

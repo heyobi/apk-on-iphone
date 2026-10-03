@@ -18,6 +18,9 @@ void aoi_apk_list(const void *zip, size_t size, int (*fn)(const char *name, size
  * not a deflated one. The number written, or -1 with *err set. */
 int aoi_apk_extract_libs(const void *zip, size_t size, const char *dir, const char **err);
 
+/* The uncompressed size of the APK's dex code (classes*.dex at its top). */
+size_t aoi_apk_dex_bytes(const void *zip, size_t size);
+
 /* The package name and application label from AndroidManifest.xml (binary XML). A
  * label that is a resource reference is not resolved: the package's last part, capitalised,
  * stands in. 0, or -1 if there is no manifest or package. */
