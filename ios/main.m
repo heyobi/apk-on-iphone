@@ -724,7 +724,7 @@ static Launcher *launcher;
     }
     self.runningPkg = a.pkg;
     [self.screenVC status:[NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]]
-         ? @"Kayıttan açılıyor…" : @"İlk açılış birkaç dakika sürebilir (bir kez derlenir).\nSonrakiler saniyeler içinde açılır."];
+         ? @"Kayıttan açılıyor…" : @"İlk açılış: uygulama derlenmeden başlıyor (biraz yavaş);\nkodu arka planda derleniyor, sonraki açılışlar hızlı."];
     [a prepare];
     [self append:[NSString stringWithFormat:@"%@ açılıyor (ekran %@)", a.label, display]];
     ScreenVC *target = self.screenVC;

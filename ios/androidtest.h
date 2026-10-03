@@ -61,4 +61,7 @@ void aoi_android_key(int action, int value);
  * taken by itself once the app has started. Waits up to timeout s: 0 when written. */
 int aoi_android_snapshot(double timeout);
 
+/* Whether a dex2oat run (aoi_android_app starts one in the background) is still going. */
+int aoi_android_compiling(void);
+
 #endif

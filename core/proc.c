@@ -638,7 +638,7 @@ static int sig_deliver(struct aoi_proc *p, int sig, const uint8_t *info, uint64_
     struct aoi_thread *t = &p->th[p->cur];
     struct aoi_cpu *c = &p->cpu;
     uint64_t *act = p->sigact[sig], sp = c->sp, frame;
-    static uint8_t f[SF_SIZE];
+    static _Thread_local uint8_t f[SF_SIZE];
     int on_alt = t->altstack[2] && sp >= t->altstack[0] && sp < t->altstack[0] + t->altstack[2], i;
 
     if ((act[1] & SA_ONSTACK_) && !(t->altstack[1] & 2) && t->altstack[2] && !on_alt) {
@@ -685,7 +685,7 @@ static int sig_deliver(struct aoi_proc *p, int sig, const uint8_t *info, uint64_
 static int sig_return(struct aoi_proc *p)
 {
     struct aoi_cpu *c = &p->cpu;
-    static uint8_t f[SF_SIZE];
+    static _Thread_local uint8_t f[SF_SIZE];
     uint64_t pstate, mask;
     uint32_t magic, size;
     int i;
@@ -1087,7 +1087,7 @@ void aoi_proc_key(struct aoi_proc *p, int action, int32_t value)
 static void shm_sync(struct aoi_proc *p, uint64_t a, uint64_t len, int drop)
 {
     int i, j;
-    static uint8_t buf[65536];
+    static _Thread_local uint8_t buf[65536];
     for (i = 0; i < p->nshm; i++) {
         uint64_t s = p->shm[i].addr, e = s + p->shm[i].len, lo = a > s ? a : s, hi = a + len < e ? a + len : e, x;
         struct stat st;
@@ -1602,7 +1602,7 @@ static uint64_t net_wait(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t r, 
     return r;
 }
 
-static uint8_t net_buf[256 * 1024];                                /* one host thread runs the guest */
+static _Thread_local uint8_t net_buf[256 * 1024];                              /* one host thread runs the guest */
 
 static void host_sock_setup(int h)
 {
@@ -1815,7 +1815,7 @@ static void dns_answer(struct aoi_proc *p, struct aoi_proc_fd *f)
     char host[256], serv[64];
     int flags = -1, fam = 0, type = 0, proto = 0;
     struct addrinfo hints, *res = NULL, *ai;
-    static uint8_t out[16384];
+    static _Thread_local uint8_t out[16384];
     size_t n = 0;
     int rc = -1;
     if (sscanf(f->req, "getaddrinfo %255s %63s %d %d %d %d", host, serv, &flags, &fam, &type, &proto) == 6) {

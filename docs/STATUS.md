@@ -546,6 +546,21 @@ method of the real interface (22 more, answered with nothing: drag and drop,
 wallpapers, embedded windows, moving tasks), checked descriptor by descriptor against
 framework.jar's IWindowSession (0 missing).
 
+**First launch no longer waits for dex2oat (app 0.54).** On the phone the first launch
+sat behind dex2oat for minutes (WhatsApp `verify` 249 s, a `speed` compile up to ~10
+min) before any frame - nobody waits that long. ios/androidtest.c compile_apk now runs
+dex2oat on a detached host thread while the app starts uncompiled (the interpreter
+runs the dex as is): output goes to app/apk/oat.new/arm64 and is renamed over
+oat/arm64 when done; app/apk/oat/.state records the filter (speed, verify,
+speed-profile, failed). The odex size/mtime is part of the snapshot key, so the next
+launch cold-starts with the compiled code. For this the core's function-static
+buffers (signal frames, shm_sync, DNS, net, binder req/rep) are `_Thread_local`, and
+the GPU hooks only apply to the app run, not the compiler. tools/iostest.c waits
+for the compile after the app ends. NewPipe here, fresh install: first frame at 56 s
+(before: ~10 min of dex2oat first), compile done at 547 s in the background; second
+launch (compiled, cold) first frame at 21 s (runtime + framework start 7 s, app init
+to activity idle 13 s); later launches resume from the snapshot in ~1 s.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

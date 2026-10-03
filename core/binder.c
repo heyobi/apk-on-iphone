@@ -265,8 +265,8 @@ int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t 
 
 static void transaction(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, const uint8_t *pay)
 {
-    static uint8_t req[8192];
-    static struct aoi_parcel rep;
+    static _Thread_local uint8_t req[8192];
+    static _Thread_local struct aoi_parcel rep;
     uint32_t handle, code, flags, rn;
     uint64_t dsize, dptr, osize, optr, o0 = ~0ULL;
     struct aoi_reader r;

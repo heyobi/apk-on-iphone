@@ -100,8 +100,10 @@ int main(int argc, char **argv)
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
         const char *log = getenv("AOI_APP_LOG") ? getenv("AOI_APP_LOG") : "/tmp/aoi-app.log";
-        return aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), log,
-                               getenv("AOI_APP_DISPLAY"), frame, home, (void *)png, out, NULL) == 0 ? 0 : 1;
+        int rc = aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), log,
+                                 getenv("AOI_APP_DISPLAY"), frame, home, (void *)png, out, NULL) == 0 ? 0 : 1;
+        while (aoi_android_compiling()) sleep(1);  /* a background dex2oat finishes (the phone's keeps running) */
+        return rc;
     }
     aoi_vm_probe(out, NULL);
     if (getenv("AOI_ANDROID_ROOT")) {               /* the app's "Android" button */
