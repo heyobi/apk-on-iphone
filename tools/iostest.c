@@ -16,7 +16,8 @@
 
 static void out(void *ctx, const char *line) { (void)ctx; printf("%s\n", line); }
 
-/* AOI_APP_TAPS="x,y;x,y;...": taps in screen pixels, 4 s apart, after the first frame;
+/* AOI_APP_TAPS="x,y;x,y;...": taps in screen pixels, 4 s apart, after the first frame
+ * ("back": Android's back; "type:TEXT": typed, then return);
  * then with AOI_APP_SNAPSHOT=1 a snapshot (aoi_android_snapshot). */
 static void *taps(void *arg)
 {
@@ -30,6 +31,21 @@ static void *taps(void *arg)
             fflush(stdout);
             aoi_android_back();
             s += 4;
+            if (*s == ';') s++;
+            continue;
+        }
+        if (!strncmp(s, "type:", 5)) {                 /* "type:TEXT" (to the next ';'): typed on the */
+            const char *e = strchr(s + 5, ';');        /* host keyboard, then return */
+            size_t k, len = e ? (size_t)(e - s - 5) : strlen(s + 5);
+            sleep(4);
+            printf("type %.*s\n", (int)len, s + 5);
+            fflush(stdout);
+            for (k = 0; k < len; k++) {
+                aoi_android_key(6, (unsigned char)s[5 + k]);
+                { struct timespec ts = { 0, 50000000 }; nanosleep(&ts, NULL); }
+            }
+            aoi_android_key(8, 0);
+            s += 5 + len;
             if (*s == ';') s++;
             continue;
         }

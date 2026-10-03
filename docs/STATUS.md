@@ -653,7 +653,9 @@ with --disable-gpu-compositing it is the same, so it is not the GPU. The Surface
 Chromium keeps (translucent, the BLAST layer) is created, valid and visible, with
 mDrawFinished false: its first frame never comes. Next: whether the browser
 compositor gets the surface (CompositorImpl::SetSurface) and is visible, and whether
-begin-frames reach it.
+begin-frames reach it. The same for an https page typed in the omnibox (tools/iostest.c
+AOI_APP_TAPS "type:TEXT" types on the host keyboard, then return), so it is not WebUI's
+own process; this build's VLOGs are compiled out.
 
 Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
 WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
