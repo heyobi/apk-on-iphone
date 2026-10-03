@@ -28,6 +28,9 @@
  * zapped): every access faults until core/proc.c fills it (UFFDIO_COPY/ZEROPAGE,
  * or zero-fill when no userfaultfd watches it). Its R/W/X bits stay as they were. */
 #define AOI_PROT_MISSING 0x40
+/* A reserved page that only pads a shared file mapping to its 16 KiB host page
+ * (core/proc.c sys_mmap): unmapped with it. */
+#define AOI_PROT_SLACK 0x20
 
 /* mincore() bits that mean a host page exists: resident, or compressed/paged out
  * (Darwin's MINCORE_PAGED_OUT 0x20), or touched/copied. Not 0x80: Darwin's

@@ -619,6 +619,10 @@ frame, page finished, `title "web 42"`, the text drawn by the GPU). What it took
   does). A read-only fd falls back to a private mapping. A snapshot is refused while
   one file is mapped twice (restored they would be two copies): WebView apps start
   cold each time for now.
+  Only for a writable fd (a read-only one cannot be mapped shared: libandroidfw maps
+  every asset it reads MAP_SHARED read-only), and the pad pages (AOI_PROT_SLACK) are
+  unmapped with their mapping: left behind, thousands of them made every mmap's
+  first-fit search crawl.
 Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
 WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
 Molly still reach the screens they did. The phone root gains the WebView, its

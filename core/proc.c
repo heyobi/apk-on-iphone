@@ -1264,7 +1264,8 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
         if ((flags & 3) == 1 && (prot & 2) && (f->seals & 0x18))   /* MAP_SHARED, PROT_WRITE on a memfd sealed */
             return err(L_EPERM);                                   /* F_SEAL_(FUTURE_)WRITE: how Chromium tells
                                                                     * a read-only region (ashmem_get_prot_region) */
-        if ((flags & 3) == 1) shared = 1;                          /* MAP_SHARED: the file's own pages */
+        if ((flags & 3) == 1 && (fcntl(f->host, F_GETFL) & O_ACCMODE) == O_RDWR)
+            shared = 1;                                            /* MAP_SHARED, writable fd: the file's own pages */
     }
     if (shared && !fixed && !noreplace) {
         /* where the file's 16 KiB host pages can be mapped shared: an address that agrees
@@ -1275,7 +1276,9 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
             s0 = up(b, SHARED_PAGE); e0 = s0 + up(ho + len, SHARED_PAGE);
             if (s0 > b) aoi_vm_unmap(&p->vm, b, s0 - b);
             if (b + span > e0) aoi_vm_unmap(&p->vm, e0, b + span - e0);
-            addr = s0 + ho; fixed = 1; shared = 2;                 /* over its own reservation */
+            addr = s0 + ho; fixed = 1; shared = 2;                 /* over its own reservation; the pad */
+            for (i = s0; i < e0; i += PAGE)                        /* goes with it (munmap) */
+                if (i < addr || i >= addr + up(len, PAGE)) p->vm.prot[i / PAGE] |= AOI_PROT_SLACK;
         }
     }
     if (noreplace) {
@@ -2628,6 +2631,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_munmap:
         if (p->nshm) shm_sync(p, a0, up(a1, PAGE), 1);
         r = (uint64_t)(int64_t)aoi_vm_unmap(&p->vm, a0, a1);
+        if (!r) {                                                  /* a shared mapping's pad, around it */
+            uint64_t s0 = down(a0, PAGE), e0 = up(a0 + a1, PAGE), x;
+            for (x = e0; x < p->vm.size && (x & (SHARED_PAGE - 1)) && (p->vm.prot[x / PAGE] & AOI_PROT_SLACK); x += PAGE) {}
+            if (x > e0) aoi_vm_unmap(&p->vm, e0, x - e0);
+            for (x = s0; x >= PAGE && (x & (SHARED_PAGE - 1)) && (p->vm.prot[(x - PAGE) / PAGE] & AOI_PROT_SLACK); x -= PAGE) {}
+            if (x < s0) aoi_vm_unmap(&p->vm, x, s0 - x);
+        }
         break;
     case NR_msync:
         shm_sync(p, a0, up(a1, PAGE), 0);

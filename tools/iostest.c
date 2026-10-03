@@ -86,6 +86,13 @@ static void home(void *ctx)
     fflush(stdout);
 }
 
+static void *stop_after(void *arg)
+{
+    sleep((unsigned)atoi(arg));
+    aoi_android_stop();                             /* the app stops: where each thread was goes to the log */
+    return NULL;
+}
+
 static void *compile_let_go(void *arg)
 {
     sleep((unsigned)atoi(arg));
@@ -108,6 +115,10 @@ int main(int argc, char **argv)
         pthread_t t;                                /* for the first N s */
         aoi_android_compile_hold(1);
         pthread_create(&t, NULL, compile_let_go, getenv("AOI_COMPILE_HOLD"));
+    }
+    if (getenv("AOI_APP_STOP_AFTER")) {             /* stop the app after N s (a hang: its threads) */
+        pthread_t t;
+        pthread_create(&t, NULL, stop_after, getenv("AOI_APP_STOP_AFTER"));
     }
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
