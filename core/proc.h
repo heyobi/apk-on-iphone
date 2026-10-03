@@ -138,6 +138,10 @@ struct aoi_proc {
     size_t nsamples, maxsamples;
 };
 
+/* Every guest thread's state, pc, lr and frame-pointer backtrace, to p->log
+ * (/dev/aoi_threads; the host after the app stops on a fault). */
+void aoi_proc_log_threads(struct aoi_proc *p);
+
 /* Loads `path` (a guest path) with argv/envp into a fresh process. NULL on success. */
 const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path,
                           int argc, const char *const *argv, const char *const *envp);

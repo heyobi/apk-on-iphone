@@ -458,6 +458,34 @@ IStorageManager proxy, SharedMemory written and read, a CursorWindow with a 100 
 Still open from the log: Uptodown's WebView ("not allowed in privileged processes":
 the guest runs as uid 0), Kiwi's renderer process, ECB's certificate chain.
 
+**Testing apps on the host like the phone; AndroidKeyStore (app 0.50).** Apps like the
+user's (WhatsApp, Kiwi) are tested here first: GitHub release assets are reachable from
+the cloud sessions (F-Droid and Google are not): Molly (a Signal fork: WhatsApp-like),
+Element (Matrix), NewPipe, Cromite (Chromium: Kiwi-like).
+`tools/app-install.sh ROOT APP.apk DIR` installs one as ios/main.m does, and
+`build/iostest` with AOI_APP_DATA runs the phone's own path (ios/androidtest.c:
+libraries, dex2oat, the app, taps, snapshot; AOI_APP_LOG for the log). What it found:
+- Native libraries: an APK whose libraries are deflated (extractNativeLibs; Molly,
+  Element and most apps) could not load them; only stored ones load from inside the
+  APK. core/apk.c aoi_apk_extract_libs, run once per APK (ios/androidtest.c
+  install_libs), writes them to /data/app/apk/lib/arm64 (nativeloader's path).
+- dex2oat aborted big apps after 9.5 minutes (its watchdog): now --no-watch-dog. And a
+  run cut short left a partial odex taken for done: oat/arm64/.done now marks a run
+  that finished (an app with an odex but no marker is compiled once more).
+- AndroidKeyStore was not even a provider (the zygote installs it; we start without
+  one): Element died of "AndroidKeyStore KeyStore not available". aoi.Keystore is
+  keystore2 (android.system.keystore2.IKeystoreService/default) with software keys
+  kept in the app's /data/misc/keystore/aoi: AES (GCM/CBC/CTR/ECB), 3DES, HMAC, EC and
+  RSA signing, RSA decryption, ECDH, imported keys, certificate entries; a new key pair
+  gets a self-signed X.509 certificate (DER built by hand). Reported as TEE keys.
+  tests/run_android.sh "AndroidKeyStore": the framework's provider end to end.
+- NewPipe died of a null BatteryManager: "batteryproperties" (not a Context name)
+  now has a stand-in.
+- When an app stops on a fault, every thread's backtrace goes to its log
+  (aoi_proc_log_threads, as /dev/aoi_threads does).
+- Cromite reads /data/local/chrome-command-line (Chromium's rooted-device flags file):
+  with --single-process it got past the renderer launch, then stopped on a CHECK. open.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

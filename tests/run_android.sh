@@ -69,6 +69,11 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "storage volume, ashmem as memfd" "storage: mounted at /data/media/0, shared memory 8192 41534d21, cursor window true 42" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.StorageTest
+    # AndroidKeyStore: the framework's provider on aoi.Keystore (keystore2, software keys).
+    rm -rf "$R/data/misc/keystore/aoitest"
+    # shellcheck disable=SC2086
+    check "AndroidKeyStore (keystore2: AES, HMAC, EC, ECDH, RSA)" "keystore: aes ok, hmac 32, ec ok, ecdh ok, rsa ok, aliases [aes, ec, hmac, rsa], cert ok, reload ok, deleted true" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.KeystoreTest
     # aoi.Clipboard through the host's clipboard (aoiproc's AOI_CLIP): paste in, copy out.
     # shellcheck disable=SC2086
     export AOI_CLIP="from the host"

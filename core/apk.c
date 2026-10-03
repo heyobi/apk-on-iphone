@@ -76,6 +76,42 @@ void *aoi_apk_extract(const void *zip, size_t size, const char *name, size_t *ou
     return out;
 }
 
+struct libs { const uint8_t *z; size_t size; const char *dir; const char **err; int n; };
+
+static int extract_lib(const char *name, size_t len, void *ctx)
+{
+    static const char pre[] = "lib/arm64-v8a/";
+    struct libs *l = ctx;
+    char ent[512], out[1024];
+    const uint8_t *e;
+    void *b;
+    size_t sz;
+    FILE *f;
+    if (len >= sizeof ent || len <= sizeof pre - 1 + 3 || memcmp(name, pre, sizeof pre - 1)
+        || memcmp(name + len - 3, ".so", 3) || memchr(name + sizeof pre - 1, '/', len - (sizeof pre - 1))) return 0;
+    memcpy(ent, name, len); ent[len] = 0;
+    e = walk(l->z, l->size, ent, len, NULL, NULL);
+    if (!e || u16(e + 10) == 0) return 0;                         /* stored: loaded from the APK */
+    if (!(b = aoi_apk_extract(l->z, l->size, ent, &sz, l->err))) { l->n = -1; return 1; }
+    snprintf(out, sizeof out, "%s/%s", l->dir, ent + sizeof pre - 1);
+    if (!(f = fopen(out, "wb")) || fwrite(b, 1, sz, f) != sz) {
+        if (f) fclose(f);
+        free(b); *l->err = "cannot write a library"; l->n = -1; return 1;
+    }
+    fclose(f);
+    free(b);
+    l->n++;
+    return 0;
+}
+
+int aoi_apk_extract_libs(const void *zip, size_t size, const char *dir, const char **err)
+{
+    struct libs l;
+    l.z = zip; l.size = size; l.dir = dir; l.err = err; l.n = 0;
+    walk(zip, size, NULL, 0, extract_lib, &l);
+    return l.n;
+}
+
 /* ---------- AndroidManifest.xml (binary XML) ---------- */
 
 /* String i of a string pool chunk at p (size n), as UTF-8 into out. */

@@ -6,6 +6,7 @@
 #define _DEFAULT_SOURCE                 /* mincore */
 #define _DARWIN_C_SOURCE
 #include "androidtest.h"
+#include "../core/apk.h"
 #include "../core/binder.h"
 #include "../core/proc.h"
 #ifdef AOI_GPU
@@ -478,6 +479,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
         say(log, ctx, "%s: stopped (%d) at pc=%#llx in %s, insn %#x after %.1f s, %llu instructions", what, (int)st,
             (unsigned long long)p->cpu.pc, aoi_proc_where(p, p->cpu.pc, w, sizeof w), p->cpu.fault_insn, secs,
             (unsigned long long)p->cpu.steps);
+        aoi_proc_log_threads(p);                                   /* where each thread was: the log */
     }
     memory_mb(&now, &peak);
     say(log, ctx, "%s: memory %.0f MB now, %.0f MB peak", what, now, peak);
@@ -490,23 +492,58 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     return rc;
 }
 
+/* The APK's compressed native libraries into app/apk/lib/arm64/ (on nativeloader's
+ * library path), once per APK, as the package manager does at install: the linker
+ * loads only stored ones from inside the APK. */
+static void install_libs(const char *datadir, aoi_log_fn log, void *ctx)
+{
+    char apk[1024], dir[1024], stamp[1100];
+    struct stat ss, sa;
+    const char *err = NULL;
+    void *z;
+    int fd, n;
+    snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
+    snprintf(dir, sizeof dir, "%s/app/apk/lib", datadir); mkdir(dir, 0755);
+    snprintf(dir, sizeof dir, "%s/app/apk/lib/arm64", datadir); mkdir(dir, 0755);
+    snprintf(stamp, sizeof stamp, "%s/.installed", dir);
+    if (stat(apk, &sa) || (!stat(stamp, &ss) && ss.st_mtime >= sa.st_mtime)) return;   /* done */
+    if ((fd = open(apk, O_RDONLY)) < 0) return;
+    z = mmap(NULL, (size_t)sa.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (z == MAP_FAILED) return;
+    n = aoi_apk_extract_libs(z, (size_t)sa.st_size, dir, &err);
+    munmap(z, (size_t)sa.st_size);
+    if (n < 0) { say(log, ctx, "app: native libraries: %s", err); return; }
+    if (n) say(log, ctx, "app: %d native libraries extracted", n);
+    if ((fd = open(stamp, O_WRONLY | O_CREAT | O_TRUNC, 0644)) >= 0) close(fd);
+}
+
 /* The APK's code compiled ahead of time (dex2oat, `speed`), once per APK: oat/arm64/
  * next to it, where ART looks. In the interpreter the app's dex code would otherwise
- * be interpreted twice (by ART, inside ours): 63 % of a frame. */
+ * be interpreted twice (by ART, inside ours): 63 % of a frame. oat/arm64/.done says it
+ * ran to its end for this APK (ok or failed): a run cut short (iOS ends the app in the
+ * background) leaves a partial odex, which is removed and compiled again. */
 static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_fn log, void *ctx)
 {
     static const char *const argv[] = { "/apex/com.android.art/bin/dex2oat64", "--dex-file=/data/app/apk/base.apk",
         "--oat-file=/data/app/apk/oat/arm64/base.odex", "--instruction-set=arm64", "--compiler-filter=speed",
-        "--class-loader-context=PCL[]", NULL };
-    char odex[1024], dir[1024], apk[1024];
-    struct stat so, sa;
+        "--class-loader-context=PCL[]", "--no-watch-dog", NULL };   /* its 9.5 min limit: big apps take longer */
+    char odex[1024], vdex[1024], done[1024], dir[1024], apk[1024];
+    struct stat sd, sa;
+    int d;
     snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
     snprintf(odex, sizeof odex, "%s/app/apk/oat/arm64/base.odex", datadir);
-    if (!stat(odex, &so) && !stat(apk, &sa) && so.st_size > 0 && so.st_mtime >= sa.st_mtime) return;   /* done */
+    snprintf(vdex, sizeof vdex, "%s/app/apk/oat/arm64/base.vdex", datadir);
+    snprintf(done, sizeof done, "%s/app/apk/oat/arm64/.done", datadir);
+    if (stat(apk, &sa) || (!stat(done, &sd) && sd.st_mtime >= sa.st_mtime)) return;   /* done */
+    unlink(odex); unlink(vdex);
     snprintf(dir, sizeof dir, "%s/app/apk/oat", datadir); mkdir(dir, 0755);
     snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", datadir); mkdir(dir, 0755);
-    say(log, ctx, "dex2oat: the app's code is compiled once (a few minutes) ...");
-    if (run_guest(root, datadir, fd, argv, 6, NULL, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) unlink(odex);   /* run interpreted */
+    say(log, ctx, "dex2oat: the app's code is compiled once (minutes; a big app much longer) ...");
+    if (run_guest(root, datadir, fd, argv, 7, NULL, NULL, NULL, "dex2oat", NULL, log, ctx) != 0) {
+        unlink(odex); unlink(vdex);                                /* run interpreted */
+    }
+    if ((d = open(done, O_WRONLY | O_CREAT | O_TRUNC, 0644)) >= 0) close(d);
 }
 
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, const char *display,
@@ -523,6 +560,7 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);   /* aoi.DisplayManager reads it */
     if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }
     snprintf(snap, sizeof snap, "%s.snap", datadir);
+    install_libs(datadir, log, ctx);
     compile_apk(root, datadir, fd, log, ctx);
     rc = run_guest(root, datadir, fd, argv, 4, frame, home, frame_ctx, "app", snap, log, ctx);
     close(fd);

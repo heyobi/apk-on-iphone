@@ -107,9 +107,16 @@ final class Services {
         "autofill", "content_capture",                             /* else a 5 s wait for a reply that never comes */
     };
 
+    /** Services managers look up by a name Context has no field for. */
+    private static final String[] EXTRA = {
+        "batteryproperties",                                       /* BatteryManager (else null: NewPipe) */
+    };
+
     /** Every Context service name with no service yet gets a NullService. */
     static void standIns() {
         int n = 0;
+        for (String name : EXTRA)
+            if (ServiceManager.checkService(name) == null) { ServiceManager.addService(name, new NullService(name)); n++; }
         HashSet<String> keep = new HashSet<String>();
         for (String k : KEEP_ABSENT) keep.add(k);
         for (Field f : android.content.Context.class.getDeclaredFields()) {

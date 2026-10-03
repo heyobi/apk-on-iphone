@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 /* iostest: run the iOS app's test sequence on the host. usage: iostest app.apk [n]
- * AOI_ANDROID_ROOT=root AOI_APP_DATA=dir: the app button instead (dir is the guest's /data). */
+ * AOI_ANDROID_ROOT=root AOI_APP_DATA=dir: the app button instead (dir is the guest's /data;
+ * tools/app-install.sh makes one; AOI_APP_LOG: the app's log, /tmp/aoi-app.log). */
 #include "../core/apk.h"
 #include "../ios/gmptest.h"
 #include "../ios/vmprobe.h"
@@ -50,7 +51,7 @@ static void *taps(void *arg)
     return NULL;
 }
 
-/* The app button's frames: the newest one as a PPM file (ctx: its path). */
+/* The app button's frames: the newest one as ctx.ppm (AOI_APP_ALL_FRAMES: each as ctx.N.ppm). */
 static void frame(void *ctx, const unsigned char *px, unsigned w, unsigned h)
 {
     static int frames;
@@ -62,14 +63,19 @@ static void frame(void *ctx, const unsigned char *px, unsigned w, unsigned h)
         pthread_create(&t, NULL, taps, getenv("AOI_APP_TAPS"));
         pthread_detach(t);
     }
-    snprintf(path, sizeof path, "%s.%d.ppm", (const char *)ctx, frames);   /* every frame kept */
+    if (getenv("AOI_APP_ALL_FRAMES"))                                      /* every frame kept */
+        snprintf(path, sizeof path, "%s.%d.ppm", (const char *)ctx, frames);
+    else                                                                    /* the newest only */
+        snprintf(path, sizeof path, "%s.ppm", (const char *)ctx);
     f = fopen(path, "wb");
     if (!f) return;
     fprintf(f, "P6\n%u %u\n255\n", w, h);
     for (i = 0; i < (size_t)w * h; i++) fwrite(px + 4 * i, 1, 3, f);
     fclose(f);
-    printf("frame %ux%u -> %s\n", w, h, path);
-    fflush(stdout);
+    if (getenv("AOI_APP_ALL_FRAMES") || frames == 1 || frames % 100 == 0) {
+        printf("frame %d %ux%u -> %s\n", frames, w, h, path);
+        fflush(stdout);
+    }
 }
 
 /* The app left for the launcher (AOI_APP_DISPLAY="w h dpi" sets its display). */
@@ -93,7 +99,8 @@ int main(int argc, char **argv)
 
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
-        return aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), "/tmp/aoi-app.log",
+        const char *log = getenv("AOI_APP_LOG") ? getenv("AOI_APP_LOG") : "/tmp/aoi-app.log";
+        return aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), log,
                                getenv("AOI_APP_DISPLAY"), frame, home, (void *)png, out, NULL) == 0 ? 0 : 1;
     }
     aoi_vm_probe(out, NULL);

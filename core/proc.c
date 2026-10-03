@@ -1130,7 +1130,7 @@ const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t 
 
 /* Every live thread to the app's log: state, the futex it waits on, pc, lr and the
  * frame-pointer chain (a hang: who waits for whom). */
-static void log_threads(struct aoi_proc *p)
+void aoi_proc_log_threads(struct aoi_proc *p)
 {
     static const char *st[] = { "free", "run", "futex", "sleep" };
     char w[256], w2[256];
@@ -1968,7 +1968,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = err(p->snap_path[0] ? L_EBUSY : L_ENOENT);
             break;
         } else if (!strcmp(g, "/dev/aoi_threads")) {               /* aoi.Snapshot, when stuck: where each thread is */
-            log_threads(p);
+            aoi_proc_log_threads(p);
             r = err(L_ENOENT);
             break;
         } else if (!strcmp(g, "/dev/aoi_gpu_live")) {              /* aoi.Snapshot: EBUSY while it has GL state */

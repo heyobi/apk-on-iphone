@@ -56,6 +56,8 @@ public final class Main {
         ServiceManager.addService("power", new PowerService());
         ServiceManager.addService("connectivity", new ConnectivityService());
         ServiceManager.addService("audio", new AudioService());
+        ServiceManager.addService(Keystore.NAME, new Keystore("/data/misc/keystore/aoi"));
+        Keystore.installProvider();                                /* AndroidKeyStore (the zygote's job) */
         Services.standIns();                                       /* the rest: default answers */
         /* Windows draw in software (Skia on the CPU) unless AOI_HWUI is set: then HWUI's
          * GPU pipeline runs on our OpenGL ES driver (guest/gles.c, gpu/host.c). */
