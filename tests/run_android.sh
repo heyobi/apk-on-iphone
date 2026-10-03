@@ -69,6 +69,10 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "storage volume, ashmem as memfd" "storage: mounted at /data/media/0, shared memory 8192 41534d21, cursor window true 42" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.StorageTest
+    # TLS trust: today's roots (tools/cacerts-extra.pem) in conscrypt's store.
+    # shellcheck disable=SC2086
+    check "trust store with today's roots" "ca: Sectigo R46 true, SSL.com 2022 true, chain trusted true" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.CaTest
     # AndroidKeyStore: the framework's provider on aoi.Keystore (keystore2, software keys).
     rm -rf "$R/data/misc/keystore/aoitest"
     # shellcheck disable=SC2086

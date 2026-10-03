@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aroot-mini
-          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'tools/android-setup.sh', 'tools/mkprops.py', 'tools/uncompress-art.py', 'ios/android-files.txt') }}
+          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'tools/android-setup.sh', 'tools/mkprops.py', 'tools/uncompress-art.py', 'tools/cacerts-extra.pem', 'ios/android-files.txt') }}
 
       - name: Fetch Android root
         if: steps.aroot.outputs.cache-hit != 'true'

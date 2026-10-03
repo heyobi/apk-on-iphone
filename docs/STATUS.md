@@ -573,6 +573,18 @@ running, it is ended (no .state is written: a later launch compiles again) befor
 iOS ends the app. tools/iostest.c AOI_COMPILE_HOLD=N holds it for N s. NewPipe here
 with the compile held: first frame at ~40 s instead of 56 s with it running.
 
+**Today's TLS roots (app 0.56).** Qalculate's exchange rates from www.ecb.europa.eu
+failed "Trust anchor for certification path not found" while api.coinbase.com worked:
+Android 14's GSI has the root store of its build, a phone gets newer roots with its
+updatable conscrypt module. The 21 roots of Mozilla's store (certifi 2026.06.17) the
+GSI lacks - among them Sectigo Public Server Authentication Root R46/E46, which
+Sectigo's chains end in since 2025, and SSL.com's 2022 roots - are in
+tools/cacerts-extra.pem with their conscrypt file names (subject_hash_old.0);
+tools/android-root.sh adds them to /apex/com.android.conscrypt/cacerts and
+ios/android-files.txt ships them. aoi.CaTest (tests/run_android.sh, 20 checks): the
+system TrustManager has them and trusts a chain ending in R46. Not checked against
+ECB itself from here (the cloud's egress re-signs TLS): the phone's log will tell.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

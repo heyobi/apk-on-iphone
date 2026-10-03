@@ -43,3 +43,7 @@ done
 # boot images stored uncompressed: ART maps them instead of LZ4-decompressing
 # ~25 MB at every start (a third of the boot-image start in the interpreter)
 python3 "$(dirname "$0")/uncompress-art.py" "$OUT"
+# today's roots that the GSI's store lacks (tools/cacerts-extra.pem): sites whose
+# chain ends there (Sectigo R46, SSL.com 2022...) fail "Trust anchor not found"
+CA="$OUT/apex/com.android.conscrypt/cacerts"
+awk -v d="$CA" '/^# file: /{f=d "/" $3; next} f{print > f} /END CERT/{close(f); f=""}' "$(dirname "$0")/cacerts-extra.pem"
