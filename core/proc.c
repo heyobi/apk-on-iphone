@@ -973,6 +973,7 @@ static void thread_end(struct aoi_proc *p)
         put(p, t->clear_tid, &zero, 4);
         futex_wake(p, t->clear_tid & 0x00ffffffffffffffULL, 1 << 30, ~0u);
     }
+    memset(t->comm, 0, sizeof t->comm);
     t->state = AOI_T_FREE;
 }
 
@@ -2262,10 +2263,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
          * ashmem regions this way (sys.use_memfd): CursorWindow, MemoryHeapBase.
          * Seals are recorded, not enforced. Its path has no leading '/': a
          * snapshot keeps its mapped pages and reopens the fd on /dev/null.
-         * ART's JIT code cache is refused (ENOSYS, as before memfds): it would map
-         * one twice, RX and RW, and our MAP_SHARED is a copy per mapping. */
+         * ART's JIT code cache is refused (ENOSYS, as before memfds): it maps one
+         * twice, RX and RW (it aborted in debugger_interface when MAP_SHARED was a
+         * copy per mapping; the single-view JIT works). Unknown flags are EINVAL:
+         * Chromium's mojo probes the kernel with memfd_create("", ~0) and CHECKs it. */
         char name[256], g[AOI_PATH], h[AOI_PATH];
         int d, n;
+        if (a1 & ~(uint64_t)(0x1f | 0x3fu << 26)) { r = err(L_EINVAL); break; }   /* CLOEXEC..EXEC, HUGE_* */
         if (!gstr(p, a0, name, sizeof name)) { r = err(L_EFAULT); break; }
         if (strstr(name, "jit") || strstr(name, "code-cache")) { r = err(L_ENOSYS); break; }
         snprintf(g, sizeof g, "/data/local/tmp/.memfd-XXXXXX");
@@ -2330,6 +2334,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case NR_eventfd2: case NR_epoll_create1: {
         int d, n;
+        if (nr == NR_eventfd2 ? (a1 & ~(uint64_t)(1 | 04000 | 02000000)) != 0   /* SEMAPHORE, NONBLOCK, CLOEXEC */
+                              : (a0 & ~(uint64_t)02000000) != 0) { r = err(L_EINVAL); break; }   /* (mojo probes) */
         if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
         if ((n = fd_new(p, d, nr == NR_eventfd2 ? "anon_inode:[eventfd]" : "anon_inode:[eventpoll]", 0)) < 0) {
             close(d); r = err(L_EMFILE); break;
@@ -2663,6 +2669,21 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             prot0 = p->vm.prot[a0 / PAGE] & 7;
             na = aoi_vm_map(&p->vm, fixed ? a4 : 0, a1, (int)prot0 | AOI_PROT_W, fixed);
             if (IS_ERR(na)) { r = na; break; }
+            {                                                      /* a file's pages (V8 remapping the builtins */
+                char w[256];                                       /* of libchrome's .text, then checking both */
+                aoi_proc_where(p, a0, w, sizeof w);                /* views agree): the source keeps them */
+                if (w[0] == '/' && strncmp(w, "/dev/", 5)) {
+                    uint64_t o;
+                    for (o = 0; o < a1; o += PAGE) {
+                        uint8_t *src = aoi_vm_ptr(&p->vm, a0 + o, PAGE, 0), *dst = aoi_vm_ptr(&p->vm, na + o, PAGE, 0);
+                        if (src && dst) memcpy(dst, src, PAGE);
+                    }
+                    aoi_vm_protect(&p->vm, na, a1, (int)prot0);
+                    note_map(p, na, a1, 0, "[anon:remapped file]");
+                    r = na;
+                    break;
+                }
+            }
             uffd_fill(p, a0, a1);                                  /* (missing source pages move as zero) */
             aoi_vm_move(&p->vm, na, a0, a1);
             aoi_vm_protect(&p->vm, na, a1, (int)prot0);
@@ -2880,7 +2901,26 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_prctl:
-        r = (a0 == 0x53564d41 || a0 == 15 || a0 == 38) ? 0 : a0 == 3 ? 1 : err(L_EINVAL); /* SET_VMA, SET_NAME, NO_NEW_PRIVS */
+        if (a0 == 15) {                                            /* PR_SET_NAME */
+            char n[16];
+            memset(n, 0, sizeof n);
+            if (!gstr(p, a1, n, sizeof n)) n[15] = 0;
+            memcpy(p->th[p->cur].comm, n, 16);
+            p->th[p->cur].comm[15] = 0;
+            r = 0;
+        } else if (a0 == 16) {                                     /* PR_GET_NAME: maplibre's log asks it, */
+            char n[16];                                            /* and logs its failure: endless recursion */
+            const char *e = strrchr(p->exe, '/');
+            memset(n, 0, sizeof n);
+            if (p->th[p->cur].comm[0]) memcpy(n, p->th[p->cur].comm, 16);
+            else {
+                const char *b = e ? e + 1 : p->exe;
+                size_t k = strlen(b);
+                memcpy(n, b, k < 15 ? k : 15);                     /* the kernel's comm: 15 bytes at most */
+            }
+            r = put(p, a1, n, 16) ? 0 : err(L_EFAULT);
+        } else
+            r = (a0 == 0x53564d41 || a0 == 38) ? 0 : a0 == 3 ? 1 : err(L_EINVAL);   /* SET_VMA, NO_NEW_PRIVS */
         break;
     case NR_uname: {
         uint8_t u[390];

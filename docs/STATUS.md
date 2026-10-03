@@ -623,6 +623,24 @@ frame, page finished, `title "web 42"`, the text drawn by the GPU). What it took
   every asset it reads MAP_SHARED read-only), and the pad pages (AOI_PROT_SLACK) are
   unmapped with their mapping: left behind, thousands of them made every mmap's
   first-fit search crawl.
+
+**Cromite to its New Tab page; Element past maplibre (app 0.58).** Host runs of
+the Chromium and Matrix apps, each fix found where they stopped:
+- prctl PR_GET_NAME/PR_SET_NAME keep a name per thread (struct aoi_thread comm):
+  maplibre's logger asks the thread's name and logs the failure, endlessly (Element's
+  stack overflow).
+- memfd_create and eventfd2 refuse unknown flags (EINVAL): Chromium's mojo probes the
+  kernel with memfd_create("", ~0) and CHECKs the answer (channel_linux.cc).
+- mremap MREMAP_DONTUNMAP of a file's pages copies them and leaves the source as it
+  was (Linux refaults it from the file): V8 remaps libchrome's builtins next to its
+  code range and CHECKs both views agree. Anonymous memory still moves (ART's GC).
+- Stand-ins answer a StorageStats (zero bytes) and an empty Bundle (restrictions)
+  instead of null: Chromium's storage metrics and policy reader dereferenced them.
+Cromite now runs to its New Tab page and stays up. Open: web content (chrome://version)
+stays white - its compositor never draws into the SurfaceView (only the window layer
+gets buffers); WebView, which draws through HWUI, works. tools/iostest.c
+AOI_APP_STOP_AFTER=N stops the app after N s and logs every thread.
+
 Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
 WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
 Molly still reach the screens they did. The phone root gains the WebView, its

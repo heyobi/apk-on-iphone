@@ -73,14 +73,24 @@ final class Services {
     private static final HashMap<String, Method> methods = new HashMap<String, Method>();
 
     /** The empty value a stand-in answers when the call returns a ParceledListSlice
-     *  (ShortcutManager) or a LocaleList (LocaleManager.getApplicationLocales: AppCompat),
-     *  else null. Everything else's zeros read as empty (arrays, lists) or as values. */
+     *  (ShortcutManager), a LocaleList (LocaleManager.getApplicationLocales: AppCompat)
+     *  StorageStats (StorageStatsManager.queryStatsForPackage: Chromium) or a Bundle
+     *  (RestrictionsManager.getApplicationRestrictions: Chromium's policies), else null.
+     *  Everything else's zeros read as empty (arrays, lists) or as values. */
     static Object emptyReturn(Method m) {
         Class<?> t = m != null ? m.getReturnType() : null;
         if (t == null) return null;
         if (ParceledListSlice.class.isAssignableFrom(t)) return new ParceledListSlice(new ArrayList());
         if (t.getName().equals("android.os.LocaleList")) {
             try { return t.getMethod("getEmptyLocaleList").invoke(null); } catch (Exception e) { return null; }
+        }
+        if (t == android.os.Bundle.class) return new android.os.Bundle();   /* restrictions & co.: none */
+        if (t.getName().equals("android.app.usage.StorageStats")) {   /* queryStatsForPackage: zero bytes */
+            try {                                                      /* (Chromium's storage metrics NPE) */
+                java.lang.reflect.Constructor<?> k = t.getDeclaredConstructor();
+                k.setAccessible(true);
+                return k.newInstance();
+            } catch (Exception e) { return null; }
         }
         return null;
     }

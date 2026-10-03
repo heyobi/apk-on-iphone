@@ -74,6 +74,7 @@ struct aoi_thread {
     uint64_t sigwait_info;          /* its siginfo_t pointer, or 0 */
     int restart;                    /* AOI_T_SLEEP before re-running a syscall: wake without touching x0 */
     int64_t poll_deadline;          /* epoll_pwait/ppoll being retried: when it times out (0: not waiting) */
+    char comm[16];                  /* prctl PR_SET_NAME (pthread_setname_np); "" until named */
 };
 
 struct aoi_proc {
