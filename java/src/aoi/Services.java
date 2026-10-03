@@ -140,6 +140,9 @@ final class Services {
     private static final String[] EXTRA = {
         "batteryproperties",                                       /* BatteryManager (else null: NewPipe) */
         "media.camera",                                            /* CameraManager: no cameras (else it retries every second) */
+        "media.audio_policy", "media.audio_flinger",               /* native AudioSystem waits for them (Chromium's
+                                                                    * AudioThread, and the renderer behind it): its
+                                                                    * calls now fail at once, no sound yet */
     };
 
     /** Every Context service name with no service yet gets a NullService. */

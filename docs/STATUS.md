@@ -641,6 +641,20 @@ stays white - its compositor never draws into the SurfaceView (only the window l
 gets buffers); WebView, which draws through HWUI, works. tools/iostest.c
 AOI_APP_STOP_AFTER=N stops the app after N s and logs every thread.
 
+**No more waiting for the audio services (app 0.59).** Native AudioSystem waits for
+"media.audio_policy" (the log's "getService: waiting for media.audio_policy"):
+Chromium's AudioThread sat there, Element's start too. "media.audio_policy" and
+"media.audio_flinger" are stand-ins now: their calls fail at once (no sound yet; an
+AudioFlinger of our own is the way to sound). Thread dumps name each thread (its
+prctl name). AOI_GL_TRACE also logs every EGL op.
+Cromite's web content, what is known: after a navigation the renderer, viz and the
+GPU thread all sit idle; the GPU thread makes a context but never a window surface;
+with --disable-gpu-compositing it is the same, so it is not the GPU. The SurfaceView
+Chromium keeps (translucent, the BLAST layer) is created, valid and visible, with
+mDrawFinished false: its first frame never comes. Next: whether the browser
+compositor gets the surface (CompositorImpl::SetSurface) and is visible, and whether
+begin-frames reach it.
+
 Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
 WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
 Molly still reach the screens they did. The phone root gains the WebView, its

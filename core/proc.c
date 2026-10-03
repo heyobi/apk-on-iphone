@@ -1169,7 +1169,7 @@ void aoi_proc_log_threads(struct aoi_proc *p)
         struct aoi_cpu *c = i == p->cur ? &p->cpu : &t->cpu;
         uint64_t fp = c->x[29], fr[2];
         if (t->state == AOI_T_FREE) continue;
-        fprintf(p->log, "I/aoi: thread %d %s%s futex %#llx: pc %s, lr %s\n", t->tid, st[t->state & 3],
+        fprintf(p->log, "I/aoi: thread %d \"%.15s\" %s%s futex %#llx: pc %s, lr %s\n", t->tid, t->comm, st[t->state & 3],
                 i == p->cur ? " (current)" : "", (unsigned long long)t->futex_addr,
                 aoi_proc_where(p, c->pc, w, sizeof w), aoi_proc_where(p, c->x[30], w2, sizeof w2));
         for (k = 0; k < 16 && fp && aoi_vm_read(&p->vm, fp & 0x00ffffffffffffffULL, fr, 16, 0); k++) {

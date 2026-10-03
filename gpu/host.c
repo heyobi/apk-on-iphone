@@ -917,7 +917,8 @@ static uint64_t egl_op(struct aoi_proc *p, uint64_t op, const uint64_t *s)
     static const char *const names[] = { "init", "choose_config", "config_attrib", "create_context", "destroy_context",
         "create_surface", "destroy_surface", "resize_surface", "make_current", "query_context", "get_error", "readback" };
     uint64_t r = egl_op1(p, op, s);
-    if (first_log > 0 && op != AOI_EGL_CONFIG_ATTRIB && op != AOI_EGL_READBACK && op != AOI_EGL_MAKE_CURRENT
+    if (trace < 0) trace = getenv("AOI_GL_TRACE") != NULL;
+    if ((first_log > 0 || trace) && op != AOI_EGL_CONFIG_ATTRIB && op != AOI_EGL_READBACK && op != AOI_EGL_MAKE_CURRENT
         && op - AOI_EGL_INIT < sizeof names / sizeof names[0])
         say(p, "egl %s(%#llx, %#llx, %#llx) -> %#llx", names[op - AOI_EGL_INIT], (unsigned long long)s[0],
             (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)r);
