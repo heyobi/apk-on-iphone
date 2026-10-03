@@ -16,6 +16,7 @@ public interface IPackageManager {
     ProviderInfo getProviderInfo(ComponentName className, long flags, int userId) throws RemoteException;
     ActivityInfo getReceiverInfo(ComponentName className, long flags, int userId) throws RemoteException;
     boolean hasSystemFeature(String name, int version) throws RemoteException;
+    boolean hasSigningCertificate(String packageName, byte[] certificate, int type) throws RemoteException;
     int getComponentEnabledSetting(ComponentName componentName, int userId) throws RemoteException;
     String getInstallerPackageName(String packageName) throws RemoteException;
     String getNameForUid(int uid) throws RemoteException;

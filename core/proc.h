@@ -37,12 +37,15 @@ struct aoi_proc_fd {
     int nreq;                       /* AOI_FD_DNS: bytes of the request so far, in req */
     char *req;
     int seals;                      /* memfd: F_ADD_SEALS so far (not enforced) */
+    int64_t tnext, tint;            /* AOI_FD_TIMERFD: next expiry (monotonic ns, 0: disarmed), interval */
+    int tclock;                     /* AOI_FD_TIMERFD: its clock (0 realtime, else monotonic) */
 };
 
 enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,
        AOI_FD_EVENTFD, AOI_FD_EPOLL,
        AOI_FD_INET,                 /* AF_INET/AF_INET6: a host socket, non-blocking underneath */
-       AOI_FD_DNS };                /* netd's /dev/socket/dnsproxyd, answered with the host's resolver */
+       AOI_FD_DNS,                  /* netd's /dev/socket/dnsproxyd, answered with the host's resolver */
+       AOI_FD_TIMERFD };            /* timerfd: expirations counted in `count` */
 
 /* An epoll instance: level-triggered interest entries {fd, events, data}. */
 struct aoi_epoll { int refs, n, cap; struct { int fd; uint32_t events; uint64_t data; } *e; };

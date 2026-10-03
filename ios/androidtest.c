@@ -33,7 +33,7 @@
 
 static void say(aoi_log_fn log, void *ctx, const char *fmt, ...)
 {
-    char buf[512];
+    char buf[4096];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
@@ -229,7 +229,7 @@ static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
     o = (size_t)snprintf(out, outn, "guest in host memory %llu MB (%llu MB in chunks without files) of %llu MB mapped;",
                          (unsigned long long)(total * (uint64_t)hp >> 20), (unsigned long long)(anon * (uint64_t)hp >> 20),
                          (unsigned long long)(mapped * AOI_VM_PAGE >> 20));
-    for (k = 0; k < 6 && o < outn; k++) {           /* the biggest windows */
+    for (k = 0; k < (getenv("AOI_MEM_WINDOWS") ? atoi(getenv("AOI_MEM_WINDOWS")) : 6) && o < outn; k++) {   /* the biggest windows */
         uint64_t best = 0, w, bl = 0;
         const char *name = "anonymous";
         for (w = 1; w < nwin; w++) if (win[w] > win[best]) best = w;
@@ -279,7 +279,7 @@ static void *memory_watch(void *arg)
         (void)aoi_vm_mapped_bytes; (void)aoi_vm_copied_bytes;
 #endif
         {
-            char b[1200];
+            char b[4000];
 #ifdef __APPLE__
             malloc_statistics_t ms;
             memset(&ms, 0, sizeof ms);
@@ -560,6 +560,11 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);   /* aoi.DisplayManager reads it */
     if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }
     snprintf(snap, sizeof snap, "%s.snap", datadir);
+    snprintf(path, sizeof path, "%s/local/chrome-command-line", datadir);   /* Chromium's flags (a rooted device's) */
+    if (access(path, F_OK) && (f = fopen(path, "w"))) {          /* its renderer in the app's process: no */
+        fprintf(f, "_ --single-process\n");                         /* child processes here */
+        fclose(f);
+    }
     install_libs(datadir, log, ctx);
     compile_apk(root, datadir, fd, log, ctx);
     rc = run_guest(root, datadir, fd, argv, 4, frame, home, frame_ctx, "app", snap, log, ctx);

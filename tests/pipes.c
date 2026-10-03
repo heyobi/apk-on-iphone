@@ -5,7 +5,15 @@
  *   2  a blocking read waits while another thread sleeps, then gets its bytes
  *   4  epoll on an eventfd: nothing ready with timeout 0; a blocking wait is woken
  *      by another thread's eventfd write and returns the registered data; the
- *      read takes the counter */
+ *      read takes the counter
+ *   8  timerfd (Chromium's message loop): a 10 ms monotonic timer, 5 ms period: a
+ *      non-blocking read before it is due is EAGAIN; epoll waits until it is due;
+ *      a blocking read after 30 ms more reads several expirations; gettime shows the
+ *      interval; disarmed, a non-blocking read is EAGAIN again
+ *  16  fallocate (Realm's posix_fallocate): a new file grows to 8 KiB; KEEP_SIZE
+ *      leaves it so; a hole punch is EOPNOTSUPP
+ *  32  a FIFO (mknodat, Realm's notifications): opened O_RDWR|O_NONBLOCK, empty is
+ *      EAGAIN, then reads back what was written */
 typedef unsigned long u64;
 
 static long sys(long n, long a, long b, long c, long d, long e)
@@ -75,6 +83,46 @@ void _start_c(void)
         else if (sys(22, ep, (long)out, 1, 0, 0) != 0) fail |= 4;      /* timeout 0: nothing yet */
         else if (spawn(1) <= 0 || sys(22, ep, (long)out, 1, -1, 0) != 1 || out[1] != 0x1234) fail |= 4;
         else if (sys(63, efd, (long)&v, 8, 0, 0) != 8 || v != 5) fail |= 4;
+    }
+
+    {
+        long tfd = sys(85, 1, 04000, 0, 0, 0);                         /* timerfd_create(MONOTONIC, NONBLOCK) */
+        long ep = sys(20, 0, 0, 0, 0, 0);
+        u64 it[4] = { 0, 5000000, 0, 10000000 }, cur[4], ev[2] = { 1, 7 }, out[2] = { 0, 0 }, v = 0;
+        u64 ts[2] = { 0, 30000000 }, off[4] = { 0, 0, 0, 0 };
+        if (tfd < 0 || ep < 0 || sys(86, tfd, 0, (long)it, 0, 0) != 0) fail |= 8;   /* timerfd_settime */
+        else if (sys(63, tfd, (long)&v, 8, 0, 0) != -11) fail |= 8;    /* not due: EAGAIN */
+        else if (sys(21, ep, 1, tfd, (long)ev, 0) != 0 || sys(22, ep, (long)out, 1, -1, 0) != 1 || out[1] != 7) fail |= 8;
+        else if (sys(63, tfd, (long)&v, 8, 0, 0) != 8 || v < 1) fail |= 8;
+        else {
+            sys(101, (long)ts, 0, 0, 0, 0);                            /* 30 ms: about 6 more */
+            if (sys(63, tfd, (long)&v, 8, 0, 0) != 8 || v < 3) fail |= 8;
+            else if (sys(87, tfd, (long)cur, 0, 0, 0) != 0 || cur[1] != 5000000) fail |= 8;
+            else if (sys(86, tfd, 0, (long)off, 0, 0) != 0 || sys(63, tfd, (long)&v, 8, 0, 0) != -11) fail |= 8;
+        }
+    }
+
+    {
+        u64 st[16];
+        long fd = sys(56, -100, (long)"/fallocate.tmp", 0102 | 01000, 0644, 0);   /* openat O_RDWR|O_CREAT|O_TRUNC */
+        if (fd < 0 || sys(47, fd, 0, 0, 8192, 0) != 0 || sys(80, fd, (long)st, 0, 0, 0) != 0 || st[6] != 8192) fail |= 16;
+        else if (sys(47, fd, 1, 0, 65536, 0) != 0 || sys(80, fd, (long)st, 0, 0, 0) != 0 || st[6] != 8192) fail |= 16;
+        else if (sys(47, fd, 3, 0, 4096, 0) != -95) fail |= 16;      /* PUNCH_HOLE|KEEP_SIZE */
+        sys(57, fd, 0, 0, 0, 0);
+        sys(35, -100, (long)"/fallocate.tmp", 0, 0, 0);                /* unlinkat */
+    }
+
+    {
+        char b[4];
+        long fd;
+        if (sys(33, -100, (long)"/fifo.tmp", 0010000 | 0600, 0, 0) != 0) fail |= 32;   /* mknodat S_IFIFO */
+        else if ((fd = sys(56, -100, (long)"/fifo.tmp", 02 | 04000, 0, 0)) < 0) fail |= 32;
+        else {
+            if (sys(63, fd, (long)b, 4, 0, 0) != -11) fail |= 32;      /* EAGAIN */
+            else if (sys(64, fd, (long)"xy", 2, 0, 0) != 2 || sys(63, fd, (long)b, 4, 0, 0) != 2 || b[1] != 'y') fail |= 32;
+            sys(57, fd, 0, 0, 0, 0);
+        }
+        sys(35, -100, (long)"/fifo.tmp", 0, 0, 0);
     }
 
     sys(94, fail, 0, 0, 0, 0);                                         /* exit_group */

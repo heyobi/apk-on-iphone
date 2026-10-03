@@ -56,6 +56,8 @@ final class PackageManager extends IPackageManager.Stub {
             for (int i = 0; i < a.length; i++) a[i] = app.pkg.activities.get(i).info;
             pi.activities = a;
         }
+        if ((flags & 0x40) != 0) pi.signatures = app.signatures();             /* GET_SIGNATURES */
+        if ((flags & 0x08000000) != 0) pi.signingInfo = app.signingInfo();     /* GET_SIGNING_CERTIFICATES */
         return pi;
     }
 
@@ -77,6 +79,23 @@ final class PackageManager extends IPackageManager.Stub {
         return ours(c.getPackageName()) ? app.receiver(c.getClassName()) : null;
     }
     @Override public boolean hasSystemFeature(String name, int version) { return false; }
+
+    /** type 0: the certificate's SHA-256, 1: the X.509 certificate itself. */
+    @Override
+    public boolean hasSigningCertificate(String name, byte[] cert, int type) {
+        android.content.pm.Signature[] sigs = ours(name) ? app.signatures() : null;
+        if (sigs == null || cert == null) return false;
+        for (android.content.pm.Signature s : sigs) {
+            byte[] b = s.toByteArray();
+            try {
+                if (type == 0) b = java.security.MessageDigest.getInstance("SHA-256").digest(b);
+            } catch (Exception e) {
+                return false;
+            }
+            if (java.util.Arrays.equals(b, cert)) return true;
+        }
+        return false;
+    }
     @Override public int getComponentEnabledSetting(ComponentName c, int userId) { return 0; }   /* DEFAULT */
     @Override public String getInstallerPackageName(String name) { return null; }
     @Override public String getNameForUid(int uid) { return uid == app.info.uid ? app.pkg.packageName : null; }

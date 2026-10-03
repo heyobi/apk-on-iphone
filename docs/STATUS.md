@@ -486,6 +486,40 @@ libraries, dex2oat, the app, taps, snapshot; AOI_APP_LOG for the log). What it f
 - Cromite reads /data/local/chrome-command-line (Chromium's rooted-device flags file):
   with --single-process it got past the renderer launch, then stopped on a CHECK. open.
 
+**Chromium in one process, signatures, timerfd (app 0.51).** More from the host app tests:
+- Cromite (Chromium 153, as Kiwi) stopped on a CHECK right after loading libchrome:
+  timerfd_create was ENOSYS (its message loop). core/proc.c now has timerfd
+  (create/settime/gettime; monotonic and realtime, absolute or relative, intervals;
+  readable through read, poll and epoll; a blocking read sleeps until it is due).
+  Then PowerManager.addThermalStatusListener threw: a stand-in's boolean
+  register...() calls now answer true. With /data/local/chrome-command-line
+  "_ --single-process" (Chromium reads that rooted-device flags file without a debug
+  build; ios/androidtest.c writes it once) the renderer runs inside the app: Cromite
+  shows its first-run screens, takes taps, resolves names and does TLS. Kiwi takes the
+  same path. ("media.camera" got a stand-in: CameraManager retried every second.)
+- Signatures: PackageInfo.signatures / signingInfo (GET_SIGNATURES,
+  GET_SIGNING_CERTIFICATES) from the APK's signing block via the framework's
+  ApkSignatureVerifier (without the digest pass), and hasSigningCertificate. NewPipe
+  (ACRA) died on a null SigningInfo; Google's APIs send the certificate's SHA-1, which
+  is the likely cause of WhatsApp's API_KEY_ANDROID_APP_BLOCKED.
+- Stand-ins answer an empty LocaleList (LocaleManager.getApplicationLocales:
+  AppCompat; NewPipe died of it) besides an empty ParceledListSlice.
+- Realm (Element): fallocate (the file grows; KEEP_SIZE; no hole punching) and
+  mknodat for FIFOs (opened as a non-blocking pipe underneath); *xattr calls answer
+  ENOTSUP, mlock* succeed. tests/pipes.c steps 8 (timerfd), 16 (fallocate), 32 (FIFO).
+- UFFDIO_ZEROPAGE (and a UFFDIO_COPY of a zero page) no longer writes the page: a
+  missing page reads as zero already, and ART's GC zero-fills its whole moving space
+  this way (1 GB with a large heap) - writing it made the memory real.
+- Host testing: the sandbox's TLS inspection CAs can be added to a local root's
+  cacerts (never to the repository's) so HTTPS apps work here; the snapshot reads every
+  page on Linux unless AOI_SNAP_MINCORE=1 (as on iOS), which made "guest in host
+  memory" look like 3.7 GB.
+Now: NewPipe opens to its main screen (YouTube answers this cloud's address with
+something it cannot parse); Molly reaches its passphrase screen; Element gets past
+Realm and the keystore, then a thread of libmaplibre recurses until its stack runs
+out (open: a deep recursion or one of ours). And dex2oat `speed` took 41 min (Molly)
+and 50 min (Element, 917 MB peak) here: too long and too big for the phone - next.
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

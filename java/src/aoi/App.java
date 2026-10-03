@@ -44,6 +44,42 @@ final class App {
         return null;
     }
 
+    private boolean signed;
+    private android.content.pm.Signature[] signatures;
+    private android.content.pm.SigningInfo signingInfo;
+
+    /** The APK's signing certificates (v3/v2 signature block, or v1 JAR signature), read
+     *  without checking the digests, as the package manager knew them from install:
+     *  apps check their own signature (Google's APIs send its SHA-1; ACRA, NewPipe). */
+    private synchronized void readSignatures() {
+        if (signed) return;
+        signed = true;
+        try {
+            Object in = Class.forName("android.content.pm.parsing.result.ParseTypeImpl")
+                    .getMethod("forParsingWithoutPlatformCompat").invoke(null);
+            Class<?> pi = Class.forName("android.content.pm.parsing.result.ParseInput");
+            Object r = Class.forName("android.util.apk.ApkSignatureVerifier")
+                    .getMethod("unsafeGetCertsWithoutVerification", pi, String.class, int.class)
+                    .invoke(null, in, info.sourceDir, 1);
+            Class<?> pr = Class.forName("android.content.pm.parsing.result.ParseResult");
+            if ((Boolean) pr.getMethod("isError").invoke(r)) {
+                System.out.println("aoi: signatures: " + pr.getMethod("getErrorMessage").invoke(r));
+                return;
+            }
+            Object details = pr.getMethod("getResult").invoke(r);
+            signatures = (android.content.pm.Signature[]) details.getClass().getMethod("getSignatures").invoke(details);
+            java.lang.reflect.Constructor<?> k = android.content.pm.SigningInfo.class
+                    .getDeclaredConstructor(Class.forName("android.content.pm.SigningDetails"));
+            k.setAccessible(true);
+            signingInfo = (android.content.pm.SigningInfo) k.newInstance(details);
+        } catch (Throwable e) {
+            System.out.println("aoi: signatures: " + e);
+        }
+    }
+
+    android.content.pm.Signature[] signatures() { readSignatures(); return signatures; }
+    android.content.pm.SigningInfo signingInfo() { readSignatures(); return signingInfo; }
+
     ActivityInfo activity(String className) {
         for (PackageParser.Activity a : pkg.activities)
             if (a.info.name.equals(className)) return a.info;

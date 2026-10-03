@@ -53,22 +53,42 @@ final class Services {
             }
             if (reply != null) {
                 reply.writeNoException();
-                if (returnsSlice(data, code)) {                    /* a null one is an NPE in the manager */
-                    reply.writeInt(1);
-                    new ParceledListSlice(new ArrayList()).writeToParcel(reply, 0);
+                Method m = method(data, code);
+                Object empty = emptyReturn(m);                      /* a null one is an NPE in the manager */
+                if (m != null && m.getReturnType() == boolean.class && m.getName().startsWith("register")) {
+                    reply.writeInt(1);                              /* a listener registered: true (thermal) */
+                } else if (empty != null) {
+                    reply.writeInt(1);                              /* writeTypedObject: non-null */
+                    try {
+                        empty.getClass().getMethod("writeToParcel", Parcel.class, int.class).invoke(empty, reply, 0);
+                    } catch (Exception e) {
+                        System.out.println("aoi: stand-in " + name + ": " + e);
+                    }
                 }
             }
             return true;
         }
     }
 
-    private static final HashMap<String, Boolean> slices = new HashMap<String, Boolean>();
+    private static final HashMap<String, Method> methods = new HashMap<String, Method>();
 
-    /** Whether the AIDL call returns a ParceledListSlice. Its interface is the token
-     *  that opens the data (strict mode policy, work source, header, then the name);
-     *  the method is the Stub's TRANSACTION_ field with this code. Everything else's
-     *  zeros read as empty (arrays, lists) or as values. */
-    static boolean returnsSlice(Parcel data, int code) {
+    /** The empty value a stand-in answers when the call returns a ParceledListSlice
+     *  (ShortcutManager) or a LocaleList (LocaleManager.getApplicationLocales: AppCompat),
+     *  else null. Everything else's zeros read as empty (arrays, lists) or as values. */
+    static Object emptyReturn(Method m) {
+        Class<?> t = m != null ? m.getReturnType() : null;
+        if (t == null) return null;
+        if (ParceledListSlice.class.isAssignableFrom(t)) return new ParceledListSlice(new ArrayList());
+        if (t.getName().equals("android.os.LocaleList")) {
+            try { return t.getMethod("getEmptyLocaleList").invoke(null); } catch (Exception e) { return null; }
+        }
+        return null;
+    }
+
+    /** The interface method of an AIDL call. Its interface is the token that opens the
+     *  data (strict mode policy, work source, header, then the name); the method is the
+     *  Stub's TRANSACTION_ field with this code. */
+    static Method method(Parcel data, int code) {
         String desc = null;
         int at = data.dataPosition();
         for (int off = 12; off >= 4 && desc == null; off -= 4) {
@@ -79,13 +99,12 @@ final class Services {
             } catch (Throwable e) { /* not here */ }
         }
         data.setDataPosition(at);
-        if (desc == null) return false;
+        if (desc == null) return null;
         String key = desc + "#" + code;
-        synchronized (slices) {
-            Boolean b = slices.get(key);
-            if (b != null) return b;
+        synchronized (methods) {
+            if (methods.containsKey(key)) return methods.get(key);
         }
-        boolean r = false;
+        Method r = null;
         try {
             Class<?> itf = Class.forName(desc);
             for (Field f : Class.forName(desc + "$Stub").getDeclaredFields()) {
@@ -94,10 +113,10 @@ final class Services {
                 if (f.getInt(null) != code) continue;
                 String m = f.getName().substring("TRANSACTION_".length());
                 for (Method x : itf.getMethods())
-                    if (x.getName().equals(m)) r = ParceledListSlice.class.isAssignableFrom(x.getReturnType());
+                    if (x.getName().equals(m)) r = x;
             }
         } catch (Throwable e) { /* no Stub: zeros */ }
-        synchronized (slices) { slices.put(key, r); }
+        synchronized (methods) { methods.put(key, r); }
         return r;
     }
 
@@ -110,6 +129,7 @@ final class Services {
     /** Services managers look up by a name Context has no field for. */
     private static final String[] EXTRA = {
         "batteryproperties",                                       /* BatteryManager (else null: NewPipe) */
+        "media.camera",                                            /* CameraManager: no cameras (else it retries every second) */
     };
 
     /** Every Context service name with no service yet gets a NullService. */
