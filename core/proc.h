@@ -109,7 +109,8 @@ struct aoi_proc {
     /* if set: the host's clipboard, for aoi.Clipboard, which opens "/dev/aoi_clip/OP":
      * 's' set it to the UTF-8 text in the file `path` (guest /data/local/tmp/aoi.clip),
      * 'g' write its text there (or remove the file: no text), 'h' write "1" or "0"
-     * there: whether it has text (without reading it: iOS asks the user on a read) */
+     * there: whether it has text (without reading it: iOS asks the user on a read),
+     * 'u' open the URL in the file (a link no activity of the app handles) */
     void (*clip)(void *ctx, int op, const char *path);
     /* if set: the host's keyboard, for aoi.InputMethodManager, which opens
      * "/dev/aoi_ime/1" to show it and "/dev/aoi_ime/0" to hide it; what is typed

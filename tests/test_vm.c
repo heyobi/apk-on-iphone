@@ -28,6 +28,12 @@ int main(void)
     CHECK(!aoi_vm_ptr(&vm, a + AOI_VM_PAGE, 1, 0), "unmapped page faults");
     CHECK(aoi_vm_ptr(&vm, a, 1, AOI_PROT_R) && p[0] == 0xab, "neighbour keeps its data");
     CHECK(!aoi_vm_ptr(&vm, a + AOI_VM_PAGE - 4, 8, AOI_PROT_R), "access across into a hole faults");
+    {
+        uint64_t n = 0;
+        CHECK(aoi_vm_span(&vm, a + AOI_VM_PAGE - 64, 512, AOI_PROT_W, &n) && n == 64,
+              "span stops at a hole (a GL out-buffer at a mapping's end gets its bytes)");
+        CHECK(!aoi_vm_span(&vm, a + AOI_VM_PAGE, 8, 0, &n), "span of a hole is NULL");
+    }
     b = aoi_vm_map(&vm, a + AOI_VM_PAGE, AOI_VM_PAGE, AOI_PROT_R | AOI_PROT_W, 1);
     CHECK(b == a + AOI_VM_PAGE && p[AOI_VM_PAGE] == 0 && p[0] == 0xab, "fixed remap is zero, neighbour intact");
     CHECK(!aoi_vm_protect(&vm, a, AOI_VM_PAGE, AOI_PROT_R), "mprotect read-only");

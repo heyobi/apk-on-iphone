@@ -923,7 +923,8 @@ static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h)
 
 /* The Android app's clipboard is the iPhone's (aoi.Clipboard, core/proc.h): text it
  * copies goes to UIPasteboard, a paste reads it (iOS may ask "Allow Paste"; "has
- * text" does not read it). On the app's thread. */
+ * text" does not read it). A link the app opens with no activity of its own for it
+ * ('u') goes to iOS. On the app's thread. */
 static void clipboard_cb(int op, const char *path) {
     @autoreleasepool {
         UIPasteboard *pb = UIPasteboard.generalPasteboard;
@@ -937,6 +938,12 @@ static void clipboard_cb(int op, const char *path) {
             else [NSFileManager.defaultManager removeItemAtPath:file error:nil];
         } else if (op == 'h') {
             [(pb.hasStrings ? @"1" : @"0") writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        } else if (op == 'u') {                     /* a link the app opens: Safari (or the app iOS has for it) */
+            NSString *text = [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil];
+            NSURL *url = text ? [NSURL URLWithString:text] : nil;
+            if (url) dispatch_async(dispatch_get_main_queue(), ^{
+                [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+            });
         }
     }
 }

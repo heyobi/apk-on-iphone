@@ -5,4 +5,6 @@ public class Activity extends android.content.Context {
     protected void onPause() {}
     protected void onResume() {}
     public void setContentView(android.view.View v) {}
+    public void requestPermissions(String[] permissions, int requestCode) {}
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {}
 }

@@ -26,6 +26,10 @@ public final class GlActivity extends Activity {
 
             @Override public void onSurfaceCreated(GL10 gl, EGLConfig c) {
                 System.out.println("glapp: surface created, " + GLES20.glGetString(0x1F01));
+                java.nio.IntBuffer units = java.nio.ByteBuffer.allocateDirect(64)            /* as libGDX's */
+                        .order(java.nio.ByteOrder.nativeOrder()).asIntBuffer();              /* DefaultTextureBinder */
+                GLES20.glGetIntegerv(0x8872, units);                                         /* MAX_TEXTURE_IMAGE_UNITS */
+                System.out.println("glapp: texture units " + units.get(0));
             }
             @Override public void onSurfaceChanged(GL10 gl, int width, int height) {
                 w = width; h = height;

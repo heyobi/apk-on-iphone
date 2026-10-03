@@ -61,6 +61,21 @@ final class Clipboard extends IClipboard.Stub {
         return s;
     }
 
+    /** A link the app opens and no activity of its own handles: to the host (iOS opens
+     *  it in Safari, or in the app it has for the scheme). False without a host. */
+    static boolean openUrl(String url) {
+        try {
+            FileOutputStream out = new FileOutputStream(FILE);
+            out.write(url.getBytes("UTF-8"));
+            out.close();
+            host('u');
+        } catch (IOException e) {
+            return false;
+        }
+        FILE.delete();
+        return true;
+    }
+
     private static String textOf(ClipData c) {
         if (c == null || c.getItemCount() == 0 || c.getItemAt(0) == null) return null;
         CharSequence t = c.getItemAt(0).getText();

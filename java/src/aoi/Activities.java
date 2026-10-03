@@ -57,6 +57,15 @@ final class Activities {
         if (below != null) send(android.app.servertransaction.StopActivityItem.obtain(below.token, 0));
     }
 
+    /** A result for the activity `to` (startActivityForResult), as when the activity it
+     *  started finishes: the app sees onActivityResult / onRequestPermissionsResult. */
+    static synchronized void result(IBinder to, String who, int requestCode, int resultCode, Intent data) {
+        if (to == null || find(to) < 0) return;
+        java.util.ArrayList<android.app.ResultInfo> r = new java.util.ArrayList<android.app.ResultInfo>();
+        r.add(new android.app.ResultInfo(who, requestCode, resultCode, data));
+        send(android.app.servertransaction.ActivityResultItem.obtain(to, r));
+    }
+
     /** The app's activity an intent names: its component, or the first whose intent
      *  filter takes its action (the intent then names it); null for another app's (none
      *  here). An activity-alias stays itself: ActivityThread instantiates its

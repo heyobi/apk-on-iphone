@@ -9,7 +9,7 @@ for Windows programs.
 It is a normal sideloaded app (SideStore / AltStore / Sideloadly): no JIT, no debugger,
 no jailbreak.
 
-## What runs today (app 0.59)
+## What runs today (app 0.60)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):

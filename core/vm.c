@@ -234,10 +234,12 @@ uint8_t *aoi_vm_ptr(struct aoi_vm *vm, uint64_t addr, uint64_t len, int need)
 
 uint8_t *aoi_vm_span(struct aoi_vm *vm, uint64_t addr, uint64_t len, int need, uint64_t *n)
 {
-    uint64_t room = AOI_VM_CHUNK - (addr & (AOI_VM_CHUNK - 1));
+    uint64_t room = AOI_VM_CHUNK - (addr & (AOI_VM_CHUNK - 1)), ok, pg;
     if (len > room) len = room;
-    if (!len || !pages_ok(vm, addr, len, need)) return NULL;
-    *n = len;
+    if (!len || !pages_ok(vm, addr, 1, need)) return NULL;
+    for (pg = down(addr, AOI_VM_PAGE) + AOI_VM_PAGE, ok = pg - addr;   /* up to the first page it may not touch */
+         ok < len && pages_ok(vm, pg, 1, need); pg += AOI_VM_PAGE, ok += AOI_VM_PAGE) {}
+    *n = ok < len ? ok : len;
     return vm->chunk[CI(addr)] + (addr & (AOI_VM_CHUNK - 1));
 }
 

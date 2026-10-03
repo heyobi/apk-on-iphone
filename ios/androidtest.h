@@ -45,7 +45,7 @@ void aoi_android_back(void);
 
 /* The host's clipboard for apps (core/proc.h, clip): op 's' set it from the UTF-8 text
  * in the file at path, 'g' write its text there (remove the file: none), 'h' write
- * "1"/"0" there (has text). Called on the app's thread. */
+ * "1"/"0" there (has text), 'u' open the URL in the file. Called on the app's thread. */
 void aoi_android_set_clipboard(void (*fn)(int op, const char *path));
 
 /* The host's keyboard for apps (core/proc.h, ime): fn(1) when a text field asks for

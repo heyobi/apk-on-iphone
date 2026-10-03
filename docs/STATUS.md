@@ -1,4 +1,4 @@
-# Status and handoff (2026-10-02)
+# Status and handoff (2026-10-03)
 
 ## What runs today
 
@@ -661,6 +661,30 @@ Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
 WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
+
+**Permission requests, links, GL out-buffers at a mapping's end (app 0.60).** From
+the 0.59 phone log:
+- WhatsApp died 10 s after its snapshot resume: Activity.requestPermissions starts
+  "android.content.pm.action.REQUEST_PERMISSIONS" (the system's dialog), which had no
+  activity (ActivityNotFoundException). aoi.ActivityTaskManager answers it at once, all
+  granted, as the dialog's result (aoi.Activities.result: an ActivityResultItem to the
+  activity, so onRequestPermissionsResult runs).
+- cube.run: libGDX's DefaultTextureBinder threw "Illegal arguments": its
+  glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS) read 0. gpu/host.c passes that call 512
+  bytes (the longest answer) and copies back what the guest can take, but
+  aoi_vm_span returned nothing when any page of the range was unmapped, against its
+  own comment: a 64-byte direct buffer near the end of its mapping got no answer
+  (the layout differs on the phone's 16 KiB pages, so the host ran fine). It stops at
+  the first page it may not touch now (tests/test_vm.c). The same hit gl_str (a shader
+  source at a mapping's end read as empty) and a read()/write() whose buffer ends
+  before the requested length (EFAULT instead of a short count).
+- A web, mail or phone link (ACTION_VIEW with no activity of the app for it, e.g.
+  Qalculate's "about" links) goes to iOS: aoi.Clipboard's host channel has op 'u'
+  (ios/main.m opens it with UIApplication openURL: Safari).
+- The background dex2oat in the app's process writes the same odex, byte for byte, as
+  a run on its own (glapp, webapp): no sign that running it beside the app corrupts it.
+The test apps check both: webapp asks for CAMERA in onCreate, logs the result and then
+opens a link; glapp logs its texture units.
 
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
