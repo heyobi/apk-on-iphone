@@ -1,96 +1,129 @@
-# apk-on-iphone
+# LiquidAPK (apk-on-iphone)
 
-**Run Android apps natively on a non-jailbroken iPhone.** Not streaming, not a VM: the APK's own
-ARM64 code runs on the iPhone's CPU, the way Wine runs Windows programs on Linux.
+**Android apps on a non-jailbroken iPhone, running on the phone itself.** Not streaming,
+not a VM image: the APK's code runs on the iPhone in a no-JIT AArch64 interpreter, with
+Android's own runtime (ART), framework and libraries from AOSP 14 bundled in the app, and
+the Linux kernel, binder and Android's system services provided in-process, as Wine does
+for Windows programs.
 
-> Status: idea. Nothing here runs yet.
+It is a normal sideloaded app (SideStore / AltStore / Sideloadly): no JIT, no debugger,
+no jailbreak.
 
-## Why it might be possible now
+## What runs today (app 0.59)
 
-- **No CPU translation.** Android apps and their `.so` libraries are ARM64, like the iPhone.
-  Madeira (Windows games on iPhone) spends most of its effort translating x86; here that
-  cost is zero for native code.
-- **JIT is available.** StikDebug attaches a debugger and unlocks JIT on iOS 17-27, which
-  ART (Android's Java runtime) needs for usable speed. Without JIT, ART's interpreter
-  still works, only slower.
-- **The pieces exist as open source:** AOSP's ART and bionic, and the Madeira/Wine
-  playbook for doing all of this inside one iOS process.
+Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
+first (`build/iostest`, the same code path as the phone):
 
-## Prior art (checked 2026-10-01; full feasibility study in `docs/RESEARCH.md`)
+| App | State |
+|---|---|
+| Qalculate! (Compose, native GMP) | runs, computes, touch and keyboard; exchange rates over TLS (ECB's certificate fix in 0.56, not yet confirmed on the phone) |
+| cube.run (libGDX, OpenGL ES) | runs on the iPhone's GPU (ANGLE on Metal); no sound yet |
+| WhatsApp | starts, EULA, on to its registration screen |
+| NewPipe | main UI and navigation |
+| Molly (Signal fork), Element (Matrix) | start to their first screens |
+| WebView apps (e.g. Uptodown) | Android's WebView 119 renders pages and runs JavaScript |
+| Kiwi / Cromite (Chromium browsers) | browser UI and New Tab page; web page content not shown yet |
 
-- Cloud / remote: Redfinger, BrowserStack, Parsec to a PC emulator — streaming, not native.
-- UTM on iOS: full Android VM, needs JIT, very slow; guides like leiting2327/run-apk-on-ios.
-- Cycada (Columbia, 2010s): research compatibility layer for **iOS apps on Android** — the
-  opposite direction, but the closest design reference.
-- ib-2-3-android: iOS apps (UE3) on Android — again the opposite direction.
-- No project found that runs APKs natively on an iPhone. Closest: AIM (github.com/hahnlee/aim)
-  runs Android 16 ART on macOS on an in-process Linux syscall layer; Android Translation Layer
-  reimplements the framework on Linux.
+What an app gets: windows drawn by HWUI on the GPU (OpenGL ES through ANGLE on Metal),
+touch, the iOS keyboard, clipboard, back gesture, network (TCP/UDP, DNS, TLS with
+today's root store), storage, AndroidKeyStore, WebView, home-screen links per app, and a
+snapshot of the running app so the next launch resumes in about a second.
 
-## Status
+Not yet: **sound** (no AudioFlinger and no media codecs), **web content in Chromium
+browsers**, Google Play services, camera, notifications. `docs/STATUS.md` has the full,
+dated record of what works and what is open.
 
-- **`aoiproc`** (`make build/aoiproc`): runs **unmodified Android programs with Android's own
-  `linker64`** (AOSP 14): `toybox`, the `mksh` shell and `linkerconfig` work — **on the
-  iPhone too** (app 0.8: toybox and mksh from a bundled 9 MB root, ~80 M instructions/s,
-  no JIT). On the host it also runs **ART**: `dalvikvm64` executes a hello-world dex
-  ("Merhaba from ART") — **and on the iPhone: 86 M instructions, 1.14 s, no JIT**
-  (app 0.9 bundles a 73 MB guest root). See `docs/STATUS.md`.
-- **`gmpdemo`** (`make build/gmpdemo`): loads the **real `libgmp.so` from the Qalculate APK**,
-  links it (32 libc imports bound to a small host shim in `core/bionic.c`), and computes
-  `100000!` correctly with GMP's own code (327 M instructions, 6.8 s). All 284,953 distinct
-  instruction encodings in Qalculate's libraries match Unicorn (`build/isacheck`). `make build/gmpdemo-check` cross-checks every
-  instruction against Unicorn; see `docs/STATUS.md`.
-- **`aoirun`** (host tool, `make test`): a no-JIT AArch64 interpreter + a small Linux/aarch64
-  syscall layer + an ELF loader. It runs a real static `aarch64-linux` ELF and produces correct
-  output and exit code, at both `-O0` (loops and branches actually execute) and `-O1`. This is
-  **milestone 1**, and it runs on any host — no iPhone, no JIT — which also makes it the basis
-  of the future App-Store-safe path (the same interpreter compiled to Wasm). Coverage of the
-  A64 base set grows as real code needs it; an unimplemented instruction stops visibly rather
-  than running wrong.
-- **iPhone test app** (`ios/`, IPA from GitHub Actions): runs the APK's libgmp.so in the interpreter
-  on the phone, no JIT needed — 20000! in 0.33 s on an iPhone 16 Pro (`docs/IOS.md`).
-- **`apkscan`** (host tool, `make test`): reads the arm64-v8a `.so` files of an APK and counts
-  the instructions that cannot run unmodified on iOS — Linux `svc #0` syscalls, `tpidr_el0`
-  thread-pointer access, and x18 shadow-call-stack pushes/pops. These are exactly the sites
-  the loader will have to rewrite or trap. Run `tools/apkscan.py app.apk`.
+## Speed
 
-## Distribution
+Everything runs interpreted, about 80-90 M guest instructions/s on an iPhone 16 Pro.
+What makes apps usable is that ART does not have to interpret the app's dex code inside
+our interpreter: the app is compiled ahead of time with Android's own `dex2oat`, in the
+background, while the app already runs.
 
-This targets **sideloading** (SideStore / AltStore / Sideloadly) with JIT through StikDebug,
-like Madeira. The App Store only allows WebKit's own JIT, so an App Store build would have
-to run everything as WebAssembly inside `WKWebView`: fine for Java/Kotlin apps (ART compiled
-to Wasm), slow for native `.so` code (an ARM64 interpreter or translator in Wasm). The design
-keeps the syscall layer and framework independent of how code executes, so that path stays
-open.
+Measured on the host (`build/iostest`, NewPipe, cold start without a snapshot, to the
+first activity being idle):
 
-## Architecture sketch
+| | time |
+|---|---:|
+| uncompiled (first launch) | 43.5 s |
+| compiled with dex2oat `speed` | 25.5 s |
+| resumed from its snapshot | ~1 s |
+
+How long compiling takes, on the host (the phone is in the same range: WhatsApp's
+`verify` took 249 s there):
+
+| App (dex size) | Filter | Time | Peak memory |
+|---|---|---:|---:|
+| Qalculate (2.9 MB) | speed | ~100 s on the phone | |
+| NewPipe (11 MB) | speed | 547 s | 744 MB (with the app) |
+| Cromite (11 MB) | speed | 657 s | 983 MB (with the app) |
+| Molly (59 MB) | verify, then speed-profile | 169 s + 323 s | 313 MB |
+| Element (68 MB) | verify | 229 s | |
+| WhatsApp (86 MB) | verify | 249 s on the phone | 409 MB |
+
+Apps with up to 16 MB of dex are compiled fully (`speed`) once. Bigger ones are first
+verified, then their hot code is compiled from the app's profile (`speed-profile`) at a
+later launch: `speed` would take 40-50 minutes and over 900 MB. The compile runs on a
+low-priority thread, pauses while the phone is hot or in Low Power Mode, and steps back
+when memory is short.
+
+## Install
+
+1. GitHub → **Releases** → the latest `v0.x.N` → `ApkOnIphone.ipa` (every push to `main`
+   builds and publishes it).
+2. Install it with SideStore, AltStore or Sideloadly; they sign it with your Apple ID.
+3. Open **LiquidAPK** → **APK ekle** → pick an `.apk` from Files. Tap its card to run it;
+   swipe from the left edge for Android's back; hold a card for its home-screen link or
+   to remove it. **Logu kopyala** copies the log for a bug report.
+
+More in `docs/IOS.md`.
+
+## How it works
 
 ```
-APK ──► ART (dex → interpreter / JIT) ──► Android framework (Java)
-                    │                              │
-               bionic libc  ◄── native .so ──►  libandroid, EGL/GLES, AAudio
-                    │
-        Linux syscall layer (futex, mmap, epoll, binder…)  ← the "Wine" part
-                    │
-                 iOS (Darwin) · Metal · AVAudio · UIKit surface
+APK (dex + arm64 .so) ── ART (AOT code from dex2oat, else its interpreter)
+        │                         │
+        │                Android framework (framework.jar, HWUI, libgui …)
+        │                         │
+        │      our in-process system services (java/src/aoi: PackageManager,
+        │      ActivityManager, WindowManager, Keystore, WebView provider …)
+        │                         │
+  bionic libc, linker64 ──────────┘
+        │
+  core/: AArch64 interpreter (cpu.c, simd.c) · Linux syscalls (proc.c) · binder and
+         servicemanager (binder.c) · SurfaceFlinger (sf.c) · gralloc · snapshots (snap.c)
+        │
+  gpu/: guest OpenGL ES → ANGLE on Metal       ios/: UIKit app, launcher, input, keyboard
 ```
 
-1. **Syscall layer:** a user-space Linux ABI on Darwin — the hard core of the project.
-   Binder can be emulated in-process (all "processes" are threads of one iOS app,
-   exactly like Madeira's in-process wineserver).
-2. **Graphics:** GLES → Metal via ANGLE (ANGLE already has a Metal backend).
-3. **Framework:** a trimmed AOSP `system_server` running in-process; SurfaceFlinger
-   replaced by a single `CAMetalLayer`.
+- **CPU:** an AArch64 interpreter (base, SIMD/FP, atomics, CRC, crypto as apps need them),
+  checked instruction by instruction against Unicorn (`make difftest`). iOS forbids
+  writable-executable memory without a debugger, so there is no JIT.
+- **Kernel:** Linux syscalls on Darwin: threads (green threads on one host thread),
+  futex, mmap with a sparse 128 GiB guest address space, epoll, eventfd, timerfd, memfd,
+  sockets, signals, userfaultfd for ART's GC.
+- **Android:** the AOSP 14 GSI's own binaries (`linker64`, ART, `framework.jar`,
+  `libhwui` …), unmodified. No `system_server`: the services an app talks to are written
+  in Java and run in the app's process (`java/src/aoi`); the rest answer with defaults.
+- **Graphics:** the guest's `libGLES_aoi.so` (`guest/gles.c`) forwards OpenGL ES calls to
+  the host (ANGLE on Metal on the phone, Mesa on Linux for tests).
 
-## Milestones
+## Repository
 
-1. A static ARM64 Linux "hello world" (bionic) runs inside an iOS app.
-2. `dalvikvm` runs a `.dex` that prints to the log.
-3. A pure-Java APK draws a `View` on screen.
-4. A GLES game (NDK) renders a frame.
-5. The demo video: a real Play Store game on an iPhone.
+| | |
+|---|---|
+| `core/` | interpreter, syscalls, binder, SurfaceFlinger, snapshots |
+| `gpu/`, `guest/` | OpenGL ES bridge (host side, guest driver) |
+| `java/src/aoi/` | the in-process Android system services |
+| `ios/` | the iOS app (launcher, app runner, background compile) |
+| `tools/` | host tools: `aoiproc`, `iostest`, root building (`fetch-android.sh`, `android-root.sh`), `app-install.sh` |
+| `tests/` | `make test`, `tests/run_android.sh` (20 checks on a real Android root), `make difftest` |
+| `docs/` | `STATUS.md` (what works, dated), `RESEARCH.md` (route and decisions), `IOS.md`, `MEASUREMENTS.md` |
 
-## Risks
+Build and test on Linux: `make test`; with an Android root
+(`tools/fetch-android.sh ~/aroot`, ~800 MB download): `AOI_ANDROID_ROOT=~/aroot sh tests/run_android.sh`.
+Run an app like the phone does: `tools/app-install.sh ROOT app.apk DIR`, then
+`AOI_ANDROID_ROOT=ROOT AOI_APP_DATA=DIR ./build/iostest` (`build/iostest-gpu` for the GPU path).
 
-Size of the Android framework, Google Play Services (most apps need them; microG is the
-open replacement), Apple's sideloading limits (7-day signing, JIT only with a debugger).
+No Android or app binaries are committed: the root is built from the pinned AOSP GSI by
+the workflow and by `tools/fetch-android.sh`.
