@@ -1515,3 +1515,22 @@
 /apex/com.android.conscrypt/cacerts/fd08c599.0
 /apex/com.android.conscrypt/cacerts/fde84897.0
 /apex/com.android.conscrypt/cacerts/ffa7f1eb.0
+# The WebView (aoi.WebViewUpdate: the system image's, its 32-bit library dropped by
+# tools/android-root.sh), what it loads (MediaCodecList: libmedia_jni), and passwd (uid 10100).
+/product
+/system/fonts/NotoColorEmojiLegacy.ttf
+/system/lib64/android.hardware.tv.tuner-V2-ndk.so
+/system/lib64/libasyncio.so
+/system/lib64/libmedia_jni.so
+/system/lib64/libmediadrmmetrics_consumer.so
+/system/lib64/libmediadrmmetrics_full.so
+/system/lib64/libmtp.so
+/system/lib64/libprotobuf-cpp-full.so
+/system/lib64/libsonivox.so
+/system/lib64/libwebviewchromium_loader.so
+/system/lib64/libwebviewchromium_plat_support.so
+/system/product/app/webview/oat/arm64/webview.odex
+/system/product/app/webview/oat/arm64/webview.vdex
+/system/product/app/webview/webview.apk
+/system/product/etc/passwd
+/system/system_ext/etc/passwd

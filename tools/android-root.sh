@@ -40,6 +40,10 @@ rm -rf "$TMP"
 for part in product system_ext; do
     [ -e "$OUT/$part" ] || [ ! -d "$OUT/system/$part" ] || ln -s "/system/$part" "$OUT/$part"
 done
+# the WebView (aoi.WebViewUpdate loads it into apps): arm64 only, its 32-bit library
+# (68 MB) dropped
+W="$OUT/system/product/app/webview/webview.apk"
+[ ! -f "$W" ] || python3 "$(dirname "$0")/zipdrop.py" "$W" lib/armeabi-v7a/
 # boot images stored uncompressed: ART maps them instead of LZ4-decompressing
 # ~25 MB at every start (a third of the boot-image start in the interpreter)
 python3 "$(dirname "$0")/uncompress-art.py" "$OUT"

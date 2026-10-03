@@ -16,6 +16,38 @@ final class App {
         this.launcher = launcher;
     }
 
+    static final String WEBVIEW = "com.android.webview";
+    static final String WEBVIEW_APK = "/product/app/webview/webview.apk";
+    private static App webview;
+    private static boolean webviewRead;
+
+    /** The system image's WebView package (aoi.WebViewUpdate names it): installed as a
+     *  device has it, a system app whose libraries stay in the APK (stored, page-aligned:
+     *  loaded from there). Null without it. */
+    static synchronized App webview() {
+        if (webviewRead) return webview;
+        webviewRead = true;
+        try {
+            java.io.File apk = new java.io.File(WEBVIEW_APK);
+            if (!apk.exists()) return null;
+            PackageParser.Package p = new PackageParser().parsePackage(apk, 0);
+            ApplicationInfo ai = p.applicationInfo;
+            ai.sourceDir = ai.publicSourceDir = WEBVIEW_APK;
+            ai.dataDir = ai.credentialProtectedDataDir = "/data/data/" + p.packageName;
+            ai.deviceProtectedDataDir = "/data/user_de/0/" + p.packageName;
+            ai.nativeLibraryDir = "/product/app/webview/lib/arm64";
+            ai.nativeLibraryRootDir = "/product/app/webview/lib";
+            ai.primaryCpuAbi = "arm64-v8a";
+            ai.flags |= ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_INSTALLED;
+            ai.uid = 10099;
+            if (ai.metaData == null) ai.metaData = p.mAppMetaData;   /* com.android.webview.WebViewLibrary */
+            webview = new App(p, ai, null);
+        } catch (Throwable e) {
+            System.out.println("aoi: webview: " + e);
+        }
+        return webview;
+    }
+
     /** The provider's info, with its manifest <meta-data> (androidx.startup reads its
      *  initializers from there). */
     android.content.pm.ProviderInfo provider(String className) {

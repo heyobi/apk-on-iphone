@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""mktestapk.py OUT.apk: the GL test app (java/testapp) as an APK the app process
+"""mktestapk.py OUT.apk [web]: the GL test app (java/testapp) as an APK the app process
 can run (aoi.Main): classes.dex (javac against java/testapp/stubs, then dx as in
 tools/javadex.sh) and a binary AndroidManifest.xml written here, so no Android SDK
 is needed. No resources.arsc: the manifest holds plain values only.
 
 The manifest: package aoi.glapp, one exported activity aoi.glapp.GlActivity with
-the MAIN/LAUNCHER intent filter, minSdk 26, targetSdk 34."""
+the MAIN/LAUNCHER intent filter, minSdk 26, targetSdk 34. With "web": the WebView
+test app instead, package aoi.webapp, activity aoi.webapp.WebActivity."""
 import os
 import struct
 import subprocess
@@ -19,17 +20,18 @@ ATTR_IDS = {"name": 0x01010003, "exported": 0x01010010, "versionCode": 0x0101021
 T_STRING, T_INT, T_BOOL = 0x03, 0x10, 0x12
 
 # (tag, [(namespace?, attr, value)], children)
-MANIFEST = ("manifest", [(False, "package", "aoi.glapp"), (True, "versionCode", 1)], [
-    ("uses-sdk", [(True, "minSdkVersion", 26), (True, "targetSdkVersion", 34)], []),
-    ("application", [(True, "hasCode", True)], [
-        ("activity", [(True, "name", "aoi.glapp.GlActivity"), (True, "exported", True)], [
-            ("intent-filter", [], [
-                ("action", [(True, "name", "android.intent.action.MAIN")], []),
-                ("category", [(True, "name", "android.intent.category.LAUNCHER")], []),
+def manifest(pkg, activity):
+    return ("manifest", [(False, "package", pkg), (True, "versionCode", 1)], [
+        ("uses-sdk", [(True, "minSdkVersion", 26), (True, "targetSdkVersion", 34)], []),
+        ("application", [(True, "hasCode", True)], [
+            ("activity", [(True, "name", activity), (True, "exported", True)], [
+                ("intent-filter", [], [
+                    ("action", [(True, "name", "android.intent.action.MAIN")], []),
+                    ("category", [(True, "name", "android.intent.category.LAUNCHER")], []),
+                ]),
             ]),
         ]),
-    ]),
-])
+    ])
 
 
 def binary_xml(root):
@@ -92,7 +94,7 @@ def binary_xml(root):
     return struct.pack("<HHI", 0x0003, 8, 8 + len(content)) + content
 
 
-def dex(top, tmp):
+def dex(top, tmp, app):
     dx = os.path.join(top, "build", "dalvik-dx.jar")
     if not os.path.exists(dx):        # tools/javadex.sh fetches it
         subprocess.check_call(["sh", os.path.join(top, "tools", "javadex.sh"), os.path.join(tmp, "aoi.dex")])
@@ -101,7 +103,7 @@ def dex(top, tmp):
     stubs, classes = os.path.join(tmp, "stubs"), os.path.join(tmp, "classes")
     subprocess.check_call(["javac", "-nowarn", "--release", "8", "-d", stubs] + java(os.path.join(top, "java/testapp/stubs")))
     subprocess.check_call(["javac", "-nowarn", "--release", "8", "-cp", stubs, "-d", classes]
-                          + java(os.path.join(top, "java/testapp/src")))
+                          + java(os.path.join(top, "java/testapp/src/aoi", app)))
     out = os.path.join(tmp, "classes.dex")
     subprocess.check_call(["java", "-cp", dx, "com.android.dx.command.Main", "--dex", "--min-sdk-version=26",
                            "--output=" + out, classes])
@@ -111,10 +113,12 @@ def dex(top, tmp):
 def main():
     out = sys.argv[1]
     top = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    app = "webapp" if sys.argv[2:3] == ["web"] else "glapp"
+    activity = "aoi.webapp.WebActivity" if app == "webapp" else "aoi.glapp.GlActivity"
     with tempfile.TemporaryDirectory() as tmp:
-        d = dex(top, tmp)
+        d = dex(top, tmp, app)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("AndroidManifest.xml", binary_xml(MANIFEST))
+        z.writestr("AndroidManifest.xml", binary_xml(manifest("aoi." + app, activity)))
         z.writestr("classes.dex", d)
 
 

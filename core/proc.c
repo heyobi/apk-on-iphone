@@ -30,12 +30,15 @@
 #include <time.h>
 #include <unistd.h>
 
-/* 64 GiB of guest addresses (reserved, not committed): scudo alone reserves
- * 8+ GiB up front. Mappings without an address hint go above 4 GiB, as on a
- * real kernel, which leaves the low 4 GiB to requests that ask for it (ART's
- * heap, whose 32-bit references must point below 4 GiB). */
-#define GUEST_SPACE (64ULL << 30)
+/* 128 GiB of guest addresses (reserved, not committed): scudo alone reserves
+ * 8+ GiB up front, Chromium's PartitionAlloc two 16 GiB pools and V8's sandbox
+ * 8 GiB more, 4 GiB-aligned (WebView; 64 GiB had no room left for it). Mappings
+ * without an address hint go above 4 GiB, as on a real kernel, which leaves the
+ * low 4 GiB to requests that ask for it (ART's heap, whose 32-bit references must
+ * point below 4 GiB). */
+#define GUEST_SPACE (128ULL << 30)
 #define HIGH_START  (4ULL << 30)
+#define SHARED_PAGE 0x4000u                     /* core/vm.c's host page: shared file mappings */
 #define IS_ERR(v)   ((v) >= (uint64_t)-4096)
 #define STACK_TOP   (GUEST_SPACE - (1ULL << 30))
 #define SIGTRAMP    STACK_TOP                   /* one page: rt_sigreturn, the vDSO's role */
@@ -369,7 +372,20 @@ static int host_oflags(uint64_t f)
 }
 
 /* struct stat, Linux arm64 layout (128 bytes). */
-static void lx_stat(const struct stat *st, uint8_t *o)
+/* Who owns a guest file, as on a device: the app its own data, root the rest -
+ * bionic only maps a property area owned by root, and ART (as an app) refuses a dex
+ * file the app could write: the APK in /data/app and aoi.dex are not the app's. */
+static uint32_t owner(const struct aoi_proc *p, const char *g)
+{
+    static const char *const mine[] = { "/data/data/", "/data/user/", "/data/user_de/", "/data/media/",
+                                        "/data/misc/profiles/", NULL };
+    int i;
+    for (i = 0; mine[i]; i++)
+        if (!strncmp(g, mine[i], strlen(mine[i]))) return p->uid;
+    return 0;
+}
+
+static void lx_stat(const struct stat *st, uint8_t *o, uint32_t uid)
 {
     uint64_t v;
     uint32_t w;
@@ -379,7 +395,7 @@ static void lx_stat(const struct stat *st, uint8_t *o)
     v = (uint64_t)st->st_ino; memcpy(o + 8, &v, 8);
     w = (uint32_t)st->st_mode; memcpy(o + 16, &w, 4);
     w = (uint32_t)st->st_nlink; memcpy(o + 20, &w, 4);
-    w = 0; memcpy(o + 24, &w, 4); memcpy(o + 28, &w, 4);       /* uid, gid: root */
+    w = uid; memcpy(o + 24, &w, 4); memcpy(o + 28, &w, 4);     /* uid, gid: the process's (its files) */
     v = (uint64_t)st->st_rdev; memcpy(o + 32, &v, 8);
     sv = (int64_t)st->st_size; memcpy(o + 48, &sv, 8);
     w = (uint32_t)st->st_blksize; memcpy(o + 56, &w, 4);
@@ -1234,7 +1250,7 @@ static int proc_file(struct aoi_proc *p, const char *g)
 static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int prot, int flags,
                          int64_t fd, uint64_t off)
 {
-    int fixed = (flags & 0x10) != 0, noreplace = (flags & 0x100000) != 0;
+    int fixed = (flags & 0x10) != 0, noreplace = (flags & 0x100000) != 0, shared = 0;
     uint64_t a, i;
     struct aoi_proc_fd *f = NULL;
     if (!len || off % PAGE) return err(L_EINVAL);
@@ -1244,6 +1260,22 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
             a = aoi_vm_map(&p->vm, fixed ? addr : (addr ? down(addr, PAGE) : 0), len, prot & 7, fixed);
             if (!IS_ERR(a)) { aoi_binder_mapped(p, a, up(len, PAGE)); note_map(p, a, len, 0, f->path); }
             return a;
+        }
+        if ((flags & 3) == 1 && (prot & 2) && (f->seals & 0x18))   /* MAP_SHARED, PROT_WRITE on a memfd sealed */
+            return err(L_EPERM);                                   /* F_SEAL_(FUTURE_)WRITE: how Chromium tells
+                                                                    * a read-only region (ashmem_get_prot_region) */
+        if ((flags & 3) == 1) shared = 1;                          /* MAP_SHARED: the file's own pages */
+    }
+    if (shared && !fixed && !noreplace) {
+        /* where the file's 16 KiB host pages can be mapped shared: an address that agrees
+         * with the offset modulo the host page, the rest of the last host page reserved */
+        uint64_t ho = off % SHARED_PAGE, span = up(ho + len, SHARED_PAGE) + SHARED_PAGE, b = 0, s0, e0;
+        b = aoi_vm_map(&p->vm, addr ? down(addr, PAGE) : 0, span, 0, 0);
+        if (!IS_ERR(b)) {
+            s0 = up(b, SHARED_PAGE); e0 = s0 + up(ho + len, SHARED_PAGE);
+            if (s0 > b) aoi_vm_unmap(&p->vm, b, s0 - b);
+            if (b + span > e0) aoi_vm_unmap(&p->vm, e0, b + span - e0);
+            addr = s0 + ho; fixed = 1; shared = 2;                 /* over its own reservation */
         }
     }
     if (noreplace) {
@@ -1259,7 +1291,7 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
     if (!f) return a;
     if (f) {                                                       /* private, copy-on-write view of the file */
         struct stat st;
-        int e = fstat(f->host, &st) ? -errno : aoi_vm_map_file(&p->vm, a, len, f->host, off, (uint64_t)st.st_size);
+        int e = fstat(f->host, &st) ? -errno : aoi_vm_map_file(&p->vm, a, len, f->host, off, (uint64_t)st.st_size, shared);
         if (e < 0) { aoi_vm_unmap(&p->vm, a, len); errno = -e; return herr(); }
         note_map(p, a, len, off, f->path);
         {                                                          /* Skia's raster stages natively (core/hle.c): */
@@ -2097,7 +2129,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_fstat:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (fstat(f->host, &st)) { r = herr(); break; }
-        lx_stat(&st, sbuf);
+        lx_stat(&st, sbuf, owner(p, f->path));
         r = put(p, a1, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
     case NR_newfstatat: {
@@ -2106,12 +2138,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (empty && gstr(p, a1, path0, 2) && !path0[0]) {
             if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
             if (fstat(f->host, &st)) { r = herr(); break; }
+            snprintf(g, AOI_PATH, "%s", f->path);
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
             to_host(p, g, h);
             if ((a3 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
-        lx_stat(&st, sbuf);
+        lx_stat(&st, sbuf, owner(p, g));
         r = put(p, a2, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
     }
@@ -2119,6 +2152,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, 1, g))) { r = err(rc); break; }
         to_host(p, g, h);
         r = access(h, (int)a2 & 7) ? herr() : 0;
+        if (!r && (a2 & 2) && p->uid && owner(p, g) != p->uid && !stat(h, &st) && S_ISREG(st.st_mode))
+            r = err(L_EACCES);                                     /* (W_OK) not the app's file */
         break;
     case NR_readlinkat: {
         char path[AOI_PATH], target[AOI_PATH];
@@ -2710,7 +2745,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_getppid: r = 1; break;
-    case NR_getuid: case NR_geteuid: case NR_getgid: case NR_getegid: r = 0; break;
+    case NR_getuid: case NR_geteuid: case NR_getgid: case NR_getegid: r = p->uid; break;
+    case 148: case 150: {                                          /* getresuid, getresgid */
+        uint32_t u = p->uid;
+        r = put(p, a0, &u, 4) && put(p, a1, &u, 4) && put(p, a2, &u, 4) ? 0 : err(L_EFAULT);
+        break;
+    }
     case NR_umask: r = 022; break;
     case NR_set_robust_list: r = 0; break;
     case NR_futex: {

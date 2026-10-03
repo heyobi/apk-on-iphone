@@ -204,7 +204,7 @@ static const char *load_memory(struct aoi_proc *p, FILE *f)
                 end++; fend += PAGE;
             }
             if ((fd = aoi_proc_open_host(p, p->maps[idx].path, O_RDONLY)) < 0) return "a mapped file is gone";
-            if (fstat(fd, &st) || aoi_vm_map_file(vm, pg * PAGE, (end - pg) * PAGE, fd, fo, (uint64_t)st.st_size) < 0) {
+            if (fstat(fd, &st) || aoi_vm_map_file(vm, pg * PAGE, (end - pg) * PAGE, fd, fo, (uint64_t)st.st_size, 0) < 0) {
                 close(fd);
                 return "cannot map a file again";
             }
@@ -395,6 +395,12 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path)
     uint32_t sz = (uint32_t)sizeof *p, nep = 0;
     int i, j;
 
+    for (i = 0; i < p->nshm; i++)                           /* one file shared by two live mappings: */
+        for (j = 0; j < i; j++) {                           /* restored, they would be two copies */
+            struct stat a, b;
+            if (!fstat(p->shm[i].fd, &a) && !fstat(p->shm[j].fd, &b) && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
+                return "shared memory mapped twice (Chromium's GPU command buffers): not saved";
+        }
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     if (!(f = fopen(tmp, "wb"))) return "cannot write the snapshot";
     w(f, SNAP_MAGIC, 8); w(f, AOI_SNAP_BUILD, sizeof AOI_SNAP_BUILD); w(f, &sz, 4);

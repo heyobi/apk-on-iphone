@@ -203,6 +203,7 @@ int main(int argc, char **argv)
     if (getenv("AOI_DATA") && !getenv("AOI_SNAPSHOT_LOAD"))     /* guest /data is this host directory */
         snprintf(proc.data, sizeof proc.data, "%s", getenv("AOI_DATA"));
     if (getenv("AOI_SNAPSHOT_SAVE")) snprintf(proc.snap_path, sizeof proc.snap_path, "%s", getenv("AOI_SNAPSHOT_SAVE"));
+    if (getenv("AOI_UID")) proc.uid = (uint32_t)atoi(getenv("AOI_UID"));     /* an app's uid (10100), not root */
     if (trace) proc.trace = stderr;
 #ifdef AOI_DEBUG
     { extern uint64_t *aoi_pcring; if (getenv("AOI_PCRING")) aoi_pcring = calloc(1024, 8); }

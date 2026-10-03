@@ -27,8 +27,9 @@ const char *aoi_vm_init(struct aoi_vm *vm, uint64_t size)
     memset(vm, 0, sizeof *vm);
     size = up(size, AOI_VM_CHUNK);
     if (!(vm->prot = calloc(PG(size), 1))) return "no memory for the page table";
-    if (!(vm->chunk = calloc(CI(size), sizeof *vm->chunk)) || !(vm->filemap = calloc(CI(size), 1))) {
-        free(vm->chunk); free(vm->prot); vm->chunk = NULL; vm->prot = NULL;
+    if (!(vm->chunk = calloc(CI(size), sizeof *vm->chunk)) || !(vm->filemap = calloc(CI(size), 1))
+        || !(vm->shared = calloc(size / HOST_PAGE / 8 + 1, 1))) {
+        free(vm->chunk); free(vm->prot); free(vm->filemap); vm->chunk = NULL; vm->prot = NULL; vm->filemap = NULL;
         return "no memory for the chunk table";
     }
     vm->size = size;
@@ -48,6 +49,7 @@ void aoi_vm_free(struct aoi_vm *vm)
     free(vm->chunk);
     free(vm->prot);
     free(vm->filemap);
+    free(vm->shared);
     memset(vm, 0, sizeof *vm);
 }
 
@@ -68,6 +70,37 @@ int aoi_vm_chunk_alloc(struct aoi_vm *vm, uint64_t ci)
     return ci < CI(vm->size) && chunk_get(vm, ci);
 }
 
+static int host_shared(const struct aoi_vm *vm, uint64_t a)
+{
+    uint64_t i = a / HOST_PAGE;
+    return vm->shared[i >> 3] >> (i & 7) & 1;
+}
+
+static void set_shared(struct aoi_vm *vm, uint64_t a, int on)
+{
+    uint64_t i = a / HOST_PAGE;
+    if (on) vm->shared[i >> 3] |= (uint8_t)(1u << (i & 7));
+    else vm->shared[i >> 3] &= (uint8_t)~(1u << (i & 7));
+}
+
+/* The host pages under [addr, addr+len) (one chunk) that are a shared file mapping
+ * become private memory with the same bytes: what the caller then clears is no
+ * longer the file (another mapping of it keeps its bytes). */
+static void unshare(struct aoi_vm *vm, uint64_t addr, uint64_t len)
+{
+    static _Thread_local uint8_t keep[HOST_PAGE];
+    uint64_t hp;
+    for (hp = down(addr, HOST_PAGE); hp < addr + len; hp += HOST_PAGE) {
+        uint8_t *h;
+        if (!host_shared(vm, hp)) continue;
+        h = vm->chunk[CI(hp)] + (hp & (AOI_VM_CHUNK - 1));
+        memcpy(keep, h, HOST_PAGE);
+        if (mmap(h, HOST_PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED)
+            memcpy(h, keep, HOST_PAGE);
+        set_shared(vm, hp, 0);
+    }
+}
+
 /* Fresh zero bytes for [addr, addr+len) inside one existing chunk: whole host
  * pages are replaced by new anonymous memory (which also returns them to the
  * system), the ragged edges are cleared. */
@@ -76,6 +109,7 @@ static void chunk_clear(struct aoi_vm *vm, uint64_t addr, uint64_t len)
     uint8_t *base = vm->chunk[CI(addr)];
     uint64_t off = addr & (AOI_VM_CHUNK - 1), end = off + len;
     uint64_t ia = up(off, HOST_PAGE), ie = down(end, HOST_PAGE);
+    unshare(vm, addr, len);
     if (ie > ia) {
         if (mmap(base + ia, ie - ia, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED)
             memset(base + ia, 0, ie - ia);
@@ -95,6 +129,7 @@ static void chunk_release(struct aoi_vm *vm, uint64_t ci)
     munmap(vm->chunk[ci], AOI_VM_CHUNK);
     vm->chunk[ci] = NULL;
     vm->filemap[ci] = 0;
+    for (i = 0; i < AOI_VM_CHUNK; i += HOST_PAGE) set_shared(vm, (ci << AOI_VM_CHUNK_SHIFT) + i, 0);
     vm->nchunks--;
 }
 
@@ -235,7 +270,7 @@ int aoi_vm_write(struct aoi_vm *vm, uint64_t addr, const void *src, uint64_t len
 
 uint64_t aoi_vm_mapped_bytes, aoi_vm_copied_bytes;     /* statistics: file pages mapped / copied */
 
-int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize)
+int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize, int shared)
 {
     uint64_t o = 0;
     int direct = (addr - off) % HOST_PAGE == 0;
@@ -249,10 +284,21 @@ int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint
         /* host pages wholly inside both this piece and the file: map them */
         if (direct && (hp = up(fo, HOST_PAGE)) < fsize) {
             uint64_t he = down(fo + n < fsize ? fo + n : fsize, HOST_PAGE);
-            if (he > hp && mmap(h + (hp - fo), he - hp, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd,
-                                (off_t)hp) != MAP_FAILED) {
-                uint64_t head = hp - fo, tail = fo + n - he;
+            if (shared == 2) {                                      /* the end's host page too, and the */
+                static uint64_t sys_page;                           /* file's last partial page (a whole */
+                if (!sys_page) sys_page = (uint64_t)sysconf(_SC_PAGESIZE);   /* system page past EOF: SIGBUS) */
+                he = up(fo + n, HOST_PAGE);
+                if (he > up(fsize, sys_page)) he = up(fsize, sys_page);
+                if (((a + (he - fo) - 1) ^ a) >> AOI_VM_CHUNK_SHIFT) he = fo + n;   /* not past the chunk */
+            }
+            int sh = shared && he > hp && mmap(h + (hp - fo), he - hp, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                                               fd, (off_t)hp) != MAP_FAILED;   /* (not on a read-only fd) */
+            if (!sh && shared == 2) he = down(fo + n < fsize ? fo + n : fsize, HOST_PAGE);
+            if (sh || (he > hp && mmap(h + (hp - fo), he - hp, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd,
+                                       (off_t)hp) != MAP_FAILED)) {
+                uint64_t head = hp - fo, tail = fo + n > he ? fo + n - he : 0, x;
                 ssize_t g;
+                if (sh) for (x = hp; x < he; x += HOST_PAGE) set_shared(vm, a + (x - fo), 1);
                 aoi_vm_mapped_bytes += he - hp;
                 vm->filemap[CI(a)] = 1;
                 aoi_vm_copied_bytes += head + tail;
@@ -307,6 +353,13 @@ void aoi_vm_move(struct aoi_vm *vm, uint64_t dst, uint64_t src, uint64_t len)
             vm->chunk[CI(d)] = vm->chunk[CI(s)];
             vm->chunk[CI(s)] = t;
             { uint8_t fm = vm->filemap[CI(d)]; vm->filemap[CI(d)] = vm->filemap[CI(s)]; vm->filemap[CI(s)] = fm; }
+            {
+                uint64_t x;
+                for (x = 0; x < AOI_VM_CHUNK; x += HOST_PAGE) {
+                    int sd = host_shared(vm, d + x), ss = host_shared(vm, s + x);
+                    set_shared(vm, d + x, ss); set_shared(vm, s + x, sd);
+                }
+            }
             chunk_clear(vm, s, AOI_VM_CHUNK);
             if (aoi_vm_chunk_hook) {
                 aoi_vm_chunk_hook(vm, d, vm->chunk[CI(d)], 1);
@@ -320,7 +373,7 @@ void aoi_vm_move(struct aoi_vm *vm, uint64_t dst, uint64_t src, uint64_t len)
         if (vm->prot[PG(s)] && vm->chunk[CI(s)] && vm->prot[PG(d)] && vm->chunk[CI(d)]) {
             memcpy(buf, vm->chunk[CI(s)] + (s & (AOI_VM_CHUNK - 1)), (size_t)n);
             memcpy(vm->chunk[CI(d)] + (d & (AOI_VM_CHUNK - 1)), buf, (size_t)n);
-            memset(vm->chunk[CI(s)] + (s & (AOI_VM_CHUNK - 1)), 0, (size_t)n);
+            if (!host_shared(vm, s)) memset(vm->chunk[CI(s)] + (s & (AOI_VM_CHUNK - 1)), 0, (size_t)n);
         }
         o += n;
     }
@@ -334,8 +387,11 @@ void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len)
      * to the system instead of writing (and so allocating) them */
     for (p = down(addr, AOI_VM_PAGE), e = up(addr + len, AOI_VM_PAGE); p < e; p = q) {
         uint64_t ce = down(p, AOI_VM_CHUNK) + AOI_VM_CHUNK;
-        if (!vm->prot[PG(p)] || !vm->chunk[CI(p)]) { q = p + AOI_VM_PAGE; continue; }
-        for (q = p; q < e && q < ce && vm->prot[PG(q)]; q += AOI_VM_PAGE) {}
+        if (!vm->prot[PG(p)] || !vm->chunk[CI(p)] || host_shared(vm, p)) {   /* a shared file's page */
+            q = p + AOI_VM_PAGE;                                           /* keeps its bytes, as Linux's */
+            continue;                                                      /* MADV_DONTNEED there */
+        }
+        for (q = p; q < e && q < ce && vm->prot[PG(q)] && !host_shared(vm, q); q += AOI_VM_PAGE) {}
         chunk_clear(vm, p, q - p);
     }
 }

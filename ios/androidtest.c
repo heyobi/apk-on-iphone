@@ -354,6 +354,8 @@ void aoi_android_back(void)
  * exit code, or -1 (logged). frame: SurfaceFlinger's frames (the app), or NULL. */
 /* The launch a snapshot was taken for: the APK and its compiled code. A snapshot is
  * loaded only with the same key next to it (the build is checked inside). */
+#define APP_UID 10100                      /* the app's uid (aoi.Main's ApplicationInfo.uid): not root, as WebView wants */
+
 static void snap_key(const char *datadir, char *key, size_t n)
 {
     char a[1024], o[1024];
@@ -368,8 +370,8 @@ static void snap_key(const char *datadir, char *key, size_t n)
         snprintf(d, sizeof d, "%s/local/tmp/aoi.display", datadir);
         if ((f = fopen(d, "r"))) { if (!fgets(disp, sizeof disp, f)) disp[0] = 0; fclose(f); }
         disp[strcspn(disp, "\n")] = 0;
-        snprintf(key, n, "apk %lld %lld odex %lld %lld display %s gpu %d\n", (long long)sa.st_size, (long long)sa.st_mtime,
-                 (long long)so.st_size, (long long)so.st_mtime, disp, gpu_on());
+        snprintf(key, n, "apk %lld %lld odex %lld %lld display %s gpu %d uid %d\n", (long long)sa.st_size, (long long)sa.st_mtime,
+                 (long long)so.st_size, (long long)so.st_mtime, disp, gpu_on(), APP_UID);
     }
 }
 
@@ -451,6 +453,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     if (snap && !resumed) snprintf(p->snap_path, sizeof p->snap_path, "%s", snap);
     if (snap) snprintf(snap_path, sizeof snap_path, "%s", snap);
     snprintf(p->data, sizeof p->data, "%s", datadir);
+    p->uid = frame ? APP_UID : 0;       /* dex2oat and the tests: root, as installd's */
     p->uffd = 1;                        /* ART's CMC GC and the boot image */
     p->frame = frame;
     p->home = home;
@@ -464,6 +467,8 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     p->fd[2].host = fd;
     p->log = fdopen(dup(fd), "w");
     if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
+    if (frame && getenv("AOI_APP_TRACE") && (p->trace = fopen(getenv("AOI_APP_TRACE"), "w")))   /* every syscall (host tests) */
+        setvbuf(p->trace, NULL, _IOLBF, 0);
     if (resumed) aoi_sf_redraw(p);      /* the screen it was showing */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     if (frame) {

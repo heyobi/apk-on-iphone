@@ -58,6 +58,8 @@ public final class Main {
         ServiceManager.addService("power", new PowerService());
         ServiceManager.addService("connectivity", new ConnectivityService());
         ServiceManager.addService("audio", new AudioService());
+        ServiceManager.addService(WebViewUpdate.NAME, new WebViewUpdate());
+        ServiceManager.addService(MediaPlayerService.NAME, new MediaPlayerService());
         ServiceManager.addService(Keystore.NAME, new Keystore("/data/misc/keystore/aoi"));
         Keystore.installProvider();                                /* AndroidKeyStore (the zygote's job) */
         Services.standIns();                                       /* the rest: default answers */

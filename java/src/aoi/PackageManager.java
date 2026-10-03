@@ -36,14 +36,26 @@ final class PackageManager extends IPackageManager.Stub {
 
     @Override public void notifyDexLoad(String loading, Map map, String isa) {}
 
+    /** Ours, or the WebView package (WebViewFactory loads it into the app). */
+    private App find(String name) {
+        if (ours(name)) return app;
+        return App.WEBVIEW.equals(name) ? App.webview() : null;
+    }
+
     @Override
     public ApplicationInfo getApplicationInfo(String name, long flags, int userId) {
-        return ours(name) ? app.info : null;
+        App a = find(name);
+        return a != null ? a.info : null;
     }
 
     @Override
     public PackageInfo getPackageInfo(String name, long flags, int userId) {
-        if (!ours(name)) return null;
+        App a = find(name);
+        return a != null ? packageInfo(a, flags) : null;
+    }
+
+    static PackageInfo packageInfo(App app, long flags) {
+        String name = app.pkg.packageName;
         PackageInfo pi = new PackageInfo();
         pi.packageName = name;
         pi.versionCode = app.pkg.mVersionCode;
@@ -78,7 +90,9 @@ final class PackageManager extends IPackageManager.Stub {
     public ActivityInfo getReceiverInfo(ComponentName c, long flags, int userId) {
         return ours(c.getPackageName()) ? app.receiver(c.getClassName()) : null;
     }
-    @Override public boolean hasSystemFeature(String name, int version) { return false; }
+    @Override public boolean hasSystemFeature(String name, int version) {
+        return "android.software.webview".equals(name) && App.webview() != null;   /* WebViewFactory asks */
+    }
 
     /** type 0: the certificate's SHA-256, 1: the X.509 certificate itself. */
     @Override

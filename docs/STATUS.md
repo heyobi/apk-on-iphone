@@ -585,6 +585,45 @@ ios/android-files.txt ships them. aoi.CaTest (tests/run_android.sh, 20 checks): 
 system TrustManager has them and trusts a chain ending in R46. Not checked against
 ECB itself from here (the cloud's egress re-signs TLS): the phone's log will tell.
 
+**WebView (app 0.57).** Uptodown died on "WebView is not allowed in privileged
+processes": the guest ran as uid 0. Now a WebView page renders with JavaScript
+(tools/mktestapk.py OUT.apk web: aoi.webapp loads a page from a string; here: first
+frame, page finished, `title "web 42"`, the text drawn by the GPU). What it took:
+- **The app runs as uid 10100** (aoi.Main's ApplicationInfo.uid; struct aoi_proc uid:
+  getuid & co., getresuid; dex2oat and the tests stay root). Files are owned as on a
+  device (core/proc.c owner()): the app's /data/data, /data/user*, /data/media,
+  /data/misc/profiles; root the rest - bionic only maps a property area owned by root,
+  and ART refuses a dex the app could write (faccessat W_OK on another's file: EACCES).
+  aoiproc AOI_UID=10100 runs a program so.
+- **The provider:** the GSI's AOSP WebView 119 (/product/app/webview/webview.apk;
+  tools/android-root.sh drops its 32-bit library with tools/zipdrop.py, which keeps
+  stored entries 4 KiB-aligned: 185 to 118 MB). aoi.WebViewUpdate ("webviewupdate")
+  names it, multiprocess off (its renderer in the app's process); aoi.PackageManager
+  knows com.android.webview (App.webview()) and has android.software.webview.
+- **Read-only shared memory:** Chromium tells a read-only region by a writable
+  MAP_SHARED mmap failing: on a memfd sealed F_SEAL_WRITE/F_SEAL_FUTURE_WRITE it is
+  EPERM now.
+- **128 GiB of guest addresses** (was 64): PartitionAlloc's two 16 GiB pools left no
+  room for V8's sandbox (8 GiB, 4 GiB-aligned: "V8 process OOM").
+- **"media.player"** (aoi.MediaPlayerService): an empty codec list. Without it
+  libstagefright builds the list in-process from the Codec2 HALs, which abort without
+  hwservicemanager (Chromium reads it at start).
+- **MAP_SHARED is shared:** two mappings of one memfd (Chromium's GPU command buffer:
+  the renderer writes, the GPU thread reads) were two copies ("raster_decoder Error: 1
+  for Command Noop", tiles never drawn). core/vm.c maps a shared file's 16 KiB host
+  pages MAP_SHARED (aoi_vm_map_file shared; a bit per host page in vm->shared), and
+  sys_mmap places a non-fixed MAP_SHARED mapping where address and offset agree
+  modulo 16 KiB, with the rest of its last host page reserved (a few KiB of address
+  space stay reserved after munmap). Unmapping or mapping over such a page gives it
+  private memory first (never zeros into the file); MADV_DONTNEED leaves it (Linux
+  does). A read-only fd falls back to a private mapping. A snapshot is refused while
+  one file is mapped twice (restored they would be two copies): WebView apps start
+  cold each time for now.
+Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
+WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
+Molly still reach the screens they did. The phone root gains the WebView, its
+libraries and libmedia_jni's (ios/android-files.txt, the end).
+
 **WhatsApp to its welcome screen; games keep their GL context (app 0.46).** 0.45 on
 the phone: no more libart faults. WhatsApp starts (EULA, "Agree and continue"), with
 three things in its way, two fixed here:

@@ -67,6 +67,11 @@ IOS_SRC := ios/gmptest.c ios/vmprobe.c ios/androidtest.c core/apk.c
 build/iostest: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h | build
 	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) -lm -lz -lpthread
 
+# The same with the host's OpenGL ES (Mesa) as the app's GPU, as on the phone: HWUI's GPU
+# pipeline, WebView's in-process GPU thread.
+build/iostest-gpu: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h gpu/host.c gpu/gl_gen.h | build
+	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) $(AOIPROC_GPU) -lm -lz -lpthread
+
 build/test_vm: tests/test_vm.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tests/test_vm.c $(CORE) -lm
 

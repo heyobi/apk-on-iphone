@@ -41,6 +41,8 @@ struct aoi_vm {
     uint64_t hint;                  /* where the next non-fixed mapping is searched from */
     uint64_t nchunks;               /* chunks currently allocated (diagnostics) */
     uint8_t *filemap;               /* per chunk: a file was mapped into its host memory */
+    uint8_t *shared;                /* per 16 KiB host page, one bit: a shared mapping of a file
+                                     * (MAP_SHARED: every guest mapping of it sees the same bytes) */
 };
 
 /* Debug hook (the Unicorn oracle): called when a chunk gets host memory
@@ -79,8 +81,13 @@ void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len);
 /* Fills the mapped range [addr, addr+len) with the bytes of host file `fd` from
  * `off` (zeros past `fsize`). Where guest address and file offset agree modulo the
  * host page, whole host pages inside the file are the file itself, mapped
- * privately (demand-paged, copy-on-write), not a copy. 0, or -errno of pread. */
-int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize);
+ * privately (demand-paged, copy-on-write), not a copy. 0, or -errno of pread.
+ * shared: those host pages are mapped shared instead, so two guest mappings of one
+ * file (Chromium's command buffers: one side writes, the GPU thread reads) see each
+ * other's writes; 2: also the host page that holds the range's end, whose guest pages
+ * past `len` the caller reserved for it, and the file's last partial page. Unmapping,
+ * or mapping over, such a page gives it fresh memory, never zeros in the file. */
+int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize, int shared);
 
 /* Marks the mapped pages of a range missing (on: their bytes become zero) or present. */
 void aoi_vm_set_missing(struct aoi_vm *vm, uint64_t addr, uint64_t len, int on);
