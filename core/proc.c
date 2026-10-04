@@ -317,11 +317,27 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
         if (!p->fd[i].used) {
             p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
             p->fd[i].nonblock = 0; p->fd[i].count = 0; p->fd[i].sem = 0; p->fd[i].ep = NULL;
-            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = p->fd[i].seals = 0;
+            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = p->fd[i].seals = p->fd[i].evid = 0;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
     return -1;
+}
+
+/* An eventfd's counter: shared by its fds (aoi_proc.ev), or the fd's own. */
+static uint64_t *ev_count(struct aoi_proc *p, struct aoi_proc_fd *f)
+{
+    return f->evid > 0 && f->evid < AOI_PROC_EVFDS ? &p->ev[f->evid].count : &f->count;
+}
+
+static int ev_sem(struct aoi_proc *p, struct aoi_proc_fd *f)
+{
+    return f->evid > 0 && f->evid < AOI_PROC_EVFDS ? p->ev[f->evid].sem : f->sem;
+}
+
+static void ev_ref(struct aoi_proc *p, struct aoi_proc_fd *f, int d)
+{
+    if (f->evid > 0 && f->evid < AOI_PROC_EVFDS && (p->ev[f->evid].refs += d) < 0) p->ev[f->evid].refs = 0;
 }
 
 static int proc_file(struct aoi_proc *p, const char *g);
@@ -1331,7 +1347,16 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
         note_map(p, a, len, off, f->path);
         {                                                          /* Skia's raster stages natively (core/hle.c): */
             size_t n = strlen(f->path);                            /* libhwui's code segment (vaddr = offset) */
-            if ((prot & 4) && n >= 24 && !strcmp(f->path + n - 24, "/system/lib64/libhwui.so") && a >= off) {
+            const char *w = getenv("AOI_WATCH_LIB");             /* (host debugging: core/hle.h) */
+            size_t wn = w ? strlen(w) : 0;
+            if (w && (prot & 4) && n > wn && f->path[n - wn - 1] == '/' && !strcmp(f->path + n - wn, w) && a >= off) {
+                int k;
+                aoi_hle_watch = 1;
+                for (k = -1; k < AOI_PROC_THREADS; k++) {
+                    struct aoi_cpu *c = k < 0 ? &p->cpu : &p->th[k].cpu;
+                    c->hle_base = a - off; c->hle_lo = a; c->hle_hi = a + len;
+                }
+            } else if (!w && (prot & 4) && n >= 24 && !strcmp(f->path + n - 24, "/system/lib64/libhwui.so") && a >= off) {
                 int k;
                 aoi_hle_attach(&p->cpu, a - off);
                 for (k = 0; k < AOI_PROC_THREADS; k++) aoi_hle_attach(&p->th[k].cpu, a - off);
@@ -1387,8 +1412,8 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         if (f->count) r |= EP_IN;
         break;
     case AOI_FD_EVENTFD:
-        if (f->count) r |= EP_IN;
-        if (f->count < 0xfffffffffffffffeULL) r |= EP_OUT;
+        if (*ev_count(p, f)) r |= EP_IN;
+        if (*ev_count(p, f) < 0xfffffffffffffffeULL) r |= EP_OUT;
         break;
     case AOI_FD_FILE: case AOI_FD_PIPE: case AOI_FD_INET: case AOI_FD_DNS: {
         struct pollfd pf;
@@ -1833,6 +1858,145 @@ static uint64_t net_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp, 
     return r;
 }
 
+/* sendmsg/recvmsg on an AF_UNIX socketpair end, with SCM_RIGHTS: Chromium's mojo
+ * channels pass shared memory and new channels this way. The host fds travel in a host
+ * SCM_RIGHTS message (in order with the data); what the guest knows about each (its
+ * kind, path, pair...) waits in `inflight`, found again by the host file's identity. */
+static struct { dev_t dev; ino_t ino; struct aoi_proc_fd f; int used; } inflight[64];
+
+static uint64_t unix_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp, uint64_t flags, int recv)
+{
+    uint8_t m[56], cg[1024];
+    uint64_t i, n = 0, iov, iovlen, ctl, ctllen;
+    union { struct cmsghdr h; uint8_t b[CMSG_SPACE(64 * sizeof(int))]; } hc;
+    struct iovec hv;
+    struct msghdr hm;
+    ssize_t k;
+    if (!get(p, mp, m, sizeof m)) return err(L_EFAULT);
+    iov = u64(m + 16); iovlen = u64(m + 24); ctl = u64(m + 32); ctllen = u64(m + 40);
+    if (iovlen > 1024) return err(L_EINVAL);
+    memset(&hm, 0, sizeof hm);
+    hm.msg_iov = &hv; hm.msg_iovlen = 1;
+    if (!recv) {
+        int hfd[64], nfd = 0;
+        for (i = 0; i < iovlen; i++) {                             /* gather */
+            uint8_t e[16];
+            uint64_t b, l;
+            if (!get(p, iov + 16 * i, e, 16)) return err(L_EFAULT);
+            b = u64(e); l = u64(e + 8);
+            if (l > sizeof net_buf - n) l = sizeof net_buf - n;
+            if (l && !get(p, b, net_buf + n, l)) return err(L_EFAULT);
+            n += l;
+        }
+        if (ctl && ctllen) {                                       /* the guest's cmsgs: SCM_RIGHTS */
+            uint64_t o = 0;
+            if (ctllen > sizeof cg) ctllen = sizeof cg;
+            if (!get(p, ctl, cg, ctllen)) return err(L_EFAULT);
+            while (o + 16 <= ctllen) {
+                uint64_t len = u64(cg + o);
+                uint32_t lvl = u32(cg + o + 8), type = u32(cg + o + 12), j;
+                if (len < 16 || o + len > ctllen) break;
+                if (lvl == 1 && type == 1)                         /* SOL_SOCKET, SCM_RIGHTS */
+                    for (j = 0; 16 + 4 * (j + 1) <= len && nfd < 64; j++) {
+                        struct aoi_proc_fd *g = fd_get(p, u32(cg + o + 16 + 4 * j));
+                        struct stat st;
+                        int s;
+                        if (!g) return err(L_EBADF);
+                        hfd[nfd++] = g->host;
+                        if (!fstat(g->host, &st)) {                /* its guest side, for the receiver */
+                            for (s = 0; s < 64 && inflight[s].used; s++) {}
+                            if (s == 64) s = (int)(st.st_ino % 64);
+                            inflight[s].used = 1; inflight[s].dev = st.st_dev; inflight[s].ino = st.st_ino;
+                            inflight[s].f = *g;
+                            if (g->kind == AOI_FD_EVENTFD) ev_ref(p, g, 1);   /* (held for the receiver) */
+                        }
+                    }
+                o += (len + 7) & ~(uint64_t)7;
+            }
+        }
+        hv.iov_base = net_buf; hv.iov_len = (size_t)n;
+        if (nfd) {
+            hm.msg_control = hc.b; hm.msg_controllen = CMSG_SPACE(nfd * sizeof(int));
+            hc.h.cmsg_level = SOL_SOCKET; hc.h.cmsg_type = SCM_RIGHTS; hc.h.cmsg_len = CMSG_LEN(nfd * sizeof(int));
+            memcpy(CMSG_DATA(&hc.h), hfd, nfd * sizeof(int));
+        }
+        k = sendmsg(f->host, &hm, msg_flags(flags));
+        if (p->trace && nfd) fprintf(p->trace, "[unix] sendmsg %zd bytes, %d fds -> %zd\n", (size_t)n, nfd, k);
+        return k < 0 ? net_wait(p, f, herr(), flags) : (uint64_t)k;
+    }
+    for (i = 0; i < iovlen; i++) {                                 /* room for all of it */
+        uint8_t e[16];
+        if (!get(p, iov + 16 * i, e, 16)) return err(L_EFAULT);
+        n += u64(e + 8);
+    }
+    if (n > sizeof net_buf) n = sizeof net_buf;
+    hv.iov_base = net_buf; hv.iov_len = (size_t)n;
+    hm.msg_control = hc.b; hm.msg_controllen = sizeof hc.b;
+    k = recvmsg(f->host, &hm, msg_flags(flags)
+#ifdef MSG_CMSG_CLOEXEC
+                | MSG_CMSG_CLOEXEC
+#endif
+                );
+    if (k < 0) return net_wait(p, f, herr(), flags);
+    {
+        uint64_t done = 0, gl = 0;
+        uint32_t z = 0, mflags = 0;
+        struct cmsghdr *c;
+        for (i = 0; i < iovlen && done < (uint64_t)k; i++) {       /* scatter */
+            uint8_t e[16];
+            uint64_t l;
+            get(p, iov + 16 * i, e, 16);
+            l = u64(e + 8) < (uint64_t)k - done ? u64(e + 8) : (uint64_t)k - done;
+            if (l && !put(p, u64(e), net_buf + done, l)) return err(L_EFAULT);
+            done += l;
+        }
+        for (c = CMSG_FIRSTHDR(&hm); c; c = CMSG_NXTHDR(&hm, c)) {
+            int nf, j, *hf;
+            if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) continue;
+            nf = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+            hf = (int *)CMSG_DATA(c);
+            if (gl + 16 + 4 * (uint64_t)nf > ctllen || gl + 16 > sizeof cg) {   /* no room: dropped */
+                for (j = 0; j < nf; j++) close(hf[j]);
+                mflags |= 8;                                       /* MSG_CTRUNC */
+                continue;
+            }
+            {
+                uint64_t len = 16 + 4 * (uint64_t)nf;
+                uint32_t one = 1;
+                memcpy(cg + gl, &len, 8); memcpy(cg + gl + 8, &one, 4); memcpy(cg + gl + 12, &one, 4);
+                for (j = 0; j < nf; j++) {
+                    struct stat st;
+                    int g, s;
+                    fcntl(hf[j], F_SETFD, FD_CLOEXEC);
+                    if ((g = fd_new(p, hf[j], "socket:[pair]", 0)) < 0) { close(hf[j]); g = -1; }
+                    else if (!fstat(hf[j], &st)) {
+                        for (s = 0; s < 64 && !(inflight[s].used && inflight[s].dev == st.st_dev && inflight[s].ino == st.st_ino); s++) {}
+                        if (s < 64) {
+                            struct aoi_proc_fd *t = &p->fd[g], *o = &inflight[s].f;
+                            t->kind = o->kind; t->nonblock = o->nonblock; t->seals = o->seals; t->count = o->count;
+                            t->sem = o->sem; t->pair = o->pair; t->end = o->end; t->ptype = o->ptype;
+                            t->tnext = o->tnext; t->tint = o->tint; t->tclock = o->tclock; t->evid = o->evid;
+                            if (t->kind == AOI_FD_EPOLL || t->kind == AOI_FD_DNS) t->kind = AOI_FD_FILE;   /* (their state stays) */
+                            join(t->path, AOI_PATH, "", o->path);
+                            inflight[s].used = 0;
+                        }
+                    }
+                    if (p->trace) fprintf(p->trace, "[unix] recvmsg fd %d (%s, kind %d)\n", g, g >= 0 ? p->fd[g].path : "-", g >= 0 ? p->fd[g].kind : -1);
+                    memcpy(cg + gl + 16 + 4 * (uint64_t)j, &g, 4);
+                }
+                gl += (len + 7) & ~(uint64_t)7;
+            }
+        }
+        if (ctl && gl && !put(p, ctl, cg, gl)) return err(L_EFAULT);
+        put(p, mp + 8, &z, 4);                                     /* no address */
+        { uint64_t g64 = gl; put(p, mp + 40, &g64, 8); }           /* msg_controllen */
+        if (hm.msg_flags & MSG_TRUNC) mflags |= 0x20;
+        if (hm.msg_flags & MSG_CTRUNC) mflags |= 8;
+        put(p, mp + 48, &mflags, 4);
+    }
+    return (uint64_t)k;
+}
+
 /* The options worth passing on; anything else is accepted (set) or 0 (get). */
 static int sockopt_host(uint64_t level, uint64_t opt, int *hl, int *ho)
 {
@@ -1981,9 +2145,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (f->kind == AOI_FD_EVENTFD) {                           /* the counter (or 1), then less */
             uint64_t v;
             if (a2 < 8) { r = err(L_EINVAL); break; }
-            if (!f->count) { r = f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 1000000); break; }
-            v = f->sem ? 1 : f->count;
-            f->count -= v;
+            uint64_t *c = ev_count(p, f);
+            if (!*c) { r = f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 1000000); break; }
+            v = ev_sem(p, f) ? 1 : *c;
+            *c -= v;
             r = put(p, a1, &v, 8) ? 8 : err(L_EFAULT);
             break;
         }
@@ -1998,11 +2163,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             uint64_t v;
             if (a2 < 8 || !get(p, a1, &v, 8)) { r = err(a2 < 8 ? L_EINVAL : L_EFAULT); break; }
             if (v == ~0ULL) { r = err(L_EINVAL); break; }
-            if (f->count + v < f->count || f->count + v == ~0ULL) {
+            uint64_t *c = ev_count(p, f);
+            if (*c + v < *c || *c + v == ~0ULL) {
                 r = f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 1000000);
                 break;
             }
-            f->count += v;
+            *c += v;
             r = 8;
             break;
         }
@@ -2156,6 +2322,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (a0 > 2) { if (f->dir) closedir(f->dir); else close(f->host); }
         if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
+        if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
         if (f->kind == AOI_FD_DNS && f->peer >= 0) close(f->peer);
         free(f->req);
         f->used = 0; f->dir = NULL; f->ep = NULL; f->req = NULL; f->nreq = 0; f->connecting = 0;
@@ -2250,6 +2417,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if ((n = fd_new(p, d, f->path, (int)a2)) < 0) { close(d); r = err(L_EMFILE); break; }
             p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock; p->fd[n].seals = f->seals;
             p->fd[n].count = f->count; p->fd[n].tnext = f->tnext; p->fd[n].tint = f->tint; p->fd[n].tclock = f->tclock;
+            p->fd[n].evid = f->evid; if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, 1);
             p->fd[n].pair = f->pair; p->fd[n].end = f->end; p->fd[n].ptype = f->ptype;
             if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
@@ -2288,8 +2456,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
              * the whole iOS process's, and the app's log may be one); the one they had
              * is the embedder's and stays open */
             if (t->used && t->kind == AOI_FD_EPOLL) epoll_unref(t->ep);
+            if (t->used && t->kind == AOI_FD_EVENTFD) ev_ref(p, t, -1);
             t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
             t->pair = f->pair; t->end = f->end; t->ptype = f->ptype; t->seals = f->seals;
+            t->count = f->count; t->sem = f->sem; t->evid = f->evid;
+            if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, 1);
             if ((t->ep = f->ep)) f->ep->refs++;
             join(t->path, AOI_PATH, "", f->path);
             r = a1;
@@ -2297,6 +2468,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if ((n = fd_new(p, d, f->path, 0)) < 0) { close(d); r = err(L_EMFILE); break; }
             p->fd[n].kind = f->kind; p->fd[n].nonblock = f->nonblock; p->fd[n].seals = f->seals;
             p->fd[n].count = f->count; p->fd[n].tnext = f->tnext; p->fd[n].tint = f->tint; p->fd[n].tclock = f->tclock;
+            p->fd[n].evid = f->evid; if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, 1);
             p->fd[n].pair = f->pair; p->fd[n].end = f->end; p->fd[n].ptype = f->ptype;
             if ((p->fd[n].ep = f->ep)) f->ep->refs++;             /* (a dup'd eventfd copies its counter) */
             r = (uint64_t)n;
@@ -2386,9 +2558,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             close(d); r = err(L_EMFILE); break;
         }
         if (nr == NR_eventfd2) {                                   /* initval, EFD_SEMAPHORE|NONBLOCK|CLOEXEC */
+            int k;
             p->fd[n].kind = AOI_FD_EVENTFD;
             p->fd[n].count = (uint32_t)a0;
             p->fd[n].sem = (a1 & 1) != 0;
+            for (k = 1; k < AOI_PROC_EVFDS && p->ev[k].refs; k++) {}
+            if (k < AOI_PROC_EVFDS) {                              /* its counter, shared by its dups */
+                p->ev[k].refs = 1; p->ev[k].count = (uint32_t)a0; p->ev[k].sem = (a1 & 1) != 0;
+                p->fd[n].evid = k;
+            }
             p->fd[n].nonblock = (a1 & 04000) != 0;
         } else {
             if (!(p->fd[n].ep = calloc(1, sizeof *p->fd[n].ep))) { p->fd[n].used = 0; close(d); r = err(L_ENOMEM); break; }
@@ -2472,6 +2650,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         struct sockaddr_storage sa;
         socklen_t sl = sizeof sa;
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_PIPE && (nr == NR_sendmsg || nr == NR_recvmsg)) {   /* a socketpair end */
+            r = unix_msg(p, f, a1, a2, nr == NR_recvmsg);
+            break;
+        }
         if (f->kind == AOI_FD_PIPE && nr == NR_shutdown) {          /* a socketpair end (Java's close marker) */
             r = shutdown(f->host, (int)a1) && errno != ENOTSOCK ? herr() : 0;
             break;

@@ -39,6 +39,7 @@ struct aoi_proc_fd {
     int seals;                      /* memfd: F_ADD_SEALS so far (not enforced) */
     int64_t tnext, tint;            /* AOI_FD_TIMERFD: next expiry (monotonic ns, 0: disarmed), interval */
     int tclock;                     /* AOI_FD_TIMERFD: its clock (0 realtime, else monotonic) */
+    int evid;                       /* AOI_FD_EVENTFD: its counter in aoi_proc.ev (0: f->count, unshared) */
 };
 
 enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,
@@ -78,10 +79,15 @@ struct aoi_thread {
     char comm[16];                  /* prctl PR_SET_NAME (pthread_setname_np); "" until named */
 };
 
+/* An eventfd's counter, shared by every fd for it (dup, SCM_RIGHTS), as Linux's is. */
+struct aoi_evfd { int refs, sem; uint64_t count; };
+#define AOI_PROC_EVFDS 256
+
 struct aoi_proc {
     struct aoi_vm vm;
     struct aoi_mem mem;
     struct aoi_cpu cpu;
+    struct aoi_evfd ev[AOI_PROC_EVFDS];   /* eventfd counters (index 0 unused) */
     char root[AOI_PATH];            /* host directory that is the guest's "/" */
     char data[AOI_PATH];            /* if set: host directory that is the guest's /data (root read-only) */
     char cwd[AOI_PATH];             /* guest path */

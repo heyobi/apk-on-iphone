@@ -13,6 +13,10 @@ int aoi_hle_run(struct aoi_cpu *c, uint64_t target);
  * its surfaces, and the no-GPU stand-ins (no_gpu in core/hle.c) stay out. */
 extern int aoi_hle_gpu;
 
+/* Host debugging (AOI_WATCH_LIB=name.so): calls into that library from outside it are
+ * logged (offset, caller) instead of libhwui's stand-ins running. */
+extern int aoi_hle_watch;
+
 /* libhwui.so is mapped with load bias base: its stand-ins apply to this CPU. */
 void aoi_hle_attach(struct aoi_cpu *c, uint64_t base);
 

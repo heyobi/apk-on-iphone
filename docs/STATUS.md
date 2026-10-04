@@ -662,6 +662,35 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**Chromium browsers show web pages (app 0.73).** Cromite (Chromium 153) renders
+chrome://version and an http page with CSS, JavaScript and a canvas (host, Mesa as the
+GPU). Its compositor had never drawn: three causes, each found with Chromium's own
+startup trace (--trace-startup=..., read with Perfetto's trace_processor):
+- **sendmsg/recvmsg on socketpairs** were ENOSYS. Mojo's channel between the browser
+  and the in-process GPU/viz passes file descriptors (SCM_RIGHTS): the channel shut
+  down (ChannelPosix::ShutDownImpl) right after viz's FrameSinkManager was made, and
+  the browser's root CompositorFrameSink never reached viz. core/proc.c unix_msg: the
+  host fds travel in a host SCM_RIGHTS message, in order with the data; each one's
+  guest side (kind, path, socketpair, eventfd counter) waits in a table and is found
+  again by the host file's identity on the receiving end.
+- **eventfd counters are shared** by every fd for them (dup, dup3, F_DUPFD, received
+  over a socket), as on Linux (aoi_proc.ev, refcounted). Mojo then upgrades its
+  channels to shared memory signalled by an eventfd (ChannelLinux); with a counter per
+  fd the peer was never woken.
+- Chromium's flags file (/data/local/chrome-command-line, ios/androidtest.c) adds
+  --disable-features=AndroidSurfaceControl,EnableDrDc: with SurfaceControl viz
+  renders into AHardwareBuffers and with DrDc tiles are shared between GPU threads,
+  both through EGLImages from AHardwareBuffers (GL_OES_EGL_image), which our EGL does
+  not offer ("SharedImageFormat RGBA_8888 can not be used to create a GL texture from
+  AHardwareBuffer", then a lost context). Without them viz draws into the SurfaceView's
+  EGL window surface like any GL app. A file the app wrote before (only
+  --single-process) is replaced.
+Host debugging added: AOI_WATCH_LIB=libX.so logs calls into a library from outside it
+(core/hle.c), AOI_SF_LAYER_DUMP=ID (AOI_SF_LAYER_FILE) writes that layer's buffers,
+the trace logs display event connections, requestNextVsync and fds passed over sockets.
+Open: TLS pages on the host (the sandbox's proxy CA is not in Chrome's root store;
+the phone has none), saving Chromium apps in a snapshot (GPU state).
+
 **SoundPool plays: static AudioTracks (app 0.72).** Games' effects (SoundPool, so
 libGDX's Sound: cube.run) were silent: libsoundpool decodes a sound into a shared
 buffer (MemoryHeapBase, a memfd) and plays it as a MODE_STATIC AudioTrack, which

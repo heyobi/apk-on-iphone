@@ -12,7 +12,7 @@ is no writable-executable memory. Android's own ART may still JIT-compile hot Ja
 methods inside the guest, but what it produces is AArch64 guest code that the
 interpreter runs like any other.
 
-## What runs today (app 0.72)
+## What runs today (app 0.73)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):
@@ -25,7 +25,7 @@ first (`build/iostest`, the same code path as the phone):
 | NewPipe | main UI and navigation |
 | Molly (Signal fork), Element (Matrix) | start to their first screens |
 | WebView apps (e.g. Uptodown) | Android's WebView 119 renders pages and runs JavaScript |
-| Kiwi / Cromite (Chromium browsers) | browser UI and New Tab page; web page content not shown yet |
+| Kiwi / Cromite (Chromium browsers) | web pages render (CSS, JavaScript, canvas; host-tested in 0.73) |
 
 What an app gets: windows drawn by HWUI on the GPU (OpenGL ES through ANGLE on Metal),
 touch, the iOS keyboard, clipboard, back gesture, sound (AudioTrack, SoundPool, MediaPlayer, and
@@ -34,7 +34,7 @@ today's root store), storage, AndroidKeyStore, WebView, home-screen links per ap
 snapshot of the running app so the next launch resumes in about a second.
 
 Not yet: video on screen (decoding works; MediaPlayer's picture is not drawn yet),
-**web content in Chromium browsers**, Google Play services, camera, notifications. `docs/STATUS.md` has the full,
+Google Play services, camera, notifications. `docs/STATUS.md` has the full,
 dated record of what works and what is open.
 
 ## Speed

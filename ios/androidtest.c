@@ -1190,10 +1190,23 @@ static int app_setup(const char *datadir, const char *logpath, const char *displ
     if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
     snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);
     if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }
-    snprintf(path, sizeof path, "%s/local/chrome-command-line", datadir);   /* Chromium's flags (a rooted device's) */
-    if (access(path, F_OK) && (f = fopen(path, "w"))) {          /* its renderer in the app's process: no */
-        fprintf(f, "_ --single-process\n");                        /* child processes here */
-        fclose(f);
+    /* Chromium's flags (a rooted device's /data/local/chrome-command-line): its renderer
+     * and GPU in the app's process (no child processes here); its display compositor
+     * draws into the SurfaceView's EGL window surface, not into AHardwareBuffers handed
+     * to SurfaceControl, and its tiles stay on one GPU thread (no DrDc): both need
+     * EGLImages from AHardwareBuffers (GL_OES_EGL_image), which our EGL does not have.
+     * The file is written once; the line the app wrote before 0.73 is replaced. */
+    snprintf(path, sizeof path, "%s/local/chrome-command-line", datadir);
+    {
+        static const char *const flags = "_ --single-process --disable-features=AndroidSurfaceControl,EnableDrDc\n";
+        char had[256] = "";
+        size_t n = 0;
+        if ((f = fopen(path, "r"))) { n = fread(had, 1, sizeof had - 1, f); fclose(f); }
+        had[n] = 0;
+        if ((!n || !strcmp(had, "_ --single-process\n")) && (f = fopen(path, "w"))) {
+            fputs(flags, f);
+            fclose(f);
+        }
     }
     install_libs(datadir, log, ctx);
     return fd;

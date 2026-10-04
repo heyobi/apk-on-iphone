@@ -125,6 +125,7 @@ static void connection(struct aoi_proc *p, void *self, uint32_t code, struct aoi
         ok(rep);
         break;
     case 3:                                                    /* requestNextVsync() */
+        if (p->trace) fprintf(p->trace, "[sf] requestNextVsync on connection %d\n", (int)(c - ((struct aoi_sf *)p->sf)->c));
         if (!c->oneshot) { c->oneshot = 1; c->next = t + PERIOD_NS - t % PERIOD_NS; }
         ok(rep);
         break;
@@ -213,6 +214,7 @@ static void composer(struct aoi_proc *p, void *self, uint32_t code, struct aoi_r
         sf->c[k].used = 1; sf->c[k].send = sv[0]; sf->c[k].recv = sv[1];
         h = aoi_binder_native(p, NULL, "android.gui.IDisplayEventConnection", connection, &sf->c[k]);
         if (!h) { close(sv[0]); close(sv[1]); sf->c[k].used = 0; rep->status = -12; return; }
+        if (p->trace) fprintf(p->trace, "[sf] display event connection %d\n", k);
         ok(rep);
         aoi_phandle(rep, h);
         break;
@@ -419,6 +421,21 @@ static void show(struct aoi_proc *p, struct aoi_sf *sf, struct layer *ly, uint32
     ly->buf = id;
     ly->shown.gb = gb; ly->shown.number = number; ly->shown.ptr = ptr; ly->shown.cookie = cookie;
     sf->frames++;
+    if (getenv("AOI_SF_LAYER_DUMP") && atoi(getenv("AOI_SF_LAYER_DUMP")) == ly->id) {   /* (host debugging) */
+        uint8_t *px = malloc((size_t)b->width * b->height * 4);
+        uint32_t y;
+        if (px) {
+            for (y = 0; y < b->height; y++)
+                aoi_vm_read(&p->vm, b->addr + (uint64_t)y * b->stride * 4, px + (size_t)y * b->width * 4, (uint64_t)b->width * 4, 0);
+            {
+                const char *save = getenv("AOI_SF_DUMP");
+                setenv("AOI_SF_DUMP", getenv("AOI_SF_LAYER_FILE") ? getenv("AOI_SF_LAYER_FILE") : "/tmp/aoi-layer.ppm", 1);
+                dump(p, px, b->width, b->height, b->format, sf->frames);
+                if (save) setenv("AOI_SF_DUMP", save, 1); else unsetenv("AOI_SF_DUMP");
+            }
+            free(px);
+        }
+    }
     if (p->trace) fprintf(p->trace, "[sf] frame %llu: layer %d, buffer %u (%ux%u), frame number %llu, after %llu instructions, at %.3f s\n",
                           (unsigned long long)sf->frames, ly->id, id, b->width, b->height, (unsigned long long)number,
                           (unsigned long long)p->cpu.steps, (double)now_ns() / 1e9);

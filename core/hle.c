@@ -536,8 +536,26 @@ static int pipeline_loop(struct aoi_cpu *c)
     }
 }
 
+int aoi_hle_watch;
+
+/* AOI_WATCH_LIB: a call from outside the watched library into it, logged the first
+ * few times per entry point. */
+static void watch(struct aoi_cpu *c, uint64_t target)
+{
+    static struct { uint64_t off; int n; } seen[4096];
+    uint64_t off = target - c->hle_base;
+    unsigned h = (unsigned)(off * 2654435761u) % 4096, k;
+    if (c->pc - c->hle_lo < c->hle_hi - c->hle_lo) return;           /* from inside it */
+    for (k = 0; k < 4096; k++, h = (h + 1) % 4096)
+        if (!seen[h].off || seen[h].off == off) break;
+    if (k == 4096) return;
+    seen[h].off = off;
+    if (seen[h].n++ < 3) fprintf(stderr, "[watch] +%#llx from %#llx\n", (unsigned long long)off, (unsigned long long)c->pc);
+}
+
 int aoi_hle_run(struct aoi_cpu *c, uint64_t target)
 {
+    if (aoi_hle_watch) { watch(c, target); return 0; }
     if (check_mode < 0 && (check_mode = getenv("AOI_HLE_CHECK") ? atoi(getenv("AOI_HLE_CHECK")) : 0) > 0) atexit(report);
     if (check_mode < 0) check_mode = 0;
     if (c->fpcr & 0x03c00000u) return 0;                            /* not round-to-nearest IEEE: interpret */
