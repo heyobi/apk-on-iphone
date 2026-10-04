@@ -990,14 +990,89 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     return rc;
 }
 
+/* ---------- an app started out of sight, to be saved ----------
+ * After its code is compiled an app's snapshot no longer fits (its key has the odex):
+ * the first launch would start it from nothing. The iOS app starts it here instead,
+ * without a screen, right after the compile: once aoi.Main has saved it (at idle) the
+ * process ends, and the user's first tap resumes it in a second. A tap while it is
+ * still starting shows it (aoi_android_show) and it goes on as the app. */
+
+static volatile int hidden_on, hidden_shown;
+static pthread_mutex_t hidden_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void drop_frame(void *ctx, const unsigned char *rgbx, unsigned w, unsigned h) { (void)ctx; (void)rgbx; (void)w; (void)h; }
+
+static void *hidden_watch(void *arg)
+{
+    struct timespec ts = { 0, 250000000 };
+    double waited = 0, limit = *(double *)arg;
+    int seen = 0;
+    while (waited < limit && !hidden_shown) {
+        struct aoi_proc *p = running;
+        if (p && p->snap_path[0]) seen = 1;
+        if (p && seen && !p->snap_path[0]) break;           /* saved (or the app does not let itself be) */
+        if (!seen && waited > 20) break;                    /* resumed: nothing to save */
+        nanosleep(&ts, NULL);
+        waited += 0.25;
+    }
+    for (;;) {                                              /* end it (it may not run yet: wait for it) */
+        struct aoi_proc *p;
+        int done = 0;
+        pthread_mutex_lock(&hidden_lock);
+        p = running;
+        if (hidden_shown || !hidden_on) done = 1;
+        else if (p) { p->stop_request = 1; done = 1; }
+        pthread_mutex_unlock(&hidden_lock);
+        if (done) break;
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+int aoi_android_app_hidden(const char *root, const char *datadir, const char *logpath, const char *display,
+                           aoi_log_fn log, void *ctx)
+{
+    static double limit = 240;               /* a big app's first start on the phone: under 4 min */
+    char snap[1100];
+    struct stat st;
+    time_t t0 = time(NULL);
+    pthread_t th;
+    int fd, rc;
+    if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) return -1;
+    snprintf(snap, sizeof snap, "%s.snap", datadir);
+    hidden_shown = 0;
+    hidden_on = 1;
+    if (pthread_create(&th, NULL, hidden_watch, &limit)) { close(fd); hidden_on = 0; return -1; }
+    say(log, ctx, "app: started out of sight, to be saved for the next launch");
+    rc = run_guest(root, datadir, fd, app_argv, 4, drop_frame, NULL, NULL, "app", snap, log, ctx, 0);
+    hidden_on = 0;
+    pthread_join(th, NULL);
+    close(fd);
+    if (hidden_shown) return rc;
+    return !stat(snap, &st) && st.st_mtime >= t0 && st.st_size > 0 ? 1 : -1;
+}
+
+int aoi_android_show(aoi_frame_fn frame, void (*home)(void *), void *frame_ctx)
+{
+    struct aoi_proc *p;
+    pthread_mutex_lock(&hidden_lock);
+    p = running;
+    if (!hidden_on || hidden_shown || !p || p->stop_request) { pthread_mutex_unlock(&hidden_lock); return -1; }
+    p->frame_ctx = frame_ctx;
+    p->home = home;
+    p->frame = frame;
+    hidden_shown = 1;
+    p->redraw_request = 1;
+    pthread_mutex_unlock(&hidden_lock);
+    return 0;
+}
+
 /* ---------- the warm process: Android up before its app is chosen ----------
  * aoi.Main (AOI_WARM) starts the runtime and the services that do not depend on the
  * app, is saved once (warmdir.snap: the next warm start resumes it in a second), and
  * waits in open("/dev/aoi_warm"). aoi_android_go hands it an app; on the guest's
  * thread (warm_take) the process becomes the app's: its /data (p->data: what it opened
  * so far is the same in every /data, the build's), log, frames and snapshot. */
-
-static void drop_frame(void *ctx, const unsigned char *rgbx, unsigned w, unsigned h) { (void)ctx; (void)rgbx; (void)w; (void)h; }
 
 static int warm_take(struct aoi_proc *p)
 {

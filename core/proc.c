@@ -998,6 +998,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
                                 (double)(now_ns() - t0) / 1e9);
             p->snap_path[0] = 0;
         }
+        if (p->redraw_request && p->sf) { p->redraw_request = 0; aoi_sf_redraw(p); }
         if (p->sf) aoi_sf_tick(p);                                 /* vsync events that are due */
         st = aoi_cpu_run(&p->cpu, end);
         if (st == AOI_STOP_FAULT && sig_fault(p)) continue;

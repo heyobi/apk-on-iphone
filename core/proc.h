@@ -137,7 +137,8 @@ struct aoi_proc {
     uint32_t uid;                   /* getuid & co. and every file's owner: an app's (10100), or root */
     volatile int pause_request;     /* set from another host thread: it waits between time slices */
     char snap_path[AOI_PATH];       /* if set: where the guest's open("/dev/aoi_snapshot") saves a snapshot */
-    volatile int snap_request;      /* that open happened: saved at the next time slice (core/snap.c) */
+    volatile int snap_request;
+    volatile int redraw_request;    /* the screen to p->frame again at the next time slice (a new frame target) */      /* that open happened: saved at the next time slice (core/snap.c) */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

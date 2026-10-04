@@ -662,6 +662,21 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**Compiled, then saved out of sight: the first tap resumes (app 0.62).** The 0.61 phone
+log: WhatsApp compiled (verify, 505 s; the estimate said 5 min), Kiwi opened on the warm
+Android ("app: on the Android that was already up"), but the first launch after a
+compile was still a full start: the snapshot's key has the odex in it, so the old
+snapshot no longer fits. Now a finished compile starts the app without a screen
+(aoi_android_app_hidden: frames dropped, a watcher thread ends it once aoi.Main has
+saved it at idle, or after 4 min), and the card says "Hazır ✓ · anında açılır": the
+first tap resumes it (host, NewPipe compiled: saved 39 s after the start, resumed in
+0.9 s). A tap while it is still starting shows that same run (aoi_android_show: its
+frame target, home callback and a redraw at the next time slice, core/proc.c
+redraw_request), so nothing starts twice; another app's tap ends it and it is saved
+later. Apps that cannot be saved (a GLSurfaceView keeping its context, Chromium's GPU
+state, WebView) get a .nosnap marker and are not tried again until the next compile.
+tools/iostest.c AOI_APP_HIDDEN=1 [AOI_APP_SHOW_AFTER=N].
+
 **Compiled once, with its progress; Android up before the tap (app 0.61).** From the
 0.60 phone log and what it asked for ("one build, visible; the 7 s simulator at once"):
 - **dex2oat runs once per APK, when asked:** at install (the card shows "Derleniyor %42 ·

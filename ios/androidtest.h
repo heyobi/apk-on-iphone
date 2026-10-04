@@ -51,6 +51,16 @@ void aoi_android_warm_stop(void);
 int aoi_android_go(const char *root, const char *datadir, const char *logpath, const char *display,
                    aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx);
 
+/* The app started without a screen, to be saved (its snapshot) and ended: the iOS app
+ * does it after a compile, so the first tap resumes it. 1 saved, -1 not (the app does
+ * not let itself be saved: a GL game, a WebView); if aoi_android_show made it the
+ * shown app, its exit code when it ends. */
+int aoi_android_app_hidden(const char *root, const char *datadir, const char *logpath, const char *display,
+                           aoi_log_fn log, void *ctx);
+
+/* The app aoi_android_app_hidden runs goes to this screen and stays (0), or -1. */
+int aoi_android_show(aoi_frame_fn frame, void (*home)(void *), void *frame_ctx);
+
 /* Ends the running app's process (after aoi_android_snapshot, it resumes from there). */
 void aoi_android_stop(void);
 

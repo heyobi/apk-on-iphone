@@ -116,6 +116,14 @@ static void *compile_let_go(void *arg)
     return NULL;
 }
 
+static void *show_after(void *png)
+{
+    sleep((unsigned)atoi(getenv("AOI_APP_SHOW_AFTER")));
+    printf("show: %d\n", aoi_android_show(frame, home, png));
+    fflush(stdout);
+    return NULL;
+}
+
 struct warm_arg { const char *dir, *png, *log; int secs; };
 
 static void *warm_go_after(void *arg)
@@ -171,6 +179,16 @@ int main(int argc, char **argv)
                 aoi_android_compile_state(getenv("AOI_APP_DATA"), st, sizeof st);
                 printf("compile: state \"%s\"\n", st);
             }
+        }
+        if (getenv("AOI_APP_HIDDEN")) {            /* out of sight until saved (after a compile); */
+            if (getenv("AOI_APP_SHOW_AFTER")) {     /* shown after N s (a tap meanwhile) */
+                pthread_t t;
+                pthread_create(&t, NULL, show_after, (void *)png);
+            }
+            rc = aoi_android_app_hidden(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), log,
+                                        getenv("AOI_APP_DISPLAY"), out, NULL);
+            printf("hidden: %d\n", rc);
+            return rc == 1 ? 0 : 1;
         }
         if (getenv("AOI_APP_WARM")) {              /* "dir N": Android up in dir first, the app N s later */
             static char wdir[1024];

@@ -462,6 +462,11 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 @property(nonatomic, strong) AoiApp *warmApp;         /* the app it became (aoi_android_go) */
 @property(nonatomic, strong) ScreenVC *warmTarget;
 @property(nonatomic) void *warmCtx;
+@property(nonatomic, strong) AoiApp *preparing;       /* started out of sight after its compile, to be saved */
+@property(nonatomic) BOOL preparingShown, preparingCancelled;
+@property(nonatomic, strong) ScreenVC *preparingTarget;
+@property(nonatomic) void *preparingCtx;
+@property(nonatomic, strong) NSMutableArray<NSString *> *prepareQueue;
 - (void)openPackage:(NSString *)pkg;
 - (void)append:(NSString *)line;
 - (void)compileEnded:(NSString *)dir state:(NSString *)state;
@@ -469,6 +474,8 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 - (NSString *)root;
 - (NSString *)display;
 - (void)startWarm;
+- (void)prepareApp:(AoiApp *)a;
+- (void)idleNext;
 - (void)appEnded:(AoiApp *)a target:(ScreenVC *)target log:(NSString *)logPath;
 - (void)maybeOpen:(AoiApp *)a;
 - (void)openApp:(AoiApp *)a;
@@ -491,6 +498,7 @@ static Launcher *launcher;
     self.bars = [NSMutableDictionary dictionary];
     self.acts = [NSMutableDictionary dictionary];
     self.queue = [NSMutableArray array];
+    self.prepareQueue = [NSMutableArray array];
     self.work = dispatch_queue_create("aoi.work", DISPATCH_QUEUE_SERIAL);
     self.appQueue = dispatch_queue_create("aoi.app", DISPATCH_QUEUE_SERIAL);
     self.view.backgroundColor = UIColor.blackColor;
@@ -590,7 +598,7 @@ static Launcher *launcher;
 /* Android, started before an app is chosen, while none runs: a tap then only loads the
  * app (7 s less). Its first start is saved, later ones resume in about a second. */
 - (void)startWarm {
-    if (self.warmRunning || self.runningPkg || !self.view.window) return;
+    if (self.warmRunning || self.runningPkg || self.preparing || !self.view.window) return;
     NSString *dir = [AoiApp warmDir], *display = self.display;
     if (!dir || ![NSFileManager.defaultManager fileExistsAtPath:[self.root stringByAppendingPathComponent:@"system/bin/app_process64"]])
         return;
@@ -621,8 +629,60 @@ static Launcher *launcher;
         [self append:[NSString stringWithFormat:@"%@ kapandı; log: %@", a.label, logPath]];
         if (self.presentedViewController == target) [self dismissViewControllerAnimated:YES completion:nil];
     }
+    [self idleNext];
+}
+
+/* Nothing shown any more: the next app to save, else the warm process. */
+- (void)idleNext {
     [self reload];
-    if (!self.runningPkg) [self startWarm];
+    if (self.runningPkg || self.preparing) return;
+    while (self.prepareQueue.count) {                    /* compiled while it ran: saved now */
+        AoiApp *n = [AoiApp withPackage:self.prepareQueue.firstObject];
+        [self.prepareQueue removeObjectAtIndex:0];
+        if (n) { [self prepareApp:n]; return; }
+    }
+    [self startWarm];
+}
+
+/* After its compile an app's snapshot no longer fits: it is started out of sight and
+ * saved (aoi_android_app_hidden), so the first tap resumes it in a second. Apps that
+ * cannot be saved (GL games, WebView) are marked (.nosnap) and left alone. */
+- (void)prepareApp:(AoiApp *)a {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if ([fm fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]] || [fm fileExistsAtPath:[a.dir stringByAppendingString:@".nosnap"]]
+        || !a.compiled)
+        return;
+    if (self.runningPkg || self.preparing) {
+        if (![self.prepareQueue containsObject:a.pkg]) [self.prepareQueue addObject:a.pkg];
+        return;
+    }
+    if (self.warmRunning && !self.warmApp) aoi_android_warm_stop();
+    self.preparing = a;
+    self.preparingShown = NO; self.preparingCancelled = NO;
+    [a prepare];
+    [self append:[NSString stringWithFormat:@"%@: ilk açılış arka planda hazırlanıyor", a.label]];
+    NSString *root = self.root, *display = self.display, *logPath = [a.dir stringByAppendingString:@".log"];
+    dispatch_async(self.appQueue, ^{
+        int rc = aoi_android_app_hidden(root.UTF8String, a.dir.UTF8String, logPath.UTF8String, display.UTF8String,
+                                        log_cb, (__bridge void *)self);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL shown = self.preparingShown, cancelled = self.preparingCancelled;
+            ScreenVC *target = self.preparingTarget;
+            if (self.preparingCtx) CFRelease(self.preparingCtx);
+            self.preparing = nil; self.preparingTarget = nil; self.preparingCtx = NULL;
+            self.preparingShown = NO; self.preparingCancelled = NO;
+            if (shown) { [self appEnded:a target:target log:logPath]; return; }
+            if (cancelled) {
+                if (![self.prepareQueue containsObject:a.pkg]) [self.prepareQueue addObject:a.pkg];
+            } else if (rc == 1) {
+                [self append:[NSString stringWithFormat:@"%@ hazır: anında açılır", a.label]];
+            } else {
+                [@"" writeToFile:[a.dir stringByAppendingString:@".nosnap"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+            [self idleNext];
+        });
+    });
+    [self tick];
 }
 
 /* A glass capsule button. */
@@ -744,6 +804,10 @@ static NSString *duration_text(double s) {
         } else if ([self queued:a]) {
             text = @"Derleme sırada";
             btn = @"İptal"; sym = @"xmark.circle.fill";
+        } else if ([self.preparing.pkg isEqualToString:a.pkg] && !self.preparingShown) {
+            text = @"Derlendi ✓ · ilk açılış arka planda hazırlanıyor…";
+        } else if (a.compiled && [NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]]) {
+            text = [st isEqualToString:@"verify"] ? @"Hazır ✓ · anında açılır (temel derleme)" : @"Hazır ✓ · anında açılır";
         } else if ([st isEqualToString:@"speed"] || [st isEqualToString:@"speed-profile"]) {
             text = @"Derlendi ✓";
         } else if ([st isEqualToString:@"verify"]) {
@@ -809,7 +873,11 @@ static NSString *duration_text(double s) {
     AoiApp *a = nil;
     for (AoiApp *x in [AoiApp all]) if ([x.dir isEqualToString:dir]) a = x;
     if (a) [self append:[NSString stringWithFormat:@"%@: %@", a.label,
-                         [state isEqualToString:@"failed"] ? @"derlenemedi" : state.length ? @"derlendi; sonraki açılış hızlı" : @"derleme durdu"]];
+                         [state isEqualToString:@"failed"] ? @"derlenemedi" : state.length ? @"derlendi" : @"derleme durdu"]];
+    if (a && state.length && ![state isEqualToString:@"failed"]) {
+        [NSFileManager.defaultManager removeItemAtPath:[a.dir stringByAppendingString:@".nosnap"] error:nil];
+        [self prepareApp:a];                             /* its first start, out of sight: then a tap resumes it */
+    }
     while (self.queue.count) {
         NSDictionary *q = self.queue.firstObject;
         [self.queue removeObjectAtIndex:0];
@@ -1027,6 +1095,16 @@ static NSString *duration_text(double s) {
     [self append:[NSString stringWithFormat:@"%@ açılıyor (ekran %@)", a.label, display]];
     ScreenVC *target = self.screenVC;
     void *ctx = (__bridge_retained void *)target;        /* the process's frames go to it while it runs */
+    if ([self.preparing.pkg isEqualToString:a.pkg] && !self.preparingShown
+        && aoi_android_show(frame_cb, home_cb, ctx) == 0) {             /* it is starting already: show it */
+        self.preparingShown = YES; self.preparingTarget = target; self.preparingCtx = ctx;
+        [self reload];
+        return;
+    }
+    if (self.preparing && !self.preparingShown) {         /* another app now: that one is saved later */
+        self.preparingCancelled = YES;
+        aoi_android_stop();
+    }
     BOOL snap = [NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]];
     if (!prev && !snap && self.warmRunning && !self.warmApp
         && aoi_android_go(root.UTF8String, a.dir.UTF8String, logPath.UTF8String, display.UTF8String, frame_cb, home_cb,
