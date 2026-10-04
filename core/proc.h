@@ -138,7 +138,8 @@ struct aoi_proc {
     volatile int pause_request;     /* set from another host thread: it waits between time slices */
     char snap_path[AOI_PATH];       /* if set: where the guest's open("/dev/aoi_snapshot") saves a snapshot */
     volatile int snap_request;
-    volatile int redraw_request;    /* the screen to p->frame again at the next time slice (a new frame target) */      /* that open happened: saved at the next time slice (core/snap.c) */
+    volatile int redraw_request;
+    int inotify_wd;                 /* the last inotify watch descriptor handed out */    /* the screen to p->frame again at the next time slice (a new frame target) */      /* that open happened: saved at the next time slice (core/snap.c) */
     unsigned char unknown[512];     /* syscalls already reported as unimplemented */
     struct aoi_proc_map maps[AOI_PROC_MAPS];
     int nmaps;

@@ -117,6 +117,7 @@ jobs:
             -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -framework BackgroundTasks -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
           cp ios/PrivacyInfo.xcprivacy "$APP/PrivacyInfo.xcprivacy"
+          cp -R ios/en.lproj ios/tr.lproj "$APP/"
           cp ios/icons/*.png "$APP/"
           mkdir -p "$APP/licenses" && cp angle-ios/licenses/*.txt LICENSE NOTICE.md "$APP/licenses/"
           cp -RP aroot-mini "$APP/aroot"
@@ -156,6 +157,7 @@ jobs:
           body: |
             LiquidAPK: Android apps on the iPhone. Unsigned IPA, built from ${{ github.sha }}.
             Install with SideStore, AltStore or Sideloadly (they sign it with your Apple ID),
-            then see docs/IOS.md. Add an APK ("APK ekle"); it runs in an AArch64 interpreter
-            (no JIT, no debugger). Swipe from the left edge for back; hold an app's card for
-            its home-screen link.
+            then see docs/IOS.md. Add an APK ("Add APK" / "APK ekle"); it is compiled once and
+            runs in an AArch64 interpreter (no JIT, no debugger). Swipe in from the left edge
+            for Android's back, from the right edge to leave the app; hold an app's card for
+            its menu. English or Turkish, by the phone's language. License: GPL-3.0-or-later.

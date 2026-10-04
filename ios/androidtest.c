@@ -27,6 +27,7 @@
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -198,6 +199,13 @@ static struct aoi_proc *volatile running;   /* the app's process, while aoi_andr
 static pthread_mutex_t run_lock = PTHREAD_MUTEX_INITIALIZER;
 static int run_users, launching, stop_pending;
 static unsigned run_gen;                    /* one more for each process that becomes running */
+static char end_why[300];                   /* how the last app ended by itself ("" if it was stopped or exited 0) */
+
+int aoi_android_last_end(char *why, size_t n)
+{
+    snprintf(why, n, "%s", end_why);
+    return end_why[0] != 0;
+}
 
 static struct aoi_proc *proc_get(void)
 {
@@ -219,6 +227,7 @@ static void proc_put(struct aoi_proc *p)
 static void launch_begin(void)
 {
     pthread_mutex_lock(&run_lock);
+    end_why[0] = 0;
     launching = 1;
     stop_pending = 0;
     pthread_mutex_unlock(&run_lock);
@@ -410,6 +419,13 @@ void aoi_android_save_stop(double timeout)
     pthread_mutex_lock(&run_lock);
     if (running && run_gen == gen) running->stop_request = 1;   /* that one, not the next app */
     pthread_mutex_unlock(&run_lock);
+}
+
+void aoi_android_redraw(void)
+{
+    struct aoi_proc *p = proc_get();
+    if (p) p->redraw_request = 1;                      /* the screen it shows, again (core/proc.c) */
+    proc_put(p);
 }
 
 void aoi_android_back(void)
@@ -624,6 +640,15 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     }
     memory_mb(&now, &peak);
     say(log, ctx, "%s: memory %.0f MB now, %.0f MB peak", what, now, peak);
+    if (frame && strcmp(what, "android")) {         /* an app: did it end by itself, and how */
+        end_why[0] = 0;
+        if (!p->stop_request && st == AOI_STOP_EXIT && rc != 0)
+            snprintf(end_why, sizeof end_why, "exit %d after %.0f s", rc, secs);
+        else if (!p->stop_request && st != AOI_STOP_EXIT) {
+            char w[256];
+            snprintf(end_why, sizeof end_why, "stopped (%d) in %s after %.0f s", (int)st, aoi_proc_where(p, p->cpu.pc, w, sizeof w), secs);
+        }
+    }
     if (snap && rc != 0 && !p->stop_request) {      /* it died by itself: was its snapshot the way there? */
         struct stat ss;
         if ((resumed && secs < 30) || (!stat(snap, &ss) && time(NULL) - ss.st_mtime < 60)) {
@@ -1012,6 +1037,14 @@ int aoi_android_compile(const char *root, const char *datadir, const char *logpa
     if (!last[0] || !strcmp(last, "failed")) filter = dex > 16u << 20 ? "verify" : "speed";
     else if (faster && !strcmp(last, "verify") && app_profile(datadir, prof, sizeof prof)) filter = "speed-profile";
     if (!filter || !dex) return 1;                                  /* compiled already */
+    {                                   /* its output: the odex and vdex, a few times the dex */
+        struct statvfs vs;
+        if (!statvfs(datadir, &vs) && (uint64_t)vs.f_bavail * vs.f_frsize < (uint64_t)dex * 4 + ((uint64_t)300 << 20)) {
+            say(log, ctx, "dex2oat: %llu MB free on the device, %zu MB of dex: not enough room",
+                (unsigned long long)((uint64_t)vs.f_bavail * vs.f_frsize >> 20), dex >> 20);
+            return -3;
+        }
+    }
 #ifdef __APPLE__
     int busy;
     pthread_mutex_lock(&run_lock);
@@ -1312,6 +1345,7 @@ int aoi_android_go(const char *root, const char *datadir, const char *logpath, c
     pthread_mutex_lock(&warm_lock);
     ok = warm_p && !warm_go.pending && !warm_go.done && !strcmp(display ? display : "", warm_go.display);
     if (ok) {
+        end_why[0] = 0;
         snprintf(warm_go.root, sizeof warm_go.root, "%s", root);
         snprintf(warm_go.datadir, sizeof warm_go.datadir, "%s", datadir);
         snprintf(warm_go.logpath, sizeof warm_go.logpath, "%s", logpath);

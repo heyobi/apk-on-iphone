@@ -3068,6 +3068,80 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = (uint64_t)k;
         break;
     }
+    case 69: case 70: {                                            /* preadv, pwritev: at an offset */
+        uint64_t i, total = 0;
+        if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind != AOI_FD_FILE) { r = err(L_ESPIPE); break; }
+        r = 0;
+        for (i = 0; i < a2 && i < 1024; i++) {
+            uint8_t e[16];
+            uint64_t len;
+            int64_t k;
+            if (!get(p, a1 + i * 16, e, 16)) { r = err(L_EFAULT); break; }
+            if (!(len = u64(e + 8))) continue;
+            k = xfer(p, f->host, u64(e), len, nr == 69, (int64_t)(a3 + total));
+            if (k < 0) { r = total ? total : (uint64_t)k; break; }
+            r = total += (uint64_t)k;
+            if ((uint64_t)k < len) break;
+        }
+        break;
+    }
+    case 71: {                                                     /* sendfile(out, in, offset*, count) */
+        struct aoi_proc_fd *in = fd_get(p, a1), *out = fd_get(p, a0);
+        uint8_t buf[65536];
+        uint64_t total = 0, off = 0;
+        int ok = 1;
+        if (!in || !out) { r = err(L_EBADF); break; }
+        if (in->kind != AOI_FD_FILE) { r = err(L_EINVAL); break; }
+        if (a2 && !get(p, a2, &off, 8)) { r = err(L_EFAULT); break; }
+        while (total < a3) {
+            size_t want = a3 - total < sizeof buf ? (size_t)(a3 - total) : sizeof buf;
+            ssize_t n = a2 ? pread(in->host, buf, want, (off_t)(off + total)) : read(in->host, buf, want), w = 0;
+            if (n < 0) { ok = 0; r = herr(); break; }
+            if (n == 0) break;
+            while (w < n) {
+                ssize_t k = write(out->host, buf + w, (size_t)(n - w));
+                if (k < 0) break;
+                w += k;
+            }
+            total += (uint64_t)w;
+            if (w < n) { if (!a2) lseek(in->host, (off_t)(w - n), SEEK_CUR); if (!total) { ok = 0; r = herr(); } break; }
+        }
+        if (!ok) break;
+        if (a2) { off += total; put(p, a2, &off, 8); }
+        r = total;
+        break;
+    }
+    case 50:                                                       /* fchdir */
+        if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (fstat(f->host, &st) || !S_ISDIR(st.st_mode)) { r = err(L_ENOTDIR); break; }
+        snprintf(p->cwd, sizeof p->cwd, "%s", f->path);
+        r = 0;
+        break;
+    case 95: case 260:                                             /* waitid, wait4: no child processes here */
+        r = err(L_ECHILD);
+        break;
+    case 136: {                                                    /* rt_sigpending: nothing pending */
+        uint64_t z = 0;
+        r = put(p, a0, &z, a1 < 8 ? a1 : 8) ? 0 : err(L_EFAULT);
+        break;
+    }
+    case 26: {                                                     /* inotify_init1: watches that never fire */
+        int d, n;                                                  /* (FileObserver, Chromium: they work without) */
+        if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+        if ((n = fd_new(p, d, "anon_inode:inotify", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
+        p->fd[n].kind = AOI_FD_EVENTFD;                            /* a counter at 0: never readable */
+        p->fd[n].count = 0;
+        p->fd[n].nonblock = (a0 & 04000) != 0;
+        r = (uint64_t)n;
+        break;
+    }
+    case 27:                                                       /* inotify_add_watch: a watch descriptor */
+        r = fd_get(p, a0) ? (uint64_t)++p->inotify_wd : err(L_EBADF);
+        break;
+    case 28:                                                       /* inotify_rm_watch */
+        r = fd_get(p, a0) ? 0 : err(L_EBADF);
+        break;
     case 164:                                                      /* setrlimit: the limits stay the host's */
     case 223:                                                      /* fadvise64: a hint */
     case 81: case 84: case 267:                                    /* sync, sync_file_range, syncfs */

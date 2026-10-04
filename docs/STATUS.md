@@ -662,6 +662,26 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**English, errors the user sees, disk space, more syscalls (app 0.67).**
+- The interface is English, or Turkish when the phone's first language is Turkish
+  (L(tr, en) in ios/main.m; CFBundleLocalizations en/tr, InfoPlist.strings for the
+  Photos permission text).
+- An app that dies by itself (an exit code other than 0, or a fault; not one LiquidAPK
+  stopped) gets an alert: how it ended (aoi_android_last_end) and the line of its log
+  that says why (FATAL EXCEPTION / Caused by / SIGSEGV), with "Copy log".
+- "Not enough memory next to the open app" offers to save and close that app and then
+  compile (aoi_android_save_stop, then the compile once its process has ended).
+- Disk space: a compile needs the dex's size four times over plus 300 MB free (else
+  -3: "Not enough space"); a snapshot is not written with less than 400 MB free, and it
+  is flushed, checked (ferror) and fsync'd before it replaces the last one.
+- Frames are turned into images only while the app's screen is shown; it is redrawn
+  when shown again (aoi_android_redraw). The card's compile-time estimate is kept for
+  30 s instead of read from the APK every second. A memory warning saves the open app.
+- Syscalls: preadv/pwritev, sendfile, fchdir, wait4/waitid (ECHILD), rt_sigpending,
+  inotify_init1/add_watch/rm_watch (watches that never fire). tests/pipes.c step 128.
+- Right after 0.66 was built (iOS SDK 26.2), its retain-cycle warning in the task's
+  expiration handler is fixed.
+
 **The compile in the background, the iOS way; out of an app by the right edge (app 0.66).**
 - A compile (and the save after it) asks iOS for a continued-processing task (iOS 26
   BGContinuedProcessingTask, BGTaskSchedulerPermittedIdentifiers

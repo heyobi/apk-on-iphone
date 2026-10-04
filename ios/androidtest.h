@@ -76,6 +76,13 @@ void aoi_android_stop(void);
  * next app, should this one end by itself meanwhile. */
 void aoi_android_save_stop(double timeout);
 
+/* Whether the last app ended by itself with an error (not stopped, not exit 0): 1 and
+ * how ("exit 1 after 12 s", "stopped (3) in libfoo.so+0x1234 after 5 s"), else 0. */
+int aoi_android_last_end(char *why, size_t n);
+
+/* The running app's screen is sent again (the iOS screen was hidden and drops frames meanwhile). */
+void aoi_android_redraw(void);
+
 /* A touch for the running app (from any thread): action 0 down, 1 up, 2 move, 4
  * cancel, at (x, y) in its screen pixels (the frames' size). Ignored when no app runs. */
 void aoi_android_touch(int action, float x, float y);
@@ -104,7 +111,7 @@ int aoi_android_snapshot(double timeout);
 /* The app's code compiled by dex2oat (androidtest.c), once per APK, in a thread of its
  * own: the iOS app starts it at install or from the app's card; a launch never does.
  * 0 started, 1 nothing to do (compiled already), -1 another one runs, -2 too little
- * memory next to the running app. faster: an app compiled `verify` (more than 16 MB of
+ * memory next to the running app, -3 too little free space on the device. faster: an app compiled `verify` (more than 16 MB of
  * dex) gets its hot code compiled, from its profile. Its output goes to logpath. */
 int aoi_android_compile(const char *root, const char *datadir, const char *logpath, int faster,
                         aoi_log_fn log, void *ctx);

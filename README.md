@@ -12,7 +12,7 @@ is no writable-executable memory. Android's own ART may still JIT-compile hot Ja
 methods inside the guest, but what it produces is AArch64 guest code that the
 interpreter runs like any other.
 
-## What runs today (app 0.65)
+## What runs today (app 0.67)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):
@@ -69,8 +69,8 @@ long it still takes, with a cancel button (and "Derle" for one that is not compi
 Apps with up to 16 MB of dex are compiled fully (`speed`). Bigger ones are verified;
 their hot code can then be compiled from the app's profile (`speed-profile`, "Hızlandır"
 in the card's menu): `speed` would take 40-50 minutes and over 900 MB. The compile runs
-on a low-priority thread and goes on when LiquidAPK is in the background (it is not
-suspended while a compile runs); it pauses only while the phone is very hot, or hot (or
+on a low-priority thread and goes on when LiquidAPK is in the background (as an iOS 26
+continued-processing task: iOS shows its progress); it pauses only while the phone is very hot, or hot (or
 in Low Power Mode) while an app is in use next to it. When it is done, the app is
 started once out of sight and saved, so its first tap resumes it in about a second. That
 clean snapshot is kept: after "Baştan başlat", a crash or a LiquidAPK update the app
@@ -85,9 +85,10 @@ on an app then only loads the app (about 8 s less: NewPipe 38 s -> 30 s on the h
 1. GitHub → **Releases** → the latest `v0.x.N` → `ApkOnIphone.ipa` (every push to `main`
    builds and publishes it).
 2. Install it with SideStore, AltStore or Sideloadly; they sign it with your Apple ID.
-3. Open **LiquidAPK** → **APK ekle** → pick an `.apk` from Files. Tap its card to run it;
-   swipe from the left edge for Android's back; hold a card for its home-screen link or
-   to remove it. **Logu kopyala** copies the log for a bug report.
+3. Open **LiquidAPK** → **Add APK** → pick an `.apk` from Files. Tap its card to run it;
+   swipe in from the left edge for Android's back, from the right edge to go back to
+   LiquidAPK; hold a card for its menu. **Developer › Copy log** copies the log for a bug
+   report. The interface is in English, or Turkish on a Turkish phone.
 
 More in `docs/IOS.md`.
 

@@ -15,7 +15,9 @@
  *  32  a FIFO (mknodat, Realm's notifications): opened O_RDWR|O_NONBLOCK, empty is
  *      EAGAIN, then reads back what was written
  *  64  truncate by path (WhatsApp's logs): a file of 8 KiB is cut to 100 bytes; and
- *      /proc/sys/kernel/random/boot_id (libcutils' ashmem) reads as a UUID */
+ *      /proc/sys/kernel/random/boot_id (libcutils' ashmem) reads as a UUID
+ * 128  preadv at an offset, sendfile into a pipe, an inotify fd that takes a watch and
+ *      is never readable, wait4 with no children (ECHILD) */
 typedef unsigned long u64;
 
 static long sys(long n, long a, long b, long c, long d, long e)
@@ -138,6 +140,23 @@ void _start_c(void)
         fd = sys(56, -100, (long)"/proc/sys/kernel/random/boot_id", 0, 0, 0);
         if (fd < 0 || sys(63, fd, (long)id, sizeof id, 0, 0) != 37 || id[8] != '-' || id[36] != '\n') fail |= 64;
         if (fd >= 0) sys(57, fd, 0, 0, 0, 0);
+    }
+
+    {
+        long fd = sys(56, -100, (long)"/vec.tmp", 0102 | 01000, 0644, 0);
+        int pf[2];
+        char a[4] = { 0 }, b[4] = { 0 }, got[8];
+        u64 iov[4] = { (u64)a, 3, (u64)b, 3 }, off = 2;
+        long in;
+        if (fd < 0 || sys(64, fd, (long)"abcdefghij", 10, 0, 0) != 10) fail |= 128;
+        else if (sys(69, fd, (long)iov, 2, 2, 0) != 6 || a[0] != 'c' || b[2] != 'h') fail |= 128;   /* preadv at 2 */
+        else if (sys(59, (long)pf, 0, 0, 0, 0) != 0) fail |= 128;                                    /* pipe2 */
+        else if (sys(71, pf[1], fd, (long)&off, 4, 0) != 4 || off != 6) fail |= 128;                 /* sendfile */
+        else if (sys(63, pf[0], (long)got, 8, 0, 0) != 4 || got[0] != 'c' || got[3] != 'f') fail |= 128;
+        if ((in = sys(26, 04000, 0, 0, 0, 0)) < 0) fail |= 128;                                       /* IN_NONBLOCK */
+        else if (sys(27, in, (long)"/", 0x100, 0, 0) < 1 || sys(63, in, (long)got, 8, 0, 0) != -11) fail |= 128;
+        if (sys(260, -1, 0, 0, 0, 0) != -10) fail |= 128;                                             /* wait4: ECHILD */
+        sys(35, -100, (long)"/vec.tmp", 0, 0, 0);
     }
 
     sys(94, fail, 0, 0, 0, 0);                                         /* exit_group */

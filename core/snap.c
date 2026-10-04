@@ -30,6 +30,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -401,6 +402,15 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path)
             if (!fstat(p->shm[i].fd, &a) && !fstat(p->shm[j].fd, &b) && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
                 return "shared memory mapped twice (Chromium's GPU command buffers): not saved";
         }
+    {                                                       /* a snapshot is ~100-300 MB: not on a full disk */
+        char dir[AOI_PATH];
+        struct statvfs vs;
+        char *slash;
+        snprintf(dir, sizeof dir, "%s", path);
+        if ((slash = strrchr(dir, '/'))) *slash = 0;
+        if (!statvfs(slash ? dir : ".", &vs) && (uint64_t)vs.f_bavail * vs.f_frsize < (uint64_t)400 << 20)
+            return "less than 400 MB free on the device: not saved";
+    }
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     if (!(f = fopen(tmp, "wb"))) return "cannot write the snapshot";
     w(f, SNAP_MAGIC, 8); w(f, AOI_SNAP_BUILD, sizeof AOI_SNAP_BUILD); w(f, &sz, 4);
@@ -426,6 +436,7 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path)
     if (!e) e = save_memory(p, f);
     if (!e && (aoi_gralloc_snap(p, f, 1) || aoi_sf_snap(p, f, 1) || aoi_binder_snap(p, f, 1))) e = "service state";
     w(f, SNAP_MAGIC, 8);
+    if (!e && (fflush(f) || ferror(f) || fsync(fileno(f)))) e = "write failed (is the device full?)";   /* all of it, before it replaces the last */
     if (fclose(f) && !e) e = "write failed";
     if (e) { unlink(tmp); return e; }
     if (rename(tmp, path)) { unlink(tmp); return "cannot write the snapshot"; }

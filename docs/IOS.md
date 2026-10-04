@@ -10,12 +10,14 @@ beyond a normal sideloaded app.
    into the app's container (its native libraries extracted, a data directory of its
    own) and gets a card.
 4. **Compile:** right after it is added the app is compiled once with Android's own
-   dex2oat; the card shows the percentage and the time left, with İptal. It goes on
-   with LiquidAPK in the background and pauses only when the phone is very hot (or hot
+   dex2oat; the card shows the percentage and the time left, with Cancel. It goes on
+   with LiquidAPK in the background (iOS shows its progress) and pauses only when the phone is very hot (or hot
    while an app is in use). Then the app is started once out of sight and saved.
 5. **Run it:** tap the card: a compiled app resumes from its snapshot in about a second
-   (an uncompiled one asks: compile first, or open it slow). Swipe from the left edge
-   for Android's back; the iOS keyboard opens for text fields.
+   (an uncompiled one asks: compile first, or open it slow). Swipe in from the left edge
+   for Android's back, from the right edge to leave the app (it keeps running); the iOS
+   keyboard opens for text fields. If an app dies, LiquidAPK says so, with the reason
+   from its log and a button to copy the log.
 6. **Cards:** hold one for **Ana ekrana ekle** (a home-screen link through Shortcuts),
    **Baştan başlat** (drop the saved state; it still opens fast), **Derle / Hızlandır /
    Yeniden derle / Derlemeyi sil**, or **Kaldır**.

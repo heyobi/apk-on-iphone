@@ -146,24 +146,24 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *bundled = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot/data"];
     NSError *e = nil;
-    if (aoi_apk_manifest(apk.bytes, apk.length, pkg, sizeof pkg, label, sizeof label)) { *err = @"Bu bir Android APK'sı değil."; return nil; }
+    if (aoi_apk_manifest(apk.bytes, apk.length, pkg, sizeof pkg, label, sizeof label)) { *err = L(@"Bu bir Android APK'sı değil.", @"This is not an Android APK."); return nil; }
     NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
                             @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."] invertedSet];
     if (!pkg[0] || pkg[0] == '.' || strstr(pkg, "..") || [@(pkg) rangeOfCharacterFromSet:bad].location != NSNotFound) {
-        *err = @"APK'nın paket adı geçersiz.";            /* it names the app's directory */
+        *err = L(@"APK'nın paket adı geçersiz.", @"The APK's package name is not valid.");            /* it names the app's directory */
         return nil;
     }
     AoiApp *a = [AoiApp new];
     a.pkg = @(pkg); a.label = @(label);
     [fm createDirectoryAtPath:[self appsDir] withIntermediateDirectories:YES attributes:nil error:nil];
     if (![fm fileExistsAtPath:a.dir] && ![fm copyItemAtPath:bundled toPath:a.dir error:&e]) {
-        *err = [NSString stringWithFormat:@"/data hazırlanamadı: %@", e.localizedDescription];
+        *err = [NSString stringWithFormat:L(@"/data hazırlanamadı: %@", @"Could not set up /data: %@"), e.localizedDescription];
         return nil;
     }
     [fm createDirectoryAtPath:a.apkPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
     if (![[NSData dataWithContentsOfFile:a.apkPath options:NSDataReadingMappedIfSafe error:nil] isEqualToData:apk]
         && ![apk writeToFile:a.apkPath options:NSDataWritingAtomic error:&e]) {   /* a new file: a running app keeps the old one's pages */
-        *err = [NSString stringWithFormat:@"APK yazılamadı: %@", e.localizedDescription];
+        *err = [NSString stringWithFormat:L(@"APK yazılamadı: %@", @"Could not write the APK: %@"), e.localizedDescription];
         return nil;
     }
     [@{ @"label" : a.label } writeToFile:a.infoPath atomically:YES];
@@ -319,7 +319,7 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 - (UIView *)inputAccessoryView {
     if (!self.keyBar) {
         UIToolbar *bar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)];
-        UIBarButtonItem *close = [[UIBarButtonItem alloc] initWithTitle:@"Kapat" style:UIBarButtonItemStyleDone
+        UIBarButtonItem *close = [[UIBarButtonItem alloc] initWithTitle:L(@"Kapat", @"Done") style:UIBarButtonItemStyleDone
                                                                  target:self action:@selector(closeKeyboard)];
         bar.items = @[ [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                                                                      target:nil action:nil], close ];
@@ -354,6 +354,7 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 @property(nonatomic, strong) UILabel *loadingText;
 @property(nonatomic, strong) BackBubble *bubble;
 @property(nonatomic, copy) NSString *pendingStatus;
+@property(atomic) BOOL onScreen;                     /* frames are turned into images only then */
 @end
 
 @implementation ScreenVC
@@ -396,7 +397,7 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
     name.font = [UIFont systemFontOfSize:22 weight:UIFontWeightSemibold];
     name.textColor = UIColor.whiteColor;
     self.loadingText = [UILabel new];
-    self.loadingText.text = self.pendingStatus ?: @"Açılıyor…";
+    self.loadingText.text = self.pendingStatus ?: L(@"Açılıyor…", @"Opening…");
     self.loadingText.font = [UIFont systemFontOfSize:14];
     self.loadingText.textColor = [UIColor colorWithWhite:1 alpha:0.75];
     self.loadingText.numberOfLines = 0;
@@ -421,6 +422,17 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    self.onScreen = YES;
+    aoi_android_redraw();                               /* what it shows now (frames were dropped meanwhile) */
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    self.onScreen = NO;
+}
 
 - (void)showFrame:(UIImage *)img {
     self.screen.image = img;
@@ -503,6 +515,7 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 - (void)append:(NSString *)line;
 - (void)compileEnded:(NSString *)dir state:(NSString *)state;
 - (void)tick;
+- (double)estimateFor:(AoiApp *)a;
 - (NSString *)root;
 - (NSString *)display;
 - (void)startWarm;
@@ -519,6 +532,44 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 @end
 
 static Launcher *launcher;
+
+/* LiquidAPK's log and the end of each app's own (this run and the previous), to the
+ * clipboard: what a bug report needs. */
+static void copy_logs(void)
+{
+    NSMutableString *all = [launcher.log mutableCopy];
+    for (AoiApp *a in [AoiApp all])
+        for (NSString *ext in @[ @".log.1", @".log" ]) {          /* the previous run, then this one */
+            NSString *app = [NSString stringWithContentsOfFile:[a.dir stringByAppendingString:ext]
+                                                      encoding:NSUTF8StringEncoding error:nil];
+            if (!app.length) continue;
+            NSString *tail = app.length > 40000 ? [app substringFromIndex:app.length - 40000] : app;
+            [all appendFormat:@"\n--- %@%@ ---\n%@", a.pkg, ext, tail];
+        }
+    UIPasteboard.generalPasteboard.string = all;
+    [launcher append:L(@"(log panoya kopyalandı)", @"(log copied to the clipboard)")];
+}
+
+/* The line of an app's log that says why it died (Java's exception, a native crash). */
+static NSString *crash_line(NSString *logPath)
+{
+    NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:logPath];
+    unsigned long long size = [h seekToEndOfFile];
+    [h seekToFileOffset:size > 65536 ? size - 65536 : 0];
+    NSString *t = [[NSString alloc] initWithData:[h readDataToEndOfFile] encoding:NSUTF8StringEncoding];
+    [h closeFile];
+    NSString *best = nil;
+    for (NSString *line in [t componentsSeparatedByString:@"\n"]) {
+        if ([line containsString:@"FATAL EXCEPTION"] || [line containsString:@"Caused by:"]
+            || [line containsString:@"SIGSEGV"] || [line containsString:@"Abort message"])
+            best = line;
+        else if (best && [best containsString:@"FATAL EXCEPTION"] && [line hasPrefix:@"E/AndroidRuntime"]
+                 && ([line containsString:@"Exception"] || [line containsString:@"Error"]))
+            best = line;                                 /* the exception under "FATAL EXCEPTION" */
+    }
+    if (best.length > 300) best = [[best substringToIndex:300] stringByAppendingString:@"…"];
+    return best;
+}
 
 /* dex2oat waits while the phone is very hot; or hot (or in Low Power Mode) while an app
  * is in use next to it. Alone (nothing else on screen, or LiquidAPK in the background)
@@ -569,7 +620,7 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     title.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
     title.textColor = UIColor.whiteColor;
     UILabel *sub = [UILabel new];
-    sub.text = @"Android uygulamaları";
+    sub.text = L(@"Android uygulamaları", @"Android apps");
     sub.font = [UIFont systemFontOfSize:15];
     sub.textColor = [UIColor colorWithWhite:1 alpha:0.7];
     UIStackView *titles = [[UIStackView alloc] initWithArrangedSubviews:@[ title, sub ]];
@@ -581,7 +632,7 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     self.list.axis = UILayoutConstraintAxisVertical;
     self.list.spacing = 14;
     self.empty = [UILabel new];
-    self.empty.text = @"Henüz uygulama yok.\nAşağıdaki “APK ekle” ile bir Android uygulaması seçin.";
+    self.empty.text = L(@"Henüz uygulama yok.\nAşağıdaki “APK ekle” ile bir Android uygulaması seçin.", @"No apps yet.\nPick an Android app with “Add APK” below.");
     self.empty.numberOfLines = 0;
     self.empty.textAlignment = NSTextAlignmentCenter;
     self.empty.textColor = [UIColor colorWithWhite:1 alpha:0.7];
@@ -596,8 +647,8 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     [scroll addSubview:content];
     [self.view addSubview:scroll];
 
-    UIView *add = [self pill:@"APK ekle" symbol:@"plus" action:@selector(pick)];
-    UIView *dev = [self pill:@"Geliştirici" symbol:@"wrench.and.screwdriver" action:@selector(openDev)];
+    UIView *add = [self pill:L(@"APK ekle", @"Add APK") symbol:@"plus" action:@selector(pick)];
+    UIView *dev = [self pill:L(@"Geliştirici", @"Developer") symbol:@"wrench.and.screwdriver" action:@selector(openDev)];
     UIStackView *bar = [[UIStackView alloc] initWithArrangedSubviews:@[ add, dev ]];
     bar.spacing = 12; bar.distribution = UIStackViewDistributionFillEqually;
     bar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -675,13 +726,13 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
                 ScreenVC *target = self.warmTarget;
                 if (self.warmCtx) CFRelease(self.warmCtx);
                 self.warmApp = nil; self.warmTarget = nil; self.warmCtx = NULL;
-                if (rc == -3) [self append:[NSString stringWithFormat:@"%@ başlatılamadı (Android ondan önce kapandı); tekrar dokunun.", a.label]];
+                if (rc == -3) [self append:[NSString stringWithFormat:L(@"%@ başlatılamadı (Android ondan önce kapandı); tekrar dokunun.", @"%@ did not start (Android ended first); tap it again."), a.label]];
                 [self appEnded:a target:target log:[a.dir stringByAppendingString:@".log"]];
             } else {                                     /* stopped for an app, or it ended by itself */
                 BOOL idle = !self.runningPkg && !self.preparing;
                 quick = idle && CACurrentMediaTime() - t0 < 10 ? quick + 1 : 0;
                 if (quick < 3) [self idleNext];          /* up again if still idle */
-                else if (quick == 3) [self append:@"Android arka planda açılamadı; bir uygulamaya dokununca başlar."];
+                else if (quick == 3) [self append:L(@"Android arka planda açılamadı; bir uygulamaya dokununca başlar.", @"Android could not start in the background; it starts when you tap an app.")];
             }
         });
     });
@@ -693,7 +744,22 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
         self.runningPkg = nil;
         self.screenVC = nil;
         compile_hold_update();
-        [self append:[NSString stringWithFormat:@"%@ kapandı; log: %@", a.label, logPath]];
+        [self append:[NSString stringWithFormat:L(@"%@ kapandı; log: %@", @"%@ ended; log: %@"), a.label, logPath]];
+        char why[300];
+        if (aoi_android_last_end(why, sizeof why)) {         /* it died: say so, with what the log knows */
+            NSString *line = crash_line(logPath);
+            NSString *msg = [NSString stringWithFormat:L(@"%@ beklenmedik şekilde kapandı (%s).%@\n\nTekrar açabilirsiniz. Sorun sürerse logu kopyalayıp bildirin.",
+                                                         @"%@ closed unexpectedly (%s).%@\n\nYou can open it again. If it keeps happening, copy the log and report it."),
+                             a.label, why, line ? [@"\n\n" stringByAppendingString:line] : @""];
+            UIAlertController *al = [UIAlertController alertControllerWithTitle:L(@"Uygulama kapandı", @"The app closed")
+                                                                        message:msg preferredStyle:UIAlertControllerStyleAlert];
+            [al addAction:[UIAlertAction actionWithTitle:L(@"Logu kopyala", @"Copy log") style:UIAlertActionStyleDefault
+                                                 handler:^(UIAlertAction *x) { copy_logs(); }]];
+            [al addAction:[UIAlertAction actionWithTitle:L(@"Tamam", @"OK") style:UIAlertActionStyleCancel handler:nil]];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{
+                [(self.presentedViewController ?: self) presentViewController:al animated:YES completion:nil];
+            });
+        }
         if (self.presentedViewController == target) [self dismissViewControllerAnimated:YES completion:nil];
     }
     [self idleNext];
@@ -729,7 +795,7 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     self.preparingShown = NO; self.preparingCancelled = NO;
     if (!self.inBackground) work_begun();
     [a prepare];
-    [self append:[NSString stringWithFormat:@"%@: ilk açılış arka planda hazırlanıyor", a.label]];
+    [self append:[NSString stringWithFormat:L(@"%@: ilk açılış arka planda hazırlanıyor", @"%@: preparing its first launch in the background"), a.label]];
     NSString *root = self.root, *display = self.display, *logPath = [a.dir stringByAppendingString:@".log"];
     dispatch_async(self.appQueue, ^{
         int rc = aoi_android_app_hidden(root.UTF8String, a.dir.UTF8String, logPath.UTF8String, display.UTF8String,
@@ -744,11 +810,11 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
             if (cancelled) {
                 if (![self.prepareQueue containsObject:a.pkg]) [self.prepareQueue addObject:a.pkg];
             } else if (rc == 1) {
-                [self append:[NSString stringWithFormat:@"%@ hazır: anında açılır", a.label]];
+                [self append:[NSString stringWithFormat:L(@"%@ hazır: anında açılır", @"%@ is ready: it opens instantly"), a.label]];
             } else if (rc == -1 && [NSFileManager.defaultManager fileExistsAtPath:a.dir]) {   /* it cannot be saved */
                 [@"" writeToFile:[a.dir stringByAppendingString:@".nosnap"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
             } else if (rc == -3) {
-                [self append:[NSString stringWithFormat:@"%@: ilk açılış bu sefer hazırlanamadı; LiquidAPK bir dahaki açılışta yeniden dener.", a.label]];
+                [self append:[NSString stringWithFormat:L(@"%@: ilk açılış bu sefer hazırlanamadı; LiquidAPK bir dahaki açılışta yeniden dener.", @"%@: its first launch could not be prepared this time; LiquidAPK tries again next time it starts."), a.label]];
             }
             [self idleNext];
         });
@@ -844,11 +910,11 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
 /* ---------- compiling (dex2oat, once per APK): the cards show it ---------- */
 
 static NSString *duration_text(double s) {
-    if (s == -2) return @"az";
-    if (s < 0) return @"süre hesaplanıyor";
-    if (s < 90) return [NSString stringWithFormat:@"~%.0f sn", fmax(5, round(s / 5) * 5)];
-    if (s < 3600) return [NSString stringWithFormat:@"~%.0f dk", ceil(s / 60)];
-    return [NSString stringWithFormat:@"~%.0f sa %.0f dk", floor(s / 3600), fmod(ceil(s / 60), 60)];
+    if (s == -2) return L(@"az", @"almost done");
+    if (s < 0) return L(@"süre hesaplanıyor", @"estimating");
+    if (s < 90) return [NSString stringWithFormat:L(@"~%.0f sn", @"~%.0f s"), fmax(5, round(s / 5) * 5)];
+    if (s < 3600) return [NSString stringWithFormat:L(@"~%.0f dk", @"~%.0f min"), ceil(s / 60)];
+    return [NSString stringWithFormat:L(@"~%.0f sa %.0f dk", @"~%.0f h %.0f min"), floor(s / 3600), fmod(ceil(s / 60), 60)];
 }
 
 - (NSString *)root { return [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"]; }
@@ -859,6 +925,19 @@ static NSString *duration_text(double s) {
 }
 
 /* Every card's line, button and bar; once a second while dex2oat runs. */
+/* How long compiling the app takes, kept for 30 s (it reads the APK: the card asks every second). */
+- (double)estimateFor:(AoiApp *)a {
+    static NSMutableDictionary<NSString *, NSArray *> *cache;
+    CFTimeInterval now = CACurrentMediaTime();
+    NSArray *c;
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    c = cache[a.dir];
+    if (c && now - [c[0] doubleValue] < 30) return [c[1] doubleValue];
+    double e = aoi_android_compile_estimate(a.dir.UTF8String, 0);
+    cache[a.dir] = @[ @(now), @(e) ];
+    return e;
+}
+
 - (void)tick {
     struct aoi_compile_info ci;
     aoi_android_compile_info(&ci);
@@ -869,30 +948,30 @@ static NSString *duration_text(double s) {
         BOOL mine = ci.active && !strcmp(ci.datadir, a.dir.UTF8String);
         NSString *st = a.compileState, *text, *btn = nil, *sym = nil;
         if (mine) {
-            text = ci.held ? [NSString stringWithFormat:@"Derleme %%%.0f · duraklatıldı (telefon çok sıcak, ya da sıcak ve bir uygulama açık)", ci.progress * 100]
-                           : [NSString stringWithFormat:@"Derleniyor %%%.0f · %@ kaldı", ci.progress * 100, duration_text(ci.eta)];
-            btn = @"İptal"; sym = @"xmark.circle.fill";
+            text = ci.held ? [NSString stringWithFormat:L(@"Derleme %%%.0f · duraklatıldı (telefon çok sıcak, ya da sıcak ve bir uygulama açık)", @"Compile %.0f%% · paused (the phone is very hot, or hot with an app open)"), ci.progress * 100]
+                           : [NSString stringWithFormat:L(@"Derleniyor %%%.0f · %@ kaldı", @"Compiling %.0f%% · %@ left"), ci.progress * 100, duration_text(ci.eta)];
+            btn = L(@"İptal", @"Cancel"); sym = @"xmark.circle.fill";
         } else if ([self queued:a]) {
-            text = @"Derleme sırada";
-            btn = @"İptal"; sym = @"xmark.circle.fill";
+            text = L(@"Derleme sırada", @"Waiting to compile");
+            btn = L(@"İptal", @"Cancel"); sym = @"xmark.circle.fill";
         } else if ([self.preparing.pkg isEqualToString:a.pkg] && !self.preparingShown) {
-            text = @"Derlendi ✓ · ilk açılış arka planda hazırlanıyor…";
+            text = L(@"Derlendi ✓ · ilk açılış arka planda hazırlanıyor…", @"Compiled ✓ · preparing the first launch…");
         } else if ([self.prepareQueue containsObject:a.pkg]) {
-            text = @"Derlendi ✓ · ilk açılışı hazırlanacak";
+            text = L(@"Derlendi ✓ · ilk açılışı hazırlanacak", @"Compiled ✓ · its first launch will be prepared");
         } else if (a.compiled && aoi_android_snapshot_fits(a.dir.UTF8String)) {
-            text = [st isEqualToString:@"verify"] ? @"Hazır ✓ · anında açılır (temel derleme)" : @"Hazır ✓ · anında açılır";
+            text = [st isEqualToString:@"verify"] ? L(@"Hazır ✓ · anında açılır (temel derleme)", @"Ready ✓ · opens instantly (basic compile)") : L(@"Hazır ✓ · anında açılır", @"Ready ✓ · opens instantly");
         } else if ([st isEqualToString:@"speed"] || [st isEqualToString:@"speed-profile"]) {
-            text = @"Derlendi ✓";
+            text = L(@"Derlendi ✓", @"Compiled ✓");
         } else if ([st isEqualToString:@"verify"]) {
-            text = @"Derlendi (temel) ✓ · basılı tutup “Hızlandır”";
+            text = L(@"Derlendi (temel) ✓ · basılı tutup “Hızlandır”", @"Compiled (basic) ✓ · press and hold for “Speed up”");
         } else if ([st isEqualToString:@"failed"]) {
-            text = @"Derlenemedi · derlenmeden çalışır";
-            btn = @"Tekrar"; sym = @"arrow.clockwise";
+            text = L(@"Derlenemedi · derlenmeden çalışır", @"Could not compile · runs uncompiled");
+            btn = L(@"Tekrar", @"Retry"); sym = @"arrow.clockwise";
         } else {
-            text = [NSString stringWithFormat:@"Derlenmedi · derleme %@", duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
-            btn = @"Derle"; sym = @"hammer.fill";
+            text = [NSString stringWithFormat:L(@"Derlenmedi · derleme %@", @"Not compiled · compiling takes %@"), duration_text([self estimateFor:a])];
+            btn = L(@"Derle", @"Compile"); sym = @"hammer.fill";
         }
-        if ([a.pkg isEqualToString:self.runningPkg]) text = [@"Çalışıyor · " stringByAppendingString:text];
+        if ([a.pkg isEqualToString:self.runningPkg]) text = [L(@"Çalışıyor · ", @"Running · ") stringByAppendingString:text];
         sub.text = text;
         bar.hidden = !mine;
         if (mine) bar.progress = (float)ci.progress;
@@ -930,11 +1009,30 @@ static NSString *duration_text(double s) {
         [[NSString stringWithFormat:@"%d %d", faster ? 1 : 0, tries] writeToFile:m atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
     if (rc == -1) [self.queue addObject:@{ @"pkg" : a.pkg, @"faster" : @(faster) }];
-    else if (rc == 1 && faster) [self tell:@"Hızlandırılamıyor"
-                                       what:@"Uygulamanın sık kullandığı kod henüz bilinmiyor: önce onu bir süre kullanın."];
-    else if (rc == -2) [self tell:@"Şimdi derlenemiyor"
-                             what:@"Açık uygulamanın yanında bellek yetmiyor. Uygulamayı kapatıp (iki parmakla dokunun) tekrar deneyin."];
-    if (rc == 0) [self append:[NSString stringWithFormat:@"%@ derleniyor (tahmini %@).", a.label,
+    else if (rc == 1 && faster) [self tell:L(@"Hızlandırılamıyor", @"Cannot speed up yet")
+                                       what:L(@"Uygulamanın sık kullandığı kod henüz bilinmiyor: önce onu bir süre kullanın.", @"The app's frequently used code is not known yet: use it for a while first.")];
+    else if (rc == -2) {                                 /* the open app takes the memory: end it (saved), then compile */
+        UIAlertController *al = [UIAlertController alertControllerWithTitle:L(@"Şimdi derlenemiyor", @"Cannot compile now")
+            message:[NSString stringWithFormat:L(@"Açık uygulamanın (%@) yanında bellek yetmiyor. O kaydedilip kapatılsın mı? Dokununca kaldığı yerden açılır.",
+                                                 @"Not enough memory next to the open app (%@). Save and close it? It resumes where it was when you tap it."),
+                                               [AoiApp withPackage:self.runningPkg].label ?: @"?"]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [al addAction:[UIAlertAction actionWithTitle:L(@"Kapat ve derle", @"Close it and compile") style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *x) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                aoi_android_save_stop(20);
+                dispatch_async(self.appQueue, ^{             /* after its process has ended */
+                    dispatch_async(dispatch_get_main_queue(), ^{ [self compile:a faster:faster]; });
+                });
+            });
+        }]];
+        [al addAction:[UIAlertAction actionWithTitle:L(@"Vazgeç", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+        [(self.presentedViewController ?: self) presentViewController:al animated:YES completion:nil];
+    }
+    else if (rc == -3) [self tell:L(@"Yer yok", @"Not enough space")
+                             what:L(@"Derleme için telefonda yeterli boş alan yok. Biraz yer açıp tekrar deneyin.",
+                                    @"There is not enough free space on the phone for the compile. Free some space and try again.")];
+    if (rc == 0) [self append:[NSString stringWithFormat:L(@"%@ derleniyor (tahmini %@).", @"Compiling %@ (about %@)."), a.label,
                                duration_text(aoi_android_compile_estimate(a.dir.UTF8String, faster))]];
     [self tick];
     return rc;
@@ -955,7 +1053,7 @@ static NSString *duration_text(double s) {
     for (AoiApp *x in [AoiApp all]) if ([x.dir isEqualToString:dir]) a = x;
     if (a) [NSFileManager.defaultManager removeItemAtPath:compile_mark(a) error:nil];
     if (a) [self append:[NSString stringWithFormat:@"%@: %@", a.label,
-                         [state isEqualToString:@"failed"] ? @"derlenemedi" : state.length ? @"derlendi" : @"derleme durdu"]];
+                         [state isEqualToString:@"failed"] ? L(@"derlenemedi", @"could not be compiled") : state.length ? L(@"derlendi", @"compiled") : L(@"derleme durdu", @"compile stopped")]];
     if (a && state.length && ![state isEqualToString:@"failed"]) {
         [NSFileManager.defaultManager removeItemAtPath:[a.dir stringByAppendingString:@".nosnap"] error:nil];
         [self prepareApp:a];                             /* its first start, out of sight: then a tap resumes it */
@@ -982,14 +1080,14 @@ static NSString *duration_text(double s) {
         int tries = [f.lastObject intValue];
         if ((a.compiled && !faster) || tries >= 2) { [fm removeItemAtPath:m error:nil]; continue; }
         [[NSString stringWithFormat:@"%d %d", faster ? 1 : 0, tries + 1] writeToFile:m atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        [self append:[NSString stringWithFormat:@"%@: yarım kalan derleme yeniden başlıyor.", a.label]];
+        [self append:[NSString stringWithFormat:L(@"%@: yarım kalan derleme yeniden başlıyor.", @"%@: restarting a compile that was cut short."), a.label]];
         [self compile:a faster:faster];
     }
 }
 
 - (void)tell:(NSString *)title what:(NSString *)msg {
     UIAlertController *al = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [al addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleCancel handler:nil]];
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Tamam", @"OK") style:UIAlertActionStyleCancel handler:nil]];
     [(self.presentedViewController ?: self) presentViewController:al animated:YES completion:nil];
 }
 
@@ -1004,19 +1102,20 @@ static NSString *duration_text(double s) {
         return;
     }
     NSString *msg = mine
-        ? [NSString stringWithFormat:@"Derleniyor: %%%.0f, %@ kaldı. Bitince hızlı açılır; şimdi açarsanız derlenmeden (yavaş) çalışır.",
+        ? [NSString stringWithFormat:L(@"Derleniyor: %%%.0f, %@ kaldı. Bitince hızlı açılır; şimdi açarsanız derlenmeden (yavaş) çalışır.", @"Compiling: %.0f%%, %@ left. Then it opens fast; opened now it runs uncompiled (slow)."),
                                      ci.progress * 100, duration_text(ci.eta)]
-        : [NSString stringWithFormat:@"Derlenmeden de açılır ama çok daha yavaş çalışır. Derleme bir kez yapılır, %@ sürer; "
-                                     @"LiquidAPK'yı kapatmayın (arka plana almak olur).", duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
-    UIAlertController *al = [UIAlertController alertControllerWithTitle:mine ? [NSString stringWithFormat:@"%@ derleniyor", a.label]
-                                                                             : [NSString stringWithFormat:@"%@ henüz derlenmedi", a.label]
+        : [NSString stringWithFormat:L(@"Derlenmeden de açılır ama çok daha yavaş çalışır. Derleme bir kez yapılır, %@ sürer; "
+                                     @"LiquidAPK'yı kapatmayın (arka plana almak olur).", @"It also opens uncompiled, but runs much slower. Compiling is done once and takes %@; "
+                                     @"do not quit LiquidAPK (the background is fine)."), duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:mine ? [NSString stringWithFormat:L(@"%@ derleniyor", @"Compiling %@"), a.label]
+                                                                             : [NSString stringWithFormat:L(@"%@ henüz derlenmedi", @"%@ is not compiled yet"), a.label]
                                                                 message:msg preferredStyle:UIAlertControllerStyleAlert];
     if (!mine)
-        [al addAction:[UIAlertAction actionWithTitle:@"Derle" style:UIAlertActionStyleDefault
+        [al addAction:[UIAlertAction actionWithTitle:L(@"Derle", @"Compile") style:UIAlertActionStyleDefault
                                              handler:^(UIAlertAction *x) { [self compile:a faster:NO]; }]];
-    [al addAction:[UIAlertAction actionWithTitle:@"Yine de aç" style:UIAlertActionStyleDefault
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Yine de aç", @"Open anyway") style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction *x) { [self openApp:a]; }]];
-    [al addAction:[UIAlertAction actionWithTitle:mine ? @"Bekle" : @"Vazgeç" style:UIAlertActionStyleCancel handler:nil]];
+    [al addAction:[UIAlertAction actionWithTitle:mine ? L(@"Bekle", @"Wait") : L(@"Vazgeç", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:al animated:YES completion:nil];
 }
 
@@ -1031,11 +1130,11 @@ static NSString *duration_text(double s) {
     if (!a) return nil;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
                                                     actionProvider:^UIMenu *(NSArray<UIMenuElement *> *s) {
-        UIAction *home = [UIAction actionWithTitle:@"Ana ekrana ekle" image:[UIImage systemImageNamed:@"plus.app"]
+        UIAction *home = [UIAction actionWithTitle:L(@"Ana ekrana ekle", @"Add to Home Screen") image:[UIImage systemImageNamed:@"plus.app"]
                                         identifier:nil handler:^(UIAction *x) { [self addToHome:a]; }];
-        UIAction *fresh = [UIAction actionWithTitle:@"Baştan başlat" image:[UIImage systemImageNamed:@"arrow.clockwise"]
+        UIAction *fresh = [UIAction actionWithTitle:L(@"Baştan başlat", @"Start fresh") image:[UIImage systemImageNamed:@"arrow.clockwise"]
                                          identifier:nil handler:^(UIAction *x) { [self restart:a]; }];
-        UIAction *del = [UIAction actionWithTitle:@"Kaldır" image:[UIImage systemImageNamed:@"trash"]
+        UIAction *del = [UIAction actionWithTitle:L(@"Kaldır", @"Remove") image:[UIImage systemImageNamed:@"trash"]
                                        identifier:nil handler:^(UIAction *x) { [self confirmRemove:a]; }];
         del.attributes = UIMenuElementAttributesDestructive;
         NSMutableArray *items = [NSMutableArray arrayWithObjects:home, fresh, nil];
@@ -1043,16 +1142,16 @@ static NSString *duration_text(double s) {
         aoi_android_compile_info(&ci);
         NSString *st = a.compileState;
         if ((ci.active && !strcmp(ci.datadir, a.dir.UTF8String)) || [self queued:a])
-            [items addObject:[UIAction actionWithTitle:@"Derlemeyi iptal et" image:[UIImage systemImageNamed:@"xmark.circle"]
+            [items addObject:[UIAction actionWithTitle:L(@"Derlemeyi iptal et", @"Cancel compile") image:[UIImage systemImageNamed:@"xmark.circle"]
                                             identifier:nil handler:^(UIAction *x) { [self cancelCompile:a]; }]];
         else if (!a.compiled)
-            [items addObject:[UIAction actionWithTitle:@"Derle" image:[UIImage systemImageNamed:@"hammer"]
+            [items addObject:[UIAction actionWithTitle:L(@"Derle", @"Compile") image:[UIImage systemImageNamed:@"hammer"]
                                             identifier:nil handler:^(UIAction *x) { [self compile:a faster:NO]; }]];
         else {
             if ([st isEqualToString:@"verify"])
-                [items addObject:[UIAction actionWithTitle:@"Hızlandır (sık kullanılan kodu derle)" image:[UIImage systemImageNamed:@"bolt"]
+                [items addObject:[UIAction actionWithTitle:L(@"Hızlandır (sık kullanılan kodu derle)", @"Speed up (compile frequently used code)") image:[UIImage systemImageNamed:@"bolt"]
                                                 identifier:nil handler:^(UIAction *x) { [self compile:a faster:YES]; }]];
-            UIAction *rm = [UIAction actionWithTitle:@"Derlemeyi sil" image:[UIImage systemImageNamed:@"hammer.circle"]
+            UIAction *rm = [UIAction actionWithTitle:L(@"Derlemeyi sil", @"Delete compiled code") image:[UIImage systemImageNamed:@"hammer.circle"]
                                           identifier:nil handler:^(UIAction *x) {
                 if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
                 dispatch_async(self.appQueue, ^{                 /* after its process has ended */
@@ -1061,7 +1160,7 @@ static NSString *duration_text(double s) {
                 });
             }];
             [items addObject:rm];
-            [items addObject:[UIAction actionWithTitle:@"Yeniden derle" image:[UIImage systemImageNamed:@"hammer"]
+            [items addObject:[UIAction actionWithTitle:L(@"Yeniden derle", @"Compile again") image:[UIImage systemImageNamed:@"hammer"]
                                             identifier:nil handler:^(UIAction *x) { [self recompile:a]; }]];
         }
         [items addObject:del];
@@ -1074,22 +1173,24 @@ static NSString *duration_text(double s) {
 - (void)addToHome:(AoiApp *)a {
     UIPasteboard.generalPasteboard.URL = a.link;
     NSString *msg = [NSString stringWithFormat:
-        @"Bağlantı kopyalandı:\n%@\n\n1. Kestirmeler'de + ile yeni kestirme oluşturun.\n"
+        L(@"Bağlantı kopyalandı:\n%@\n\n1. Kestirmeler'de + ile yeni kestirme oluşturun.\n"
         @"2. “URL'leri Aç” eylemini ekleyip bağlantıyı yapıştırın.\n"
-        @"3. Paylaş › “Ana Ekrana Ekle”: adı “%@” yapın, simge için Fotoğraflar'daki görseli seçin.",
+        @"3. Paylaş › “Ana Ekrana Ekle”: adı “%@” yapın, simge için Fotoğraflar'daki görseli seçin.", @"Link copied:\n%@\n\n1. In Shortcuts, tap + to make a new shortcut.\n"
+        @"2. Add the “Open URLs” action and paste the link.\n"
+        @"3. Share › “Add to Home Screen”: name it “%@” and pick the image from Photos as its icon."),
         a.link.absoluteString, a.label];
-    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"Ana ekrana ekle" message:msg
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:L(@"Ana ekrana ekle", @"Add to Home Screen") message:msg
                                                          preferredStyle:UIAlertControllerStyleAlert];
     NSURL *shortcuts = [NSURL URLWithString:@"shortcuts://create-shortcut"];
-    [al addAction:[UIAlertAction actionWithTitle:@"Simgeyi kaydet ve Kestirmeler'i aç" style:UIAlertActionStyleDefault
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Simgeyi kaydet ve Kestirmeler'i aç", @"Save the icon and open Shortcuts") style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction *x) {
         UIImageWriteToSavedPhotosAlbum(app_avatar(a.label, a.pkg, 512), nil, NULL, NULL);
         [UIApplication.sharedApplication openURL:shortcuts options:@{} completionHandler:nil];
     }]];
-    [al addAction:[UIAlertAction actionWithTitle:@"Kestirmeler'i aç" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Kestirmeler'i aç", @"Open Shortcuts") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
         [UIApplication.sharedApplication openURL:shortcuts options:@{} completionHandler:nil];
     }]];
-    [al addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleCancel handler:nil]];
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Tamam", @"OK") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:al animated:YES completion:nil];
 }
 
@@ -1111,16 +1212,16 @@ static NSString *duration_text(double s) {
     dispatch_async(self.appQueue, ^{                     /* after its process has ended (it may save on its way) */
         [a forgetSnapshot];
         BOOL clean = aoi_android_snapshot_fits(a.dir.UTF8String);
-        [self append:[NSString stringWithFormat:clean ? @"%@: kayıt silindi, bir sonraki açılış baştan (yine hızlı)."
-                                                      : @"%@: kayıt silindi, bir sonraki açılış baştan.", a.label]];
+        [self append:[NSString stringWithFormat:clean ? L(@"%@: kayıt silindi, bir sonraki açılış baştan (yine hızlı).", @"%@: saved state deleted; the next launch starts fresh (still fast).")
+                                                      : L(@"%@: kayıt silindi, bir sonraki açılış baştan.", @"%@: saved state deleted; the next launch starts fresh."), a.label]];
     });
 }
 
 - (void)confirmRemove:(AoiApp *)a {
-    UIAlertController *al = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ kaldırılsın mı?", a.label]
-                                                                message:@"Uygulamanın verileri de silinir."
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:L(@"%@ kaldırılsın mı?", @"Remove %@?"), a.label]
+                                                                message:L(@"Uygulamanın verileri de silinir.", @"Its data is deleted too.")
                                                          preferredStyle:UIAlertControllerStyleAlert];
-    [al addAction:[UIAlertAction actionWithTitle:@"Kaldır" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Kaldır", @"Remove") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
         if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
         if ([self.preparing.pkg isEqualToString:a.pkg]) { self.preparingCancelled = YES; aoi_android_stop(); }
         [self.prepareQueue removeObject:a.pkg];
@@ -1135,7 +1236,7 @@ static NSString *duration_text(double s) {
             dispatch_async(dispatch_get_main_queue(), ^{ [a remove]; [self reload]; });
         });
     }]];
-    [al addAction:[UIAlertAction actionWithTitle:@"Vazgeç" style:UIAlertActionStyleCancel handler:nil]];
+    [al addAction:[UIAlertAction actionWithTitle:L(@"Vazgeç", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:al animated:YES completion:nil];
 }
 
@@ -1154,13 +1255,13 @@ static NSString *duration_text(double s) {
     d = nil;
     [NSFileManager.defaultManager removeItemAtURL:urls.firstObject error:nil];   /* the picker's copy */
     if (!a) {
-        UIAlertController *al = [UIAlertController alertControllerWithTitle:@"Yüklenemedi" message:err ?: @"Dosya okunamadı."
+        UIAlertController *al = [UIAlertController alertControllerWithTitle:L(@"Yüklenemedi", @"Could not install") message:err ?: L(@"Dosya okunamadı.", @"The file could not be read.")
                                                              preferredStyle:UIAlertControllerStyleAlert];
-        [al addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleCancel handler:nil]];
+        [al addAction:[UIAlertAction actionWithTitle:L(@"Tamam", @"OK") style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:al animated:YES completion:nil];
         return;
     }
-    [self append:[NSString stringWithFormat:@"Yüklendi: %@ (%@, %.1f MB)", a.label, a.pkg, mb]];
+    [self append:[NSString stringWithFormat:L(@"Yüklendi: %@ (%@, %.1f MB)", @"Installed: %@ (%@, %.1f MB)"), a.label, a.pkg, mb]];
     if ([a.pkg isEqualToString:self.runningPkg]) {       /* updated while it runs: start it afresh */
         aoi_android_stop();
         [a forgetSnapshot];
@@ -1172,9 +1273,10 @@ static NSString *duration_text(double s) {
     [self reload];
     if (!a.compiled) {                                   /* once, now: the card shows how far it is */
         [self compile:a faster:NO];
-        [self tell:[NSString stringWithFormat:@"%@ yüklendi", a.label]
-              what:[NSString stringWithFormat:@"Şimdi bir kez derleniyor (%@); ilerlemesi kartında. Bitince hızlı açılır. "
-                                               @"LiquidAPK'yı kapatmayın; arka plana alırsanız derleme sürer. İsterseniz derlenmeden de açabilirsiniz.",
+        [self tell:[NSString stringWithFormat:L(@"%@ yüklendi", @"%@ installed"), a.label]
+              what:[NSString stringWithFormat:L(@"Şimdi bir kez derleniyor (%@); ilerlemesi kartında. Bitince hızlı açılır. "
+                                               @"LiquidAPK'yı kapatmayın; arka plana alırsanız derleme sürer. İsterseniz derlenmeden de açabilirsiniz.", @"It is being compiled once now (%@); its card shows the progress. Then it opens fast. "
+                                               @"Do not quit LiquidAPK; in the background the compile goes on. You can also open it uncompiled."),
                                                duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))]];
     } else {
         [self openApp:a];
@@ -1184,7 +1286,7 @@ static NSString *duration_text(double s) {
 - (void)openPackage:(NSString *)pkg {
     AoiApp *a = [AoiApp withPackage:pkg];
     if (a) [self maybeOpen:a];
-    else [self append:[NSString stringWithFormat:@"Yüklü değil: %@", pkg]];
+    else [self append:[NSString stringWithFormat:L(@"Yüklü değil: %@", @"Not installed: %@"), pkg]];
 }
 
 /* The app's screen; its process is started unless it already runs. Another app that
@@ -1192,7 +1294,7 @@ static NSString *duration_text(double s) {
 - (void)openApp:(AoiApp *)a {
     NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"];
     if (![NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"system/bin/app_process64"]]) {
-        [self append:@"Bu IPA'da uygulama dosyaları (framework) yok."];
+        [self append:L(@"Bu IPA'da uygulama dosyaları (framework) yok.", @"This IPA has no Android files (framework).")];
         return;
     }
     BOOL same = [a.pkg isEqualToString:self.runningPkg] && self.screenVC && [self.screenVC.app.pkg isEqualToString:a.pkg];
@@ -1211,16 +1313,16 @@ static NSString *duration_text(double s) {
     NSString *logPath = [a.dir stringByAppendingString:@".log"];
     NSString *prev = self.runningPkg;
     if (prev) {                                          /* one process at a time: save that one, end it */
-        [self append:[NSString stringWithFormat:@"%@ kaydedilip kapatılıyor …", prev]];
+        [self append:[NSString stringWithFormat:L(@"%@ kaydedilip kapatılıyor …", @"Saving and closing %@ …"), prev]];
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ aoi_android_save_stop(20); });
     }
     self.runningPkg = a.pkg;
     compile_hold_update();
     BOOL snap = aoi_android_snapshot_fits(a.dir.UTF8String);   /* (the clean one put back, if the last is gone) */
     [self.screenVC status:snap
-         ? @"Kayıttan açılıyor…" : a.compiled ? @"Açılıyor…" : @"Derlenmeden açılıyor (yavaş)…"];
+         ? L(@"Kayıttan açılıyor…", @"Resuming…") : a.compiled ? L(@"Açılıyor…", @"Opening…") : L(@"Derlenmeden açılıyor (yavaş)…", @"Opening uncompiled (slow)…")];
     [a prepare];
-    [self append:[NSString stringWithFormat:@"%@ açılıyor (ekran %@)", a.label, display]];
+    [self append:[NSString stringWithFormat:L(@"%@ açılıyor (ekran %@)", @"Opening %@ (screen %@)"), a.label, display]];
     ScreenVC *target = self.screenVC;
     void *ctx = (__bridge_retained void *)target;        /* the process's frames go to it while it runs */
     if ([self.preparing.pkg isEqualToString:a.pkg] && !self.preparingShown
@@ -1285,7 +1387,7 @@ static NSString *duration_text(double s) {
 @implementation DevVC
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Geliştirici";
+    self.title = L(@"Geliştirici", @"Developer");
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                                                            target:self action:@selector(done)];
@@ -1293,9 +1395,9 @@ static NSString *duration_text(double s) {
     self.nField.text = @"20000";
     self.nField.keyboardType = UIKeyboardTypeNumberPad;
     self.nField.borderStyle = UITextBorderStyleRoundedRect;
-    UIStackView *row1 = [self row:@[ [self button:@"Logu kopyala" action:@selector(copyLog)],
-                                     [self button:@"Adres alanı" action:@selector(probe)],
-                                     [self button:@"Lisanslar" action:@selector(licenses)] ]];
+    UIStackView *row1 = [self row:@[ [self button:L(@"Logu kopyala", @"Copy log") action:@selector(copyLog)],
+                                     [self button:L(@"Adres alanı", @"Address space") action:@selector(probe)],
+                                     [self button:L(@"Lisanslar", @"Licenses") action:@selector(licenses)] ]];
     UIStackView *row2 = [self row:@[ [self button:@"GMP n!" action:@selector(gmp)], self.nField,
                                      [self button:@"Android" action:@selector(android)] ]];
     self.logView = [UITextView new];
@@ -1336,7 +1438,7 @@ static NSString *duration_text(double s) {
         NSString *s = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:n] encoding:NSUTF8StringEncoding error:nil];
         if (s) [t appendFormat:@"──── %@ ────\n%@\n\n", n, s];
     }
-    self.logView.text = t.length ? t : @"Lisans dosyaları bu derlemede yok.";
+    self.logView.text = t.length ? t : L(@"Lisans dosyaları bu derlemede yok.", @"This build has no license files.");
     [self.logView scrollRangeToVisible:NSMakeRange(0, 0)];
 }
 
@@ -1357,22 +1459,10 @@ static NSString *duration_text(double s) {
 }
 
 /* The log, and each installed app's own log (its last 60 kB). */
-- (void)copyLog {
-    NSMutableString *all = [launcher.log mutableCopy];
-    for (AoiApp *a in [AoiApp all])
-        for (NSString *ext in @[ @".log.1", @".log" ]) {          /* the previous run, then this one */
-            NSString *app = [NSString stringWithContentsOfFile:[a.dir stringByAppendingString:ext]
-                                                      encoding:NSUTF8StringEncoding error:nil];
-            if (!app.length) continue;
-            NSString *tail = app.length > 40000 ? [app substringFromIndex:app.length - 40000] : app;
-            [all appendFormat:@"\n--- %@%@ ---\n%@", a.pkg, ext, tail];
-        }
-    UIPasteboard.generalPasteboard.string = all;
-    [launcher append:@"(log panoya kopyalandı)"];
-}
+- (void)copyLog { copy_logs(); }
 
 - (void)probe {
-    [launcher append:@"Adres alanı testi (Android programları için 64 GiB, seyrek) ..."];
+    [launcher append:L(@"Adres alanı testi (Android programları için 64 GiB, seyrek) ...", @"Address space test (64 GiB, sparse, for Android programs) ...")];
     dispatch_async(launcher.work, ^{ aoi_vm_probe(log_cb, (__bridge void *)launcher); });
 }
 
@@ -1381,7 +1471,7 @@ static NSString *duration_text(double s) {
 - (void)android {
     NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"];
     if (![NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"system/bin/toybox"]]) {
-        [launcher append:@"Bu IPA'da Android dosyaları (aroot) yok."];
+        [launcher append:L(@"Bu IPA'da Android dosyaları (aroot) yok.", @"This IPA has no Android files (aroot).")];
         return;
     }
     NSString *tmp = NSTemporaryDirectory();
@@ -1398,7 +1488,7 @@ static NSString *duration_text(double s) {
         aoi_android_run(root.UTF8String, tmp.UTF8String, 3, ls, log_cb, ctx);
         [launcher append:@"Android ART (dalvikvm64) hello.dex ..."];
         aoi_android_art_hello(root.UTF8String, tmp.UTF8String, log_cb, ctx);
-        [launcher append:@"Android ART GC (20 MB çöp, Runtime.gc) ..."];
+        [launcher append:L(@"Android ART GC (20 MB çöp, Runtime.gc) ...", @"Android ART GC (20 MB garbage, Runtime.gc) ...")];
         aoi_android_art_gc(root.UTF8String, tmp.UTF8String, log_cb, ctx);
     });
 }
@@ -1416,11 +1506,11 @@ static NSString *duration_text(double s) {
         if (!n) n = 20000;
         dispatch_async(launcher.work, ^{
             double best = 0;
-            [launcher append:[NSString stringWithFormat:@"Yorumlayıcı: Android libgmp.so ile %lu!, 3 tur ...", n]];
+            [launcher append:[NSString stringWithFormat:L(@"Yorumlayıcı: Android libgmp.so ile %lu!, 3 tur ...", @"Interpreter: %lu! with Android's libgmp.so, 3 rounds ..."), n]];
             for (int round = 1; round <= 3; round++) {
                 double t = 0;
                 char *r = aoi_gmp_interp(lib.bytes, lib.length, n, &t, log_cb, (__bridge void *)launcher);
-                if (!r) { [launcher append:@"başarısız"]; return; }
+                if (!r) { [launcher append:L(@"başarısız", @"failed")]; return; }
                 if (round == 1) [launcher append:[NSString stringWithFormat:@"%lu! = %.20s… (%zu basamak)", n, r, strlen(r)]];
                 if (best == 0 || t < best) best = t;
                 free(r);
@@ -1429,7 +1519,7 @@ static NSString *duration_text(double s) {
         });
         return;
     }
-    [launcher append:@"libgmp.so olan bir uygulama (Qalculate) yüklü değil."];
+    [launcher append:L(@"libgmp.so olan bir uygulama (Qalculate) yüklü değil.", @"No app with libgmp.so (Qalculate) is installed.")];
 }
 @end
 
@@ -1445,6 +1535,7 @@ static void log_cb(void *ctx, const char *line) {
 
 /* A frame from the guest's SurfaceFlinger: RGBX rows -> UIImage (2x), to that app's screen. */
 static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h) {
+    if (!((__bridge ScreenVC *)ctx).onScreen) return;  /* not shown: no image (it is redrawn when shown again) */
     @autoreleasepool {
         CFDataRef d = CFDataCreate(NULL, px, (CFIndex)w * h * 4);
         CGDataProviderRef prov = CGDataProviderCreateWithCFData(d);
@@ -1527,6 +1618,12 @@ static void home_cb(void *ctx) {
         [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue
                                                     usingBlock:^(NSNotification *note) { compile_hold_update(); }];
     compile_hold_update();
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidReceiveMemoryWarningNotification object:nil
+                                                     queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        [launcher append:L(@"iOS: bellek azaldı; açık uygulama kaydediliyor.", @"iOS: memory is low; saving the open app.")];
+        if (launcher.runningPkg)                          /* should iOS end LiquidAPK now, it resumes from here */
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ aoi_android_snapshot(10); });
+    }];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;   /* white on dark glass, in light mode too */
     self.window.rootViewController = [Launcher new];
@@ -1625,10 +1722,11 @@ static void work_begun(void)
                     BGContinuedProcessingTask *t = task;
                     bg_task = t;
                     t.progress.totalUnitCount = 1000;
+                    __weak BGContinuedProcessingTask *wt = t;
                     t.expirationHandler = ^{                 /* the user stopped it, or iOS: it pauses in the background */
-                        bg_task = nil;
-                        bg_done(NO);
-                        [t setTaskCompletedWithSuccess:NO];
+                        BGContinuedProcessingTask *x = wt;
+                        if (bg_task == x) bg_done(NO);
+                        else [x setTaskCompletedWithSuccess:NO];
                     };
                     bg_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
                     dispatch_source_set_timer(bg_timer, DISPATCH_TIME_NOW, NSEC_PER_SEC, NSEC_PER_SEC / 4);
@@ -1691,7 +1789,7 @@ static void keep_alive(BOOL on)
     dispatch_source_set_timer(keep_timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 5 * NSEC_PER_SEC, NSEC_PER_SEC);
     dispatch_source_set_event_handler(keep_timer, ^{
         if (!background_work()) {
-            [launcher append:@"Arka plandaki iş bitti."];
+            [launcher append:L(@"Arka plandaki iş bitti.", @"The background work is done.")];
             keep_alive(NO);
         } else if (!keep_player.playing) {
             [keep_player play];                         /* after a call, or another app's audio session */
@@ -1725,7 +1823,7 @@ static void keep_alive(BOOL on)
         if (work && a && saved && !stat([a.dir stringByAppendingString:@".snap"].UTF8String, &st) && st.st_mtime >= t0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (launcher.inBackground && [launcher.runningPkg isEqualToString:pkg]) {
-                    [launcher append:[NSString stringWithFormat:@"%@ kaydedilip kapatıldı (derleme için); dokununca kaldığı yerden açılır.", a.label]];
+                    [launcher append:[NSString stringWithFormat:L(@"%@ kaydedilip kapatıldı (derleme için); dokununca kaldığı yerden açılır.", @"%@ was saved and closed (for the compile); tap it to resume where it was."), a.label]];
                     aoi_android_stop();
                 }
             });
