@@ -432,6 +432,20 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path)
     return NULL;
 }
 
+int aoi_snap_this_build(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    char magic[8], build[sizeof AOI_SNAP_BUILD];
+    uint32_t sz;
+    int ok;
+    if (!f) return 0;
+    ok = r(f, magic, 8) && !memcmp(magic, SNAP_MAGIC, 8) && r(f, build, sizeof build) &&
+         (!memcmp(build, AOI_SNAP_BUILD, sizeof build) || getenv("AOI_SNAP_ANY_BUILD")) && r(f, &sz, 4) &&
+         sz == sizeof(struct aoi_proc);
+    fclose(f);
+    return ok;
+}
+
 const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data)
 {
     FILE *f = fopen(path, "rb");

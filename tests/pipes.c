@@ -13,7 +13,9 @@
  *  16  fallocate (Realm's posix_fallocate): a new file grows to 8 KiB; KEEP_SIZE
  *      leaves it so; a hole punch is EOPNOTSUPP
  *  32  a FIFO (mknodat, Realm's notifications): opened O_RDWR|O_NONBLOCK, empty is
- *      EAGAIN, then reads back what was written */
+ *      EAGAIN, then reads back what was written
+ *  64  truncate by path (WhatsApp's logs): a file of 8 KiB is cut to 100 bytes; and
+ *      /proc/sys/kernel/random/boot_id (libcutils' ashmem) reads as a UUID */
 typedef unsigned long u64;
 
 static long sys(long n, long a, long b, long c, long d, long e)
@@ -123,6 +125,19 @@ void _start_c(void)
             sys(57, fd, 0, 0, 0, 0);
         }
         sys(35, -100, (long)"/fifo.tmp", 0, 0, 0);
+    }
+
+    {
+        u64 st[16];
+        char id[64];
+        long fd = sys(56, -100, (long)"/truncate.tmp", 0102 | 01000, 0644, 0);
+        if (fd < 0 || sys(47, fd, 0, 0, 8192, 0) != 0) fail |= 64;
+        else if (sys(45, (long)"/truncate.tmp", 100, 0, 0, 0) != 0 || sys(80, fd, (long)st, 0, 0, 0) != 0 || st[6] != 100) fail |= 64;
+        if (fd >= 0) sys(57, fd, 0, 0, 0, 0);
+        sys(35, -100, (long)"/truncate.tmp", 0, 0, 0);
+        fd = sys(56, -100, (long)"/proc/sys/kernel/random/boot_id", 0, 0, 0);
+        if (fd < 0 || sys(63, fd, (long)id, sizeof id, 0, 0) != 37 || id[8] != '-' || id[36] != '\n') fail |= 64;
+        if (fd >= 0) sys(57, fd, 0, 0, 0, 0);
     }
 
     sys(94, fail, 0, 0, 0, 0);                                         /* exit_group */

@@ -1238,6 +1238,11 @@ static int proc_file(struct aoi_proc *p, const char *g)
                    "CPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\nCPU revision\t: 0\n\n");
     } else if (!strcmp(g, "/proc/sys/kernel/randomize_va_space")) {
         fprintf(t, "2\n");
+    } else if (!strcmp(g, "/proc/sys/kernel/random/boot_id")) {   /* libcutils' ashmem names its regions with it */
+        static unsigned boot[4];
+        if (!boot[0]) { boot[0] = (unsigned)time(NULL) | 1; boot[1] = (unsigned)getpid(); boot[2] = 0x4a0e1d00; boot[3] = 0xa01c0de5; }
+        fprintf(t, "%08x-%04x-4%03x-%04x-%04x%08x\n", boot[0], boot[1] & 0xffff, boot[2] & 0xfff, 0x8000 | (boot[3] & 0x3fff),
+                boot[1] >> 16, boot[3]);
     } else {
         fclose(t);
         return -1;
@@ -2522,6 +2527,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = link(h, h2) ? herr() : 0;
         break;
     }
+    case 45:                                                       /* truncate(path, length) */
+        if ((rc = at_path(p, -100, a0, 0, g))) { r = err(rc); break; }
+        to_host(p, g, h);
+        r = truncate(h, (off_t)a1) ? herr() : 0;
+        break;
     case NR_ftruncate:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         r = ftruncate(f->host, (off_t)a1) ? herr() : 0;

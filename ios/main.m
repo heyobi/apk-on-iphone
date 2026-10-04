@@ -6,7 +6,9 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <AVFoundation/AVFoundation.h>
 #include <math.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
 
@@ -178,7 +180,9 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 - (void)remove {
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *p in @[ self.dir, self.infoPath, [self.dir stringByAppendingString:@".snap"],
-                           [self.dir stringByAppendingString:@".snap.key"], [self.dir stringByAppendingString:@".log"],
+                           [self.dir stringByAppendingString:@".snap.key"], [self.dir stringByAppendingString:@".snap0"],
+                           [self.dir stringByAppendingString:@".snap0.key"], [self.dir stringByAppendingString:@".nosnap"],
+                           [self.dir stringByAppendingString:@".log"],
                            [self.dir stringByAppendingString:@".log.1"], self.compileLog ])
         [fm removeItemAtPath:p error:nil];
 }
@@ -467,6 +471,7 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 @property(nonatomic, strong) ScreenVC *preparingTarget;
 @property(nonatomic) void *preparingCtx;
 @property(nonatomic, strong) NSMutableArray<NSString *> *prepareQueue;
+@property(nonatomic) BOOL inBackground;               /* LiquidAPK is not on screen */
 - (void)openPackage:(NSString *)pkg;
 - (void)append:(NSString *)line;
 - (void)compileEnded:(NSString *)dir state:(NSString *)state;
@@ -483,9 +488,26 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 - (void)cancelCompile:(AoiApp *)a;
 - (void)tell:(NSString *)title what:(NSString *)msg;
 - (BOOL)queued:(AoiApp *)a;
+- (void)resumeCompiles;
 @end
 
 static Launcher *launcher;
+
+/* dex2oat waits while the phone is very hot; or hot (or in Low Power Mode) while an app
+ * is in use next to it. Alone (nothing else on screen, or LiquidAPK in the background)
+ * the compile is the one job and goes on. */
+static void compile_hold_update(void)
+{
+    NSProcessInfo *pi = NSProcessInfo.processInfo;
+    BOOL in_use = launcher.runningPkg && !launcher.inBackground;
+    aoi_android_compile_hold(pi.thermalState >= NSProcessInfoThermalStateCritical
+                             || (in_use && (pi.thermalState >= NSProcessInfoThermalStateSerious || pi.lowPowerModeEnabled)));
+}
+
+/* A compile started is noted (<dir>.compiling: "faster tries") until it ends, so one
+ * that iOS cut short (LiquidAPK ended in the background) starts again at the next
+ * launch: twice at most, in case it was what ended it. */
+static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString:@".compiling"]; }
 
 @implementation Launcher
 
@@ -587,6 +609,7 @@ static Launcher *launcher;
     [super viewDidAppear:animated];
     if (!once) {                                         /* compiled apps without a fitting snapshot: saved now */
         once = YES;
+        [self resumeCompiles];
         for (AoiApp *a in [AoiApp all])
             if (a.compiled && !aoi_android_snapshot_fits(a.dir.UTF8String)
                 && ![NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".nosnap"]])
@@ -606,7 +629,7 @@ static Launcher *launcher;
 /* Android, started before an app is chosen, while none runs: a tap then only loads the
  * app (7 s less). Its first start is saved, later ones resume in about a second. */
 - (void)startWarm {
-    if (self.warmRunning || self.runningPkg || self.preparing || !self.view.window) return;
+    if (self.warmRunning || self.runningPkg || self.preparing || !self.view.window || self.inBackground) return;
     NSString *dir = [AoiApp warmDir], *display = self.display;
     if (!dir || ![NSFileManager.defaultManager fileExistsAtPath:[self.root stringByAppendingPathComponent:@"system/bin/app_process64"]])
         return;
@@ -634,6 +657,7 @@ static Launcher *launcher;
     if (self.screenVC == target) {                   /* it ended by itself, not for another app */
         self.runningPkg = nil;
         self.screenVC = nil;
+        compile_hold_update();
         [self append:[NSString stringWithFormat:@"%@ kapandı; log: %@", a.label, logPath]];
         if (self.presentedViewController == target) [self dismissViewControllerAnimated:YES completion:nil];
     }
@@ -806,7 +830,7 @@ static NSString *duration_text(double s) {
         BOOL mine = ci.active && !strcmp(ci.datadir, a.dir.UTF8String);
         NSString *st = a.compileState, *text, *btn = nil, *sym = nil;
         if (mine) {
-            text = ci.held ? [NSString stringWithFormat:@"Derleme %%%.0f · duraklatıldı (telefon sıcak ya da Düşük Güç Modu)", ci.progress * 100]
+            text = ci.held ? [NSString stringWithFormat:@"Derleme %%%.0f · duraklatıldı (telefon çok sıcak, ya da sıcak ve bir uygulama açık)", ci.progress * 100]
                            : [NSString stringWithFormat:@"Derleniyor %%%.0f · %@ kaldı", ci.progress * 100, duration_text(ci.eta)];
             btn = @"İptal"; sym = @"xmark.circle.fill";
         } else if ([self queued:a]) {
@@ -860,6 +884,11 @@ static NSString *duration_text(double s) {
     if ([self queued:a]) return;
     int rc = aoi_android_compile(self.root.UTF8String, a.dir.UTF8String, a.compileLog.UTF8String, faster,
                                  log_cb, (__bridge void *)self);
+    if (rc == 0 || rc == -1) {
+        NSString *m = compile_mark(a), *was = [NSString stringWithContentsOfFile:m encoding:NSUTF8StringEncoding error:nil];
+        int tries = was ? [[was componentsSeparatedByString:@" "].lastObject intValue] : 0;
+        [[NSString stringWithFormat:@"%d %d", faster ? 1 : 0, tries] writeToFile:m atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
     if (rc == -1) [self.queue addObject:@{ @"pkg" : a.pkg, @"faster" : @(faster) }];
     else if (rc == 1 && faster) [self tell:@"Hızlandırılamıyor"
                                        what:@"Uygulamanın sık kullandığı kod henüz bilinmiyor: önce onu bir süre kullanın."];
@@ -873,6 +902,7 @@ static NSString *duration_text(double s) {
 - (void)cancelCompile:(AoiApp *)a {
     struct aoi_compile_info ci;
     for (NSDictionary *q in [self.queue copy]) if ([q[@"pkg"] isEqualToString:a.pkg]) [self.queue removeObject:q];
+    [NSFileManager.defaultManager removeItemAtPath:compile_mark(a) error:nil];
     aoi_android_compile_info(&ci);
     if (ci.active && !strcmp(ci.datadir, a.dir.UTF8String)) aoi_android_compile_cancel();
     [self tick];
@@ -882,6 +912,7 @@ static NSString *duration_text(double s) {
 - (void)compileEnded:(NSString *)dir state:(NSString *)state {
     AoiApp *a = nil;
     for (AoiApp *x in [AoiApp all]) if ([x.dir isEqualToString:dir]) a = x;
+    if (a) [NSFileManager.defaultManager removeItemAtPath:compile_mark(a) error:nil];
     if (a) [self append:[NSString stringWithFormat:@"%@: %@", a.label,
                          [state isEqualToString:@"failed"] ? @"derlenemedi" : state.length ? @"derlendi" : @"derleme durdu"]];
     if (a && state.length && ![state isEqualToString:@"failed"]) {
@@ -895,6 +926,22 @@ static NSString *duration_text(double s) {
         if (n) { [self compile:n faster:[q[@"faster"] boolValue]]; break; }
     }
     [self tick];
+}
+
+/* Compiles cut short by the end of LiquidAPK (compile_mark): started again. */
+- (void)resumeCompiles {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (AoiApp *a in [AoiApp all]) {
+        NSString *m = compile_mark(a), *was = [NSString stringWithContentsOfFile:m encoding:NSUTF8StringEncoding error:nil];
+        if (!was) continue;
+        NSArray *f = [was componentsSeparatedByString:@" "];
+        BOOL faster = [f.firstObject intValue] != 0;
+        int tries = [f.lastObject intValue];
+        if ((a.compiled && !faster) || tries >= 2) { [fm removeItemAtPath:m error:nil]; continue; }
+        [[NSString stringWithFormat:@"%d %d", faster ? 1 : 0, tries + 1] writeToFile:m atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [self append:[NSString stringWithFormat:@"%@: yarım kalan derleme yeniden başlıyor.", a.label]];
+        [self compile:a faster:faster];
+    }
 }
 
 - (void)tell:(NSString *)title what:(NSString *)msg {
@@ -917,7 +964,7 @@ static NSString *duration_text(double s) {
         ? [NSString stringWithFormat:@"Derleniyor: %%%.0f, %@ kaldı. Bitince hızlı açılır; şimdi açarsanız derlenmeden (yavaş) çalışır.",
                                      ci.progress * 100, duration_text(ci.eta)]
         : [NSString stringWithFormat:@"Derlenmeden de açılır ama çok daha yavaş çalışır. Derleme bir kez yapılır, %@ sürer; "
-                                     @"bu sırada LiquidAPK açık kalmalı.", duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
+                                     @"LiquidAPK'yı kapatmayın (arka plana almak olur).", duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
     UIAlertController *al = [UIAlertController alertControllerWithTitle:mine ? [NSString stringWithFormat:@"%@ derleniyor", a.label]
                                                                              : [NSString stringWithFormat:@"%@ henüz derlenmedi", a.label]
                                                                 message:msg preferredStyle:UIAlertControllerStyleAlert];
@@ -971,6 +1018,8 @@ static NSString *duration_text(double s) {
                 });
             }];
             [items addObject:rm];
+            [items addObject:[UIAction actionWithTitle:@"Yeniden derle" image:[UIImage systemImageNamed:@"hammer"]
+                                            identifier:nil handler:^(UIAction *x) { [self recompile:a]; }]];
         }
         [items addObject:del];
         return [UIMenu menuWithTitle:a.label children:items];
@@ -1001,10 +1050,25 @@ static NSString *duration_text(double s) {
     [self presentViewController:al animated:YES completion:nil];
 }
 
+/* Its compiled code and snapshots go, then it is compiled again (and saved again). */
+- (void)recompile:(AoiApp *)a {
+    if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
+    if ([self.preparing.pkg isEqualToString:a.pkg]) { self.preparingCancelled = YES; aoi_android_stop(); }
+    [self.prepareQueue removeObject:a.pkg];
+    dispatch_async(self.appQueue, ^{                     /* after its process has ended */
+        aoi_android_compile_remove(a.dir.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{ [self compile:a faster:NO]; });
+    });
+}
+
+/* Its saved state goes: the next launch is the app as it first started (the clean
+ * snapshot taken after its compile, <dir>.snap0: still in a second), else from nothing. */
 - (void)restart:(AoiApp *)a {
     if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
     [a forgetSnapshot];
-    [self append:[NSString stringWithFormat:@"%@: kayıt silindi, bir sonraki açılış baştan.", a.label]];
+    BOOL clean = aoi_android_snapshot_fits(a.dir.UTF8String);
+    [self append:[NSString stringWithFormat:clean ? @"%@: kayıt silindi, bir sonraki açılış baştan (yine hızlı)."
+                                                  : @"%@: kayıt silindi, bir sonraki açılış baştan.", a.label]];
 }
 
 - (void)confirmRemove:(AoiApp *)a {
@@ -1058,7 +1122,7 @@ static NSString *duration_text(double s) {
         [self compile:a faster:NO];
         [self tell:[NSString stringWithFormat:@"%@ yüklendi", a.label]
               what:[NSString stringWithFormat:@"Şimdi bir kez derleniyor (%@); ilerlemesi kartında. Bitince hızlı açılır. "
-                                               @"Bu sırada LiquidAPK açık kalmalı; isterseniz derlenmeden de açabilirsiniz.",
+                                               @"LiquidAPK'yı kapatmayın; arka plana alırsanız derleme sürer. İsterseniz derlenmeden de açabilirsiniz.",
                                                duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))]];
     } else {
         [self openApp:a];
@@ -1099,7 +1163,9 @@ static NSString *duration_text(double s) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ aoi_android_snapshot(20); aoi_android_stop(); });
     }
     self.runningPkg = a.pkg;
-    [self.screenVC status:[NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]]
+    compile_hold_update();
+    BOOL snap = aoi_android_snapshot_fits(a.dir.UTF8String);   /* (the clean one put back, if the last is gone) */
+    [self.screenVC status:snap
          ? @"Kayıttan açılıyor…" : a.compiled ? @"Açılıyor…" : @"Derlenmeden açılıyor (yavaş)…"];
     [a prepare];
     [self append:[NSString stringWithFormat:@"%@ açılıyor (ekran %@)", a.label, display]];
@@ -1115,7 +1181,6 @@ static NSString *duration_text(double s) {
         self.preparingCancelled = YES;
         aoi_android_stop();
     }
-    BOOL snap = [NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]];
     if (!prev && !snap && self.warmRunning && !self.warmApp
         && aoi_android_go(root.UTF8String, a.dir.UTF8String, logPath.UTF8String, display.UTF8String, frame_cb, home_cb,
                           ctx, log_cb, (__bridge void *)self) == 0) {
@@ -1368,13 +1433,6 @@ static void home_cb(void *ctx) {
 @end
 
 @implementation AppDelegate
-/* The background dex2oat waits while the phone is hot or in Low Power Mode. */
-static void compile_hold_update(void)
-{
-    NSProcessInfo *pi = NSProcessInfo.processInfo;
-    aoi_android_compile_hold(pi.thermalState >= NSProcessInfoThermalStateSerious || pi.lowPowerModeEnabled);
-}
-
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     aoi_android_set_clipboard(clipboard_cb);
     aoi_android_set_keyboard(keyboard_cb);
@@ -1414,22 +1472,105 @@ static void compile_hold_update(void)
     });
 }
 
+/* ---------- the compile in the background ----------
+ * iOS suspends an app soon after it leaves the screen, and dex2oat with it. While a
+ * compile (or the saving after it) runs, LiquidAPK plays silence, mixed with the other
+ * apps' sound (UIBackgroundModes audio): iOS lets it run on, the compile ends, and the
+ * player stops. Nothing plays once the work is done or LiquidAPK is back. */
+static AVAudioPlayer *keep_player;
+static dispatch_source_t keep_timer;
+
+static NSData *silence_wav(void)
+{
+    enum { RATE = 8000, N = RATE };                     /* 1 s, 16-bit mono */
+    NSMutableData *d = [NSMutableData dataWithLength:44 + N * 2];
+    uint8_t *h = d.mutableBytes;
+    uint32_t v;
+    uint16_t u;
+    memcpy(h, "RIFF", 4); v = 36 + N * 2; memcpy(h + 4, &v, 4); memcpy(h + 8, "WAVEfmt ", 8);
+    v = 16; memcpy(h + 16, &v, 4); u = 1; memcpy(h + 20, &u, 2); memcpy(h + 22, &u, 2);
+    v = RATE; memcpy(h + 24, &v, 4); v = RATE * 2; memcpy(h + 28, &v, 4); u = 2; memcpy(h + 32, &u, 2);
+    u = 16; memcpy(h + 34, &u, 2); memcpy(h + 36, "data", 4); v = N * 2; memcpy(h + 40, &v, 4);
+    return d;
+}
+
+static BOOL background_work(void)
+{
+    return aoi_android_compiling() || launcher.preparing || launcher.queue.count;
+}
+
+static void keep_alive(BOOL on)
+{
+    if (!on) {
+        if (keep_timer) { dispatch_source_cancel(keep_timer); keep_timer = nil; }
+        [keep_player stop];
+        keep_player = nil;
+        return;
+    }
+    if (keep_player) return;
+    AVAudioSession *as = AVAudioSession.sharedInstance;
+    [as setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    [as setActive:YES error:nil];
+    keep_player = [[AVAudioPlayer alloc] initWithData:silence_wav() error:nil];
+    keep_player.numberOfLoops = -1;
+    keep_player.volume = 0;
+    [keep_player play];
+    keep_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(keep_timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 5 * NSEC_PER_SEC, NSEC_PER_SEC);
+    dispatch_source_set_event_handler(keep_timer, ^{
+        if (!background_work()) {
+            [launcher append:@"Arka plandaki iş bitti."];
+            keep_alive(NO);
+        } else if (!keep_player.playing) {
+            [keep_player play];                         /* after a call, or another app's audio session */
+        }
+    });
+    dispatch_resume(keep_timer);
+}
+
 /* Going to the background (iOS may end us there): the running app is saved as it is,
- * so the next launch resumes it with what was typed since its first snapshot. A dex2oat
- * that runs goes on for the time iOS gives, then waits (suspended) for our return. */
+ * so the next launch resumes it with what was typed since its first snapshot. With a
+ * compile going on it is then ended (it resumes in a second, from that snapshot): the
+ * compile is the one job, iOS keeps LiquidAPK running for it (keep_alive). */
 - (void)applicationDidEnterBackground:(UIApplication *)app {
+    BOOL work = background_work();
+    NSString *pkg = launcher.runningPkg;
+    AoiApp *a = pkg ? [AoiApp withPackage:pkg] : nil;
+    launcher.inBackground = YES;
+    compile_hold_update();
+    if (work) {
+        keep_alive(YES);
+        [launcher append:@"LiquidAPK arka planda: derleme sürüyor."];
+    }
     __block UIBackgroundTaskIdentifier task = [app beginBackgroundTaskWithExpirationHandler:^{
         [app endBackgroundTask:task];
         task = UIBackgroundTaskInvalid;
     }];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        aoi_android_snapshot(25);
-        while (aoi_android_compiling() && task != UIBackgroundTaskInvalid) usleep(500000);   /* dex2oat: what time iOS gives */
+        time_t t0 = time(NULL);
+        struct stat st;
+        int saved = aoi_android_snapshot(25) == 0;
+        if (work && a && saved && !stat([a.dir stringByAppendingString:@".snap"].UTF8String, &st) && st.st_mtime >= t0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (launcher.inBackground && [launcher.runningPkg isEqualToString:pkg]) {
+                    [launcher append:[NSString stringWithFormat:@"%@ kaydedilip kapatıldı (derleme için); dokununca kaldığı yerden açılır.", a.label]];
+                    aoi_android_stop();
+                }
+            });
+        }
+        while (aoi_android_compiling() && task != UIBackgroundTaskInvalid && !keep_player) usleep(500000);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (task != UIBackgroundTaskInvalid) [app endBackgroundTask:task];
             task = UIBackgroundTaskInvalid;
         });
     });
+}
+
+- (void)applicationWillEnterForeground:(UIApplication *)app {
+    launcher.inBackground = NO;
+    keep_alive(NO);
+    compile_hold_update();
+    [launcher idleNext];
 }
 @end
 

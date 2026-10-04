@@ -203,6 +203,8 @@ void aoi_proc_host_path(struct aoi_proc *p, const char *guest, char *out);
  * build of this code. */
 const char *aoi_snap_save(struct aoi_proc *p, const char *path);
 const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data);
+/* 1 if the snapshot at path was saved by this build (aoi_snap_load would take it). */
+int aoi_snap_this_build(const char *path);
 
 /* Gives guest fds a and b (ends 0 and 1 of one host pair of type ptype) a new pair id,
  * so a snapshot can rebuild the pair. Returns the id. */

@@ -662,6 +662,41 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**A compiled app always opens fast; the compile goes on in the background (app 0.64).**
+The 0.62 phone log and what it asked for: WhatsApp opened in a second after its compile
+but not always later, not after "Baştan başlat"; the compile stopped when LiquidAPK left
+the screen; heat paused a compile that was the phone's only work.
+- **The clean snapshot (<dir>.snap0):** the snapshot the hidden start saves after a
+  compile is kept, as a hard link (a save writes a new file and renames it, so the two
+  names never share a change). When the one the app runs on (.snap) is gone (restart,
+  a crash soon after it: dropped as before) or does not fit, the clean one takes its
+  place (snap_restore, in aoi_android_snapshot_fits and aoi_android_app): the app opens
+  in a second, as it first started. If the app dies soon after resuming the clean one,
+  that is dropped too (same inode). Host, NewPipe compiled: hidden start saved, .snap
+  removed, launch "resumed from its snapshot in 0.3 s".
+- **A LiquidAPK update:** every snapshot is of one build (core/snap.c AOI_SNAP_BUILD);
+  aoi_android_snapshot_fits now checks that too (aoi_snap_this_build), so after an
+  update the launcher saves every compiled app again, out of sight, one at a time,
+  instead of each first tap starting from nothing.
+- **Yeniden derle** (card menu): the compiled code, both snapshots and .nosnap go
+  (aoi_android_compile_remove removes the snapshots too), then the compile and the save
+  run again. Removing an app removes .snap0 and .nosnap as well.
+- **In the background:** while a compile, a queued one or the save after it is pending,
+  LiquidAPK plays silence mixed with other apps' sound (UIBackgroundModes audio,
+  AVAudioPlayer at volume 0), so iOS does not suspend it; a 5 s timer stops it when the
+  work is done, and it stops when LiquidAPK comes back. An app that was open is saved
+  and, if that worked, ended (it resumes in a second): the compile is the one job. The
+  warm Android is not started in the background. A compile iOS still cut short (the
+  process ended) is noted (<dir>.compiling) and started again at the next launch, twice
+  at most.
+- **Heat:** dex2oat pauses only at the critical thermal state, or at serious / Low Power
+  Mode while an app is in use on screen next to it.
+- **WhatsApp's truncate (errno 38):** truncate(2) by path (nr 45) is implemented; and
+  /proc/sys/kernel/random/boot_id reads as a UUID (Uptodown's "ashmem: Failed to read
+  boot_id"). tests/pipes.c step 64.
+- Kiwi (Chromium) still cannot be saved (its GPU process state): it starts on the warm
+  Android, which saves the runtime's start only.
+
 **Compiled, then saved out of sight: the first tap resumes (app 0.62).** The 0.61 phone
 log: WhatsApp compiled (verify, 505 s; the estimate said 5 min), Kiwi opened on the warm
 Android ("app: on the Android that was already up"), but the first launch after a

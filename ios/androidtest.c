@@ -395,6 +395,7 @@ static void snap_key_write(const char *snap, const char *key)
 }
 
 static void compile_attach(struct aoi_proc *p);
+static int snap_restore(const char *datadir);
 
 static int warm_take(struct aoi_proc *p);
 static pthread_mutex_t warm_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -536,8 +537,12 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     if (snap && rc != 0 && !p->stop_request) {      /* it died by itself: was its snapshot the way there? */
         struct stat ss;
         if ((resumed && secs < 30) || (!stat(snap, &ss) && time(NULL) - ss.st_mtime < 60)) {
+            char snap0[1200];
+            struct stat s0;
+            snprintf(snap0, sizeof snap0, "%s0", snap);  /* the clean one too, if it was the way there */
+            if (!stat(snap, &ss) && !stat(snap0, &s0) && ss.st_dev == s0.st_dev && ss.st_ino == s0.st_ino) unlink(snap0);
             unlink(snap);                           /* (resumed, it would die again: WhatsApp 0.60 did, each launch) */
-            say(log, ctx, "%s: it ended soon after its snapshot: the snapshot is dropped, the next launch starts afresh", what);
+            say(log, ctx, "%s: it ended soon after its snapshot: the snapshot is dropped (the next launch: the clean one, if it was not that one)", what);
         }
     }
     if (p->log) fclose(p->log);
@@ -816,6 +821,14 @@ void aoi_android_compile_remove(const char *datadir)
     remove_dir(dir);
     snprintf(dir, sizeof dir, "%s/app/apk/oat/.state", datadir);
     unlink(dir);
+    {                                           /* its snapshots were of the compiled code */
+        static const char *const ext[] = { ".snap", ".snap.key", ".snap0", ".snap0.key", ".nosnap" };
+        unsigned i;
+        for (i = 0; i < sizeof ext / sizeof *ext; i++) {
+            snprintf(dir, sizeof dir, "%s%s", datadir, ext[i]);
+            unlink(dir);
+        }
+    }
 }
 
 static void *compile_thread(void *arg)
@@ -984,6 +997,7 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
     int fd, rc;
     char snap[1100];
     if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) return -1;
+    snap_restore(datadir);
     snprintf(snap, sizeof snap, "%s.snap", datadir);
     rc = run_guest(root, datadir, fd, app_argv, 4, frame, home, frame_ctx, "app", snap, log, ctx, 0);
     close(fd);
@@ -1029,12 +1043,45 @@ static void *hidden_watch(void *arg)
     return NULL;
 }
 
+/* A snapshot the next launch would resume: this launch's key, this build's. */
+static int snap_fits(const char *snap, const char *key)
+{
+    return !access(snap, R_OK) && snap_key_ok(snap, key) && aoi_snap_this_build(snap);
+}
+
+/* The clean snapshot (<datadir>.snap0): the app just started, saved out of sight after
+ * its compile. The one the app runs on (.snap) is saved again as it is used; when that
+ * one is gone (a restart, a crash after it) or no longer fits, the clean one takes its
+ * place, so a compiled app never starts from nothing again. Both names are links to a
+ * file a save replaces whole (rename): one never changes under the other. */
+static int snap_restore(const char *datadir)
+{
+    char key[256], snap[1100], snap0[1100];
+    snprintf(snap, sizeof snap, "%s.snap", datadir);
+    snprintf(snap0, sizeof snap0, "%s.snap0", datadir);
+    snap_key(datadir, key, sizeof key);
+    if (snap_fits(snap, key)) return 1;
+    if (!snap_fits(snap0, key)) return 0;
+    unlink(snap);
+    if (link(snap0, snap)) return 0;
+    snap_key_write(snap, key);
+    return 1;
+}
+
+static void snap_keep_clean(const char *datadir)
+{
+    char key[256], snap[1100], snap0[1100];
+    snprintf(snap, sizeof snap, "%s.snap", datadir);
+    snprintf(snap0, sizeof snap0, "%s.snap0", datadir);
+    snap_key(datadir, key, sizeof key);
+    if (!snap_fits(snap, key)) return;
+    unlink(snap0);
+    if (!link(snap, snap0)) snap_key_write(snap0, key);
+}
+
 int aoi_android_snapshot_fits(const char *datadir)
 {
-    char key[256], snap[1100];
-    snprintf(snap, sizeof snap, "%s.snap", datadir);
-    snap_key(datadir, key, sizeof key);
-    return !access(snap, R_OK) && snap_key_ok(snap, key);
+    return snap_restore(datadir);
 }
 
 int aoi_android_app_hidden(const char *root, const char *datadir, const char *logpath, const char *display,
@@ -1057,7 +1104,9 @@ int aoi_android_app_hidden(const char *root, const char *datadir, const char *lo
     pthread_join(th, NULL);
     close(fd);
     if (hidden_shown) return rc;
-    return !stat(snap, &st) && st.st_mtime >= t0 && st.st_size > 0 ? 1 : -1;
+    if (stat(snap, &st) || st.st_mtime < t0 || !st.st_size) return -1;
+    snap_keep_clean(datadir);
+    return 1;
 }
 
 int aoi_android_show(aoi_frame_fn frame, void (*home)(void *), void *frame_ctx)
