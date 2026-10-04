@@ -662,6 +662,42 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**A code review's fixes (app 0.65).** A read-through of ios/ and core/proc.c found:
+- **A stop while an app was still starting was lost** (`running` is set only after its
+  libraries, snapshot load and exec): tapping B during A's first seconds left B waiting
+  behind A forever. Now a stop then is kept (stop_pending) and taken as the process
+  begins; switching apps saves and stops *that* process (aoi_android_save_stop, by
+  generation), never the next one.
+- **Use after free:** touches, keys, snapshots and the memory watcher read `running`
+  while run_guest freed it. They hold it now (proc_get/proc_put under run_lock) and the
+  process is freed once none does.
+- **The warm handoff:** an app handed to the warm Android that ended before taking it
+  (aoi_android_warm returns -3) left the screen spinning and its ScreenVC retained; now
+  it is released and reported. A warm start that ended by itself is retried (at most
+  three quick ends in a row).
+- **The compile queue** stopped at an entry that did not start (nothing to do, or no
+  memory), so it never drained (and kept the background audio on): the next is tried.
+- **An APK update** rewrote base.apk in place under a running app's mapped pages
+  (SIGBUS); now written to a new file and renamed, the write checked, and a compile of
+  the old APK cancelled. Package names are checked ([A-Za-z0-9_.], no "..") before they
+  name a directory. The picker's copy is deleted.
+- **dup3 onto fd 0-2** dup2'd onto the iOS process's own stdout/stderr; the guest gets
+  its own host fd now.
+- Thermal/power notifications are handled on the main thread; run_guest's environment
+  buffer is per call (dex2oat's thread runs it too); "Baştan başlat" deletes the
+  snapshot after the process ends; a snapshot that fails to load also drops the clean
+  one if it is the same file; .nosnap only when the app cannot be saved (not on a
+  timeout: retried at the next launch); removing an app stops its hidden start too.
+- The log keeps its last ~300 KB and is written at most every 2 s.
+- Syscalls: setrlimit, fadvise64, sync, sync_file_range, syncfs, sched_setparam /
+  setscheduler / setaffinity / get_priority_max / min, getcpu, getrusage.
+- For App Store readiness: PrivacyInfo.xcprivacy (file timestamps, boot time, disk
+  space), UIRequiresFullScreen. Still against review: the silent-audio keep-alive
+  (2.5.4; iOS 26's BGContinuedProcessingTask is the sanctioned way) and running code
+  the app does not ship (2.5.2).
+Host: make test (25 OK), NewPipe hidden save, resume 0.3 s, a stop mid-run, the warm
+handoff.
+
 **License, credits, the JIT wording (2026-10-04).** LiquidAPK is GPL-3.0-or-later
 (LICENSE); NOTICE.md lists what the IPA carries (AOSP 14 from the pinned GSI, ANGLE,
 Khronos headers, certifi's roots, dx), the build and test tools, and the prior work this

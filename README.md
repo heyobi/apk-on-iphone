@@ -12,7 +12,7 @@ is no writable-executable memory. Android's own ART may still JIT-compile hot Ja
 methods inside the guest, but what it produces is AArch64 guest code that the
 interpreter runs like any other.
 
-## What runs today (app 0.64)
+## What runs today (app 0.65)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):

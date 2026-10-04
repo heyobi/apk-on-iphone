@@ -38,7 +38,8 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
  * warmdir as /data (a /data like an app's, without an APK), then the process waits.
  * The first time it is saved (warmdir.snap), so later warm starts resume in a second.
  * aoi_android_go makes it the app's; this returns when that process ends: the app's
- * exit code, or -2 if it ended without an app (aoi_android_stop). */
+ * exit code, -2 if it ended without an app (aoi_android_stop), or -3 if it ended after
+ * aoi_android_go handed it one but before it took it (the app did not start). */
 int aoi_android_warm(const char *root, const char *warmdir, const char *display, aoi_log_fn log, void *ctx);
 
 /* Ends the warm process while it has no app (before it began too: aoi_android_warm
@@ -53,20 +54,27 @@ int aoi_android_go(const char *root, const char *datadir, const char *logpath, c
 
 /* The app started without a screen, to be saved (its snapshot) and ended: the iOS app
  * does it after a compile, so the first tap resumes it. 1 saved, -1 not (the app does
- * not let itself be saved: a GL game, a WebView); if aoi_android_show made it the
- * shown app, its exit code when it ends. */
+ * not let itself be saved: a GL game, a WebView), -3 not this time (it did not get to
+ * its save in 4 min, or could not start: worth another try); if aoi_android_show made
+ * it the shown app, its exit code when it ends. */
 int aoi_android_app_hidden(const char *root, const char *datadir, const char *logpath, const char *display,
                            aoi_log_fn log, void *ctx);
 
-/* Whether the app has a snapshot made for its APK and compiled code as they are now
- * (display and build are checked when it loads). */
+/* Whether the app has a snapshot made for its APK, compiled code, display and this
+ * build; when its last one is gone or does not fit, the clean one saved after its
+ * compile (<datadir>.snap0) is put back first. */
 int aoi_android_snapshot_fits(const char *datadir);
 
 /* The app aoi_android_app_hidden runs goes to this screen and stays (0), or -1. */
 int aoi_android_show(aoi_frame_fn frame, void (*home)(void *), void *frame_ctx);
 
-/* Ends the running app's process (after aoi_android_snapshot, it resumes from there). */
+/* Ends the running app's process (after aoi_android_snapshot, it resumes from there);
+ * an app still starting stops as soon as it begins. */
 void aoi_android_stop(void);
+
+/* Saves the running app (aoi_android_snapshot) and ends that same process: never the
+ * next app, should this one end by itself meanwhile. */
+void aoi_android_save_stop(double timeout);
 
 /* A touch for the running app (from any thread): action 0 down, 1 up, 2 move, 4
  * cancel, at (x, y) in its screen pixels (the frames' size). Ignored when no app runs. */

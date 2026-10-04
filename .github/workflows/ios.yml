@@ -116,6 +116,7 @@ jobs:
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics \
             -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
+          cp ios/PrivacyInfo.xcprivacy "$APP/PrivacyInfo.xcprivacy"
           cp ios/icons/*.png "$APP/"
           mkdir -p "$APP/licenses" && cp angle-ios/licenses/*.txt LICENSE NOTICE.md "$APP/licenses/"
           cp -RP aroot-mini "$APP/aroot"

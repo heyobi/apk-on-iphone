@@ -138,6 +138,12 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
     NSString *bundled = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot/data"];
     NSError *e = nil;
     if (aoi_apk_manifest(apk.bytes, apk.length, pkg, sizeof pkg, label, sizeof label)) { *err = @"Bu bir Android APK'sı değil."; return nil; }
+    NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
+                            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."] invertedSet];
+    if (!pkg[0] || pkg[0] == '.' || strstr(pkg, "..") || [@(pkg) rangeOfCharacterFromSet:bad].location != NSNotFound) {
+        *err = @"APK'nın paket adı geçersiz.";            /* it names the app's directory */
+        return nil;
+    }
     AoiApp *a = [AoiApp new];
     a.pkg = @(pkg); a.label = @(label);
     [fm createDirectoryAtPath:[self appsDir] withIntermediateDirectories:YES attributes:nil error:nil];
@@ -146,7 +152,11 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
         return nil;
     }
     [fm createDirectoryAtPath:a.apkPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-    if (![[NSData dataWithContentsOfFile:a.apkPath] isEqualToData:apk]) [apk writeToFile:a.apkPath atomically:NO];
+    if (![[NSData dataWithContentsOfFile:a.apkPath options:NSDataReadingMappedIfSafe error:nil] isEqualToData:apk]
+        && ![apk writeToFile:a.apkPath options:NSDataWritingAtomic error:&e]) {   /* a new file: a running app keeps the old one's pages */
+        *err = [NSString stringWithFormat:@"APK yazılamadı: %@", e.localizedDescription];
+        return nil;
+    }
     [@{ @"label" : a.label } writeToFile:a.infoPath atomically:YES];
     return a;
 }
@@ -182,6 +192,7 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
     for (NSString *p in @[ self.dir, self.infoPath, [self.dir stringByAppendingString:@".snap"],
                            [self.dir stringByAppendingString:@".snap.key"], [self.dir stringByAppendingString:@".snap0"],
                            [self.dir stringByAppendingString:@".snap0.key"], [self.dir stringByAppendingString:@".nosnap"],
+                           [self.dir stringByAppendingString:@".compiling"],
                            [self.dir stringByAppendingString:@".log"],
                            [self.dir stringByAppendingString:@".log.1"], self.compileLog ])
         [fm removeItemAtPath:p error:nil];
@@ -484,7 +495,7 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 - (void)appEnded:(AoiApp *)a target:(ScreenVC *)target log:(NSString *)logPath;
 - (void)maybeOpen:(AoiApp *)a;
 - (void)openApp:(AoiApp *)a;
-- (void)compile:(AoiApp *)a faster:(BOOL)faster;
+- (int)compile:(AoiApp *)a faster:(BOOL)faster;
 - (void)cancelCompile:(AoiApp *)a;
 - (void)tell:(NSString *)title what:(NSString *)msg;
 - (BOOL)queued:(AoiApp *)a;
@@ -637,16 +648,24 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     self.warmDisplay = display;
     self.warmApp = nil;
     NSString *root = self.root;
+    CFTimeInterval t0 = CACurrentMediaTime();
+    static int quick;                                    /* warm starts in a row that ended at once */
     dispatch_async(self.appQueue, ^{
         int rc = aoi_android_warm(root.UTF8String, dir.UTF8String, display.UTF8String, log_cb, (__bridge void *)self);
         dispatch_async(dispatch_get_main_queue(), ^{
             self.warmRunning = NO;
-            if (rc != -2 && self.warmApp) {              /* it was an app: that app ended */
+            if (self.warmApp) {                          /* it was handed an app: that app ended */
                 AoiApp *a = self.warmApp;
                 ScreenVC *target = self.warmTarget;
-                CFRelease(self.warmCtx);
+                if (self.warmCtx) CFRelease(self.warmCtx);
                 self.warmApp = nil; self.warmTarget = nil; self.warmCtx = NULL;
+                if (rc == -3) [self append:[NSString stringWithFormat:@"%@ başlatılamadı (Android ondan önce kapandı); tekrar dokunun.", a.label]];
                 [self appEnded:a target:target log:[a.dir stringByAppendingString:@".log"]];
+            } else {                                     /* stopped for an app, or it ended by itself */
+                BOOL idle = !self.runningPkg && !self.preparing;
+                quick = idle && CACurrentMediaTime() - t0 < 10 ? quick + 1 : 0;
+                if (quick < 3) [self idleNext];          /* up again if still idle */
+                else if (quick == 3) [self append:@"Android arka planda açılamadı; bir uygulamaya dokununca başlar."];
             }
         });
     });
@@ -671,7 +690,8 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     while (self.prepareQueue.count) {                    /* compiled while it ran: saved now */
         AoiApp *n = [AoiApp withPackage:self.prepareQueue.firstObject];
         [self.prepareQueue removeObjectAtIndex:0];
-        if (n) { [self prepareApp:n]; return; }
+        if (n) [self prepareApp:n];
+        if (self.preparing) return;                      /* (it may need none after all) */
     }
     [self startWarm];
 }
@@ -708,8 +728,10 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
                 if (![self.prepareQueue containsObject:a.pkg]) [self.prepareQueue addObject:a.pkg];
             } else if (rc == 1) {
                 [self append:[NSString stringWithFormat:@"%@ hazır: anında açılır", a.label]];
-            } else {
+            } else if (rc == -1 && [NSFileManager.defaultManager fileExistsAtPath:a.dir]) {   /* it cannot be saved */
                 [@"" writeToFile:[a.dir stringByAppendingString:@".nosnap"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            } else if (rc == -3) {
+                [self append:[NSString stringWithFormat:@"%@: ilk açılış bu sefer hazırlanamadı; LiquidAPK bir dahaki açılışta yeniden dener.", a.label]];
             }
             [self idleNext];
         });
@@ -880,8 +902,8 @@ static NSString *duration_text(double s) {
 }
 
 /* Starts it, or queues it behind the one that runs. */
-- (void)compile:(AoiApp *)a faster:(BOOL)faster {
-    if ([self queued:a]) return;
+- (int)compile:(AoiApp *)a faster:(BOOL)faster {
+    if ([self queued:a]) return -1;
     int rc = aoi_android_compile(self.root.UTF8String, a.dir.UTF8String, a.compileLog.UTF8String, faster,
                                  log_cb, (__bridge void *)self);
     if (rc == 0 || rc == -1) {
@@ -897,6 +919,7 @@ static NSString *duration_text(double s) {
     if (rc == 0) [self append:[NSString stringWithFormat:@"%@ derleniyor (tahmini %@).", a.label,
                                duration_text(aoi_android_compile_estimate(a.dir.UTF8String, faster))]];
     [self tick];
+    return rc;
 }
 
 - (void)cancelCompile:(AoiApp *)a {
@@ -923,7 +946,9 @@ static NSString *duration_text(double s) {
         NSDictionary *q = self.queue.firstObject;
         [self.queue removeObjectAtIndex:0];
         AoiApp *n = [AoiApp withPackage:q[@"pkg"]];
-        if (n) { [self compile:n faster:[q[@"faster"] boolValue]]; break; }
+        int rc = n ? [self compile:n faster:[q[@"faster"] boolValue]] : 1;
+        if (rc == 0 || rc == -1) break;                  /* started (or waiting again); else the next one */
+        if (n) [NSFileManager.defaultManager removeItemAtPath:compile_mark(n) error:nil];
     }
     [self tick];
 }
@@ -1065,10 +1090,12 @@ static NSString *duration_text(double s) {
  * snapshot taken after its compile, <dir>.snap0: still in a second), else from nothing. */
 - (void)restart:(AoiApp *)a {
     if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
-    [a forgetSnapshot];
-    BOOL clean = aoi_android_snapshot_fits(a.dir.UTF8String);
-    [self append:[NSString stringWithFormat:clean ? @"%@: kayıt silindi, bir sonraki açılış baştan (yine hızlı)."
-                                                  : @"%@: kayıt silindi, bir sonraki açılış baştan.", a.label]];
+    dispatch_async(self.appQueue, ^{                     /* after its process has ended (it may save on its way) */
+        [a forgetSnapshot];
+        BOOL clean = aoi_android_snapshot_fits(a.dir.UTF8String);
+        [self append:[NSString stringWithFormat:clean ? @"%@: kayıt silindi, bir sonraki açılış baştan (yine hızlı)."
+                                                      : @"%@: kayıt silindi, bir sonraki açılış baştan.", a.label]];
+    });
 }
 
 - (void)confirmRemove:(AoiApp *)a {
@@ -1077,6 +1104,8 @@ static NSString *duration_text(double s) {
                                                          preferredStyle:UIAlertControllerStyleAlert];
     [al addAction:[UIAlertAction actionWithTitle:@"Kaldır" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
         if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
+        if ([self.preparing.pkg isEqualToString:a.pkg]) { self.preparingCancelled = YES; aoi_android_stop(); }
+        [self.prepareQueue removeObject:a.pkg];
         [self cancelCompile:a];
         dispatch_async(self.appQueue, ^{                 /* after its process has ended, and dex2oat's */
             while (aoi_android_compiling()) {
@@ -1103,6 +1132,9 @@ static NSString *duration_text(double s) {
     NSData *d = [NSData dataWithContentsOfURL:urls.firstObject options:NSDataReadingMappedIfSafe error:nil];
     NSString *err = nil;
     AoiApp *a = d ? [AoiApp install:d error:&err] : nil;
+    double mb = d.length / 1e6;
+    d = nil;
+    [NSFileManager.defaultManager removeItemAtURL:urls.firstObject error:nil];   /* the picker's copy */
     if (!a) {
         UIAlertController *al = [UIAlertController alertControllerWithTitle:@"Yüklenemedi" message:err ?: @"Dosya okunamadı."
                                                              preferredStyle:UIAlertControllerStyleAlert];
@@ -1110,13 +1142,15 @@ static NSString *duration_text(double s) {
         [self presentViewController:al animated:YES completion:nil];
         return;
     }
-    [self append:[NSString stringWithFormat:@"Yüklendi: %@ (%@, %.1f MB)", a.label, a.pkg, d.length / 1e6]];
+    [self append:[NSString stringWithFormat:@"Yüklendi: %@ (%@, %.1f MB)", a.label, a.pkg, mb]];
     if ([a.pkg isEqualToString:self.runningPkg]) {       /* updated while it runs: start it afresh */
         aoi_android_stop();
         [a forgetSnapshot];
         self.runningPkg = nil;
         self.screenVC = nil;
     }
+    if ([self.preparing.pkg isEqualToString:a.pkg]) { self.preparingCancelled = YES; aoi_android_stop(); }
+    [self cancelCompile:a];                              /* a compile of the old APK: its code would not fit */
     [self reload];
     if (!a.compiled) {                                   /* once, now: the card shows how far it is */
         [self compile:a faster:NO];
@@ -1160,7 +1194,7 @@ static NSString *duration_text(double s) {
     NSString *prev = self.runningPkg;
     if (prev) {                                          /* one process at a time: save that one, end it */
         [self append:[NSString stringWithFormat:@"%@ kaydedilip kapatılıyor …", prev]];
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ aoi_android_snapshot(20); aoi_android_stop(); });
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ aoi_android_save_stop(20); });
     }
     self.runningPkg = a.pkg;
     compile_hold_update();
@@ -1207,11 +1241,23 @@ static NSString *duration_text(double s) {
 - (void)append:(NSString *)line {
     NSLog(@"%@", line);
     dispatch_async(dispatch_get_main_queue(), ^{
+        static BOOL writing;
         [self.log appendFormat:@"%@\n", line];
-        self.dev.logView.text = self.log;
-        [self.dev.logView scrollRangeToVisible:NSMakeRange(self.log.length, 0)];
-        NSURL *doc = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-        [self.log writeToURL:[doc URLByAppendingPathComponent:@"log.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        if (self.log.length > 400000) {                  /* the last ~300 KB: it is copied into bug reports */
+            NSRange nl = [self.log rangeOfString:@"\n" options:0 range:NSMakeRange(100000, self.log.length - 100000)];
+            [self.log deleteCharactersInRange:NSMakeRange(0, nl.location == NSNotFound ? 100000 : nl.location + 1)];
+        }
+        if (self.dev) {
+            self.dev.logView.text = self.log;
+            [self.dev.logView scrollRangeToVisible:NSMakeRange(self.log.length, 0)];
+        }
+        if (writing) return;                             /* log.txt: at most every 2 s */
+        writing = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            writing = NO;
+            NSURL *doc = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+            [self.log writeToURL:[doc URLByAppendingPathComponent:@"log.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        });
     });
 }
 @end
@@ -1460,7 +1506,7 @@ static void home_cb(void *ctx) {
     aoi_android_set_compile_done(compile_done_cb);
     for (NSNotificationName n in @[ NSProcessInfoThermalStateDidChangeNotification,
                                     NSProcessInfoPowerStateDidChangeNotification ])
-        [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:nil
+        [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue
                                                     usingBlock:^(NSNotification *note) { compile_hold_update(); }];
     compile_hold_update();
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];

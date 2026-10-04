@@ -191,6 +191,47 @@ static int classpath_env(const char *datadir, char vals[3][4096], const char **e
 
 static struct aoi_proc *volatile running;   /* the app's process, while aoi_android_app runs */
 
+/* Other threads (the UI's touches, keys, snapshots, stops; the memory watcher) reach
+ * the app's process through proc_get/proc_put: run_guest frees it only once none holds
+ * it. A stop asked while an app is still starting (running not yet set: its libraries,
+ * its snapshot loading) is kept for it (stop_pending), so it is not lost. */
+static pthread_mutex_t run_lock = PTHREAD_MUTEX_INITIALIZER;
+static int run_users, launching, stop_pending;
+static unsigned run_gen;                    /* one more for each process that becomes running */
+
+static struct aoi_proc *proc_get(void)
+{
+    struct aoi_proc *p;
+    pthread_mutex_lock(&run_lock);
+    if ((p = running)) run_users++;
+    pthread_mutex_unlock(&run_lock);
+    return p;
+}
+
+static void proc_put(struct aoi_proc *p)
+{
+    if (!p) return;
+    pthread_mutex_lock(&run_lock);
+    run_users--;
+    pthread_mutex_unlock(&run_lock);
+}
+
+static void launch_begin(void)
+{
+    pthread_mutex_lock(&run_lock);
+    launching = 1;
+    stop_pending = 0;
+    pthread_mutex_unlock(&run_lock);
+}
+
+static void launch_end(void)
+{
+    pthread_mutex_lock(&run_lock);
+    launching = 0;
+    stop_pending = 0;
+    pthread_mutex_unlock(&run_lock);
+}
+
 static void (*clipboard_fn)(int op, const char *path);
 void aoi_android_set_clipboard(void (*fn)(int op, const char *path)) { clipboard_fn = fn; }
 static void clipboard(void *ctx, int op, const char *path) { (void)ctx; if (clipboard_fn) clipboard_fn(op, path); }
@@ -256,7 +297,7 @@ static void guest_breakdown(struct aoi_proc *p, char *out, size_t outn)
 
 /* While an app runs: its memory every 10 s (phys_footprint and what it is made of,
  * the guest's host chunks, file pages mapped/copied), to find where it goes. */
-struct watch { aoi_log_fn log; void *ctx; struct aoi_proc *p; };
+struct watch { aoi_log_fn log; void *ctx; struct aoi_proc *p; unsigned gen; };
 static void compile_cut(void);
 
 static void *memory_watch(void *arg)
@@ -266,8 +307,10 @@ static void *memory_watch(void *arg)
     free(arg);
     for (;;) {
         int i;
+        struct aoi_proc *held;
         for (i = 0; i < 100 && running == w.p; i++) { struct timespec ts = { 0, 100000000 }; nanosleep(&ts, NULL); }
-        if (running != w.p) return NULL;
+        held = proc_get();                                 /* not freed while it is read */
+        if (held != w.p || run_gen != w.gen) { proc_put(held); return NULL; }
 #ifdef __APPLE__
         if (os_proc_available_memory() < (size_t)200 << 20) compile_cut(); /* iOS would end the app itself */
         {
@@ -295,6 +338,7 @@ static void *memory_watch(void *arg)
             guest_breakdown(w.p, b, sizeof b);
             say(w.log, w.ctx, "memory: %s", b);
         }
+        proc_put(held);
     }
 }
 static char snap_path[1024];                /* where its snapshot goes */
@@ -314,40 +358,65 @@ static int gpu_on(void)
 
 int aoi_android_snapshot(double timeout)
 {
-    struct aoi_proc *p = running;
+    struct aoi_proc *p = proc_get();
     struct timespec ts = { 0, 20000000 };
     double waited = 0;
-    if (!p || !snap_path[0]) return -1;
+    int rc;
+    if (!p || !snap_path[0] || p->stop_request) { proc_put(p); return -1; }
     snprintf(p->snap_path, sizeof p->snap_path, "%s", snap_path);
     if (p->gpu_live) aoi_proc_touch(p, 5, 0, 0);       /* aoi.Snapshot: the GPU's state goes first */
     else p->snap_request = 1;
     while (p->snap_request && running == p && waited < timeout) { nanosleep(&ts, NULL); waited += 0.02; }
     while (p->snap_path[0] && running == p && waited < timeout) { nanosleep(&ts, NULL); waited += 0.02; }   /* written */
-    return running == p && !p->snap_path[0] ? 0 : -1;
+    rc = running == p && !p->snap_path[0] ? 0 : -1;
+    proc_put(p);
+    return rc;
 }
 
 void aoi_android_touch(int action, float x, float y)
 {
-    struct aoi_proc *p = running;
+    struct aoi_proc *p = proc_get();
     if (p) aoi_proc_touch(p, action, x, y);
+    proc_put(p);
 }
 
 void aoi_android_key(int action, int value)
 {
-    struct aoi_proc *p = running;
+    struct aoi_proc *p = proc_get();
     if (p) aoi_proc_key(p, action, value);
+    proc_put(p);
 }
 
 void aoi_android_stop(void)
 {
-    struct aoi_proc *p = running;
-    if (p) p->stop_request = 1;                         /* aoi_proc_run returns; aoi_android_app ends */
+    pthread_mutex_lock(&run_lock);
+    if (running) running->stop_request = 1;            /* aoi_proc_run returns; aoi_android_app ends */
+    else if (launching) stop_pending = 1;              /* still starting: it stops as it begins */
+    pthread_mutex_unlock(&run_lock);
+}
+
+void aoi_android_save_stop(double timeout)
+{
+    unsigned gen;
+    pthread_mutex_lock(&run_lock);
+    if (!running) {
+        if (launching) stop_pending = 1;
+        pthread_mutex_unlock(&run_lock);
+        return;
+    }
+    gen = run_gen;
+    pthread_mutex_unlock(&run_lock);
+    aoi_android_snapshot(timeout);
+    pthread_mutex_lock(&run_lock);
+    if (running && run_gen == gen) running->stop_request = 1;   /* that one, not the next app */
+    pthread_mutex_unlock(&run_lock);
 }
 
 void aoi_android_back(void)
 {
-    struct aoi_proc *p = running;
+    struct aoi_proc *p = proc_get();
     if (p) aoi_proc_touch(p, 3, 0, 0);                  /* aoi.Input: the activity's onBackPressed */
+    proc_put(p);
 }
 
 /* One guest process with the app environment: /data in datadir, output to fd. Its
@@ -402,7 +471,7 @@ static pthread_mutex_t warm_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct aoi_proc *warm_p;             /* the warm process, while it has no app */
 static int warm_stopping;                   /* aoi_android_warm_stop: before or while it runs */
 static struct {                             /* the app aoi_android_go hands it */
-    int pending, done;
+    int pending, done, missed;              /* missed: handed, but it ended before taking it */
     char root[1024], datadir[980], logpath[1024], display[64];
     aoi_frame_fn frame;
     void (*home)(void *);
@@ -421,7 +490,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
         "ANDROID_I18N_ROOT=/apex/com.android.i18n", "ANDROID_TZDATA_ROOT=/apex/com.android.tzdata",
         "CLASSPATH=/data/local/tmp/aoi.dex",
         "ANDROID_NO_USE_FWMARK_CLIENT=1", NULL };            /* no netd fwmarkd: sockets untagged (core/proc.c) */
-    static char vals[3][4096];
+    char vals[3][4096];                 /* (dex2oat's thread runs this too, at the same time) */
     const char *cp[4], *envp[24];
     struct aoi_proc *p = calloc(1, sizeof *p);
     static char snap_app[1100];
@@ -452,6 +521,10 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
                     (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9);
                 resumed = 1;
             } else {
+                char snap0[1200];
+                struct stat a, b;
+                snprintf(snap0, sizeof snap0, "%s0", snap);   /* the clean one, if it is that file: not again */
+                if (!stat(snap, &a) && !stat(snap0, &b) && a.st_dev == b.st_dev && a.st_ino == b.st_ino) unlink(snap0);
                 say(log, ctx, "%s: snapshot not usable (%s), starting afresh", what, err);
                 aoi_proc_free(p);
                 memset(p, 0, sizeof *p);
@@ -498,19 +571,36 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     if (frame) {
         struct watch *w = malloc(sizeof *w);
         pthread_t th;
+        pthread_mutex_lock(&run_lock);
         running = p;
+        run_gen++;
+        if (stop_pending && !warm) p->stop_request = 1;    /* stopped while it was starting */
+        stop_pending = 0;
+        launching = 0;
+        pthread_mutex_unlock(&run_lock);
         if (w) {
-            w->log = log; w->ctx = ctx; w->p = p;
+            w->log = log; w->ctx = ctx; w->p = p; w->gen = run_gen;
             if (!pthread_create(&th, NULL, memory_watch, w)) pthread_detach(th); else free(w);
         }
     }
     if (!strcmp(what, "dex2oat")) compile_attach(p);
     st = aoi_proc_run(p, 0);
     if (!strcmp(what, "dex2oat")) compile_attach(NULL);
-    running = NULL;
+    if (frame) {
+        struct timespec wait = { 0, 5000000 };
+        pthread_mutex_lock(&run_lock);
+        running = NULL;
+        while (run_users) {                 /* another thread still reads it: freed after */
+            pthread_mutex_unlock(&run_lock);
+            nanosleep(&wait, NULL);
+            pthread_mutex_lock(&run_lock);
+        }
+        pthread_mutex_unlock(&run_lock);
+    }
     if (warm) {
         pthread_mutex_lock(&warm_lock);
         warm_p = NULL;
+        if (warm_go.pending && !warm_go.done) warm_go.missed = 1;
         warm_go.pending = 0;
         pthread_mutex_unlock(&warm_lock);
         if (warm_go.done) {                 /* it became an app: what follows is the app's */
@@ -923,7 +1013,11 @@ int aoi_android_compile(const char *root, const char *datadir, const char *logpa
     else if (faster && !strcmp(last, "verify") && app_profile(datadir, prof, sizeof prof)) filter = "speed-profile";
     if (!filter || !dex) return 1;                                  /* compiled already */
 #ifdef __APPLE__
-    if (running && !running->warm) {  /* dex2oat's peak (WhatsApp verify 409 MB, Molly speed-profile 313 MB) next to the app's */
+    int busy;
+    pthread_mutex_lock(&run_lock);
+    busy = running && !running->warm;
+    pthread_mutex_unlock(&run_lock);
+    if (busy) {                         /* dex2oat's peak (WhatsApp verify 409 MB, Molly speed-profile 313 MB) next to the app's */
         size_t avail = os_proc_available_memory(), need = (size_t)(strcmp(filter, "speed") ? 1100 : 900) << 20;
         if (avail < need) {
             say(log, ctx, "dex2oat: %zu MB free next to the running app: not now", avail >> 20);
@@ -996,10 +1090,12 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
 {
     int fd, rc;
     char snap[1100];
-    if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) return -1;
+    launch_begin();
+    if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) { launch_end(); return -1; }
     snap_restore(datadir);
     snprintf(snap, sizeof snap, "%s.snap", datadir);
     rc = run_guest(root, datadir, fd, app_argv, 4, frame, home, frame_ctx, "app", snap, log, ctx, 0);
+    launch_end();
     close(fd);
     return rc;
 }
@@ -1011,7 +1107,7 @@ int aoi_android_app(const char *root, const char *datadir, const char *logpath, 
  * process ends, and the user's first tap resumes it in a second. A tap while it is
  * still starting shows it (aoi_android_show) and it goes on as the app. */
 
-static volatile int hidden_on, hidden_shown;
+static volatile int hidden_on, hidden_shown, hidden_late;
 static pthread_mutex_t hidden_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void drop_frame(void *ctx, const unsigned char *rgbx, unsigned w, unsigned h) { (void)ctx; (void)rgbx; (void)w; (void)h; }
@@ -1022,20 +1118,26 @@ static void *hidden_watch(void *arg)
     double waited = 0, limit = *(double *)arg;
     int seen = 0;
     while (waited < limit && !hidden_shown) {
-        struct aoi_proc *p = running;
+        struct aoi_proc *p = proc_get();
+        int end = 0;
         if (p && p->snap_path[0]) seen = 1;
-        if (p && seen && !p->snap_path[0]) break;           /* saved (or the app does not let itself be) */
-        if (!seen && waited > 20) break;                    /* resumed: nothing to save */
+        if (p && seen && !p->snap_path[0]) end = 1;         /* saved (or the app does not let itself be) */
+        if (p && !seen && waited > 20) end = 1;             /* resumed: nothing to save */
+        proc_put(p);
+        if (end) break;
         nanosleep(&ts, NULL);
         waited += 0.25;
     }
+    hidden_late = waited >= limit;
     for (;;) {                                              /* end it (it may not run yet: wait for it) */
         struct aoi_proc *p;
         int done = 0;
         pthread_mutex_lock(&hidden_lock);
+        pthread_mutex_lock(&run_lock);
         p = running;
         if (hidden_shown || !hidden_on) done = 1;
         else if (p) { p->stop_request = 1; done = 1; }
+        pthread_mutex_unlock(&run_lock);
         pthread_mutex_unlock(&hidden_lock);
         if (done) break;
         nanosleep(&ts, NULL);
@@ -1093,18 +1195,21 @@ int aoi_android_app_hidden(const char *root, const char *datadir, const char *lo
     time_t t0 = time(NULL);
     pthread_t th;
     int fd, rc;
-    if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) return -1;
+    launch_begin();
+    if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) { launch_end(); return -3; }
     snprintf(snap, sizeof snap, "%s.snap", datadir);
     hidden_shown = 0;
+    hidden_late = 0;
     hidden_on = 1;
-    if (pthread_create(&th, NULL, hidden_watch, &limit)) { close(fd); hidden_on = 0; return -1; }
+    if (pthread_create(&th, NULL, hidden_watch, &limit)) { close(fd); hidden_on = 0; launch_end(); return -3; }
     say(log, ctx, "app: started out of sight, to be saved for the next launch");
     rc = run_guest(root, datadir, fd, app_argv, 4, drop_frame, NULL, NULL, "app", snap, log, ctx, 0);
+    launch_end();
     hidden_on = 0;
     pthread_join(th, NULL);
     close(fd);
     if (hidden_shown) return rc;
-    if (stat(snap, &st) || st.st_mtime < t0 || !st.st_size) return -1;
+    if (stat(snap, &st) || st.st_mtime < t0 || !st.st_size) return hidden_late ? -3 : -1;
     snap_keep_clean(datadir);
     return 1;
 }
@@ -1113,13 +1218,19 @@ int aoi_android_show(aoi_frame_fn frame, void (*home)(void *), void *frame_ctx)
 {
     struct aoi_proc *p;
     pthread_mutex_lock(&hidden_lock);
+    pthread_mutex_lock(&run_lock);
     p = running;
-    if (!hidden_on || hidden_shown || !p || p->stop_request) { pthread_mutex_unlock(&hidden_lock); return -1; }
+    if (!hidden_on || hidden_shown || !p || p->stop_request) {
+        pthread_mutex_unlock(&run_lock);
+        pthread_mutex_unlock(&hidden_lock);
+        return -1;
+    }
     p->frame_ctx = frame_ctx;
     p->home = home;
     p->frame = frame;
     hidden_shown = 1;
     p->redraw_request = 1;
+    pthread_mutex_unlock(&run_lock);
     pthread_mutex_unlock(&hidden_lock);
     return 0;
 }
@@ -1183,7 +1294,7 @@ int aoi_android_warm(const char *root, const char *warmdir, const char *display,
     pthread_mutex_lock(&warm_lock);
     warm_stopping = 0;
     pthread_mutex_unlock(&warm_lock);
-    return warm_go.done ? rc : -2;
+    return warm_go.done ? rc : warm_go.missed ? -3 : -2;
 }
 
 void aoi_android_warm_stop(void)

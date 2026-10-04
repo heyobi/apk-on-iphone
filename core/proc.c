@@ -2251,7 +2251,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (nr == NR_dup3) {
             struct aoi_proc_fd *t = &p->fd[a1];
             if (t->used && a1 > 2) { if (t->dir) closedir(t->dir); else close(t->host); }
-            if (a1 <= 2) { dup2(d, (int)a1); close(d); d = (int)a1; }
+            /* fds 0-2: the guest's own host fd, never dup2 onto the host's 0-2 (they are
+             * the whole iOS process's, and the app's log may be one); the one they had
+             * is the embedder's and stays open */
             if (t->used && t->kind == AOI_FD_EPOLL) epoll_unref(t->ep);
             t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
             t->pair = f->pair; t->end = f->end; t->ptype = f->ptype; t->seals = f->seals;
@@ -3064,6 +3066,31 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         int64_t k = u < 0 ? -L_EIO : xfer(p, u, a0, a1, 1, -1);
         if (u >= 0) close(u);
         r = (uint64_t)k;
+        break;
+    }
+    case 164:                                                      /* setrlimit: the limits stay the host's */
+    case 223:                                                      /* fadvise64: a hint */
+    case 81: case 84: case 267:                                    /* sync, sync_file_range, syncfs */
+    case 118: case 119: case 122:                                  /* sched_setparam/setscheduler/setaffinity */
+        r = 0;
+        break;
+    case 125: case 126:                                            /* sched_get_priority_max/min */
+        r = (a0 == 1 || a0 == 2) ? (nr == 125 ? 99 : 1) : 0;      /* SCHED_FIFO, SCHED_RR: 1..99; others 0 */
+        break;
+    case 168: {                                                    /* getcpu(cpu, node): one CPU */
+        uint32_t z = 0;
+        r = (a0 && !put(p, a0, &z, 4)) || (a1 && !put(p, a1, &z, 4)) ? err(L_EFAULT) : 0;
+        break;
+    }
+    case 165: {                                                    /* getrusage: the process's CPU time */
+        uint8_t ru[144];
+        struct timespec ts;
+        int64_t tv[2];
+        memset(ru, 0, sizeof ru);
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+        tv[0] = ts.tv_sec; tv[1] = ts.tv_nsec / 1000;
+        memcpy(ru, tv, sizeof tv);                                 /* ru_utime; ru_stime 0 */
+        r = put(p, a1, ru, sizeof ru) ? 0 : err(L_EFAULT);
         break;
     }
     default:
