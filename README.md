@@ -42,7 +42,7 @@ first (`build/iostest`, the same code path as the phone):
 | App | State | Tested |
 |---|---|---|
 | Qalculate! (Compose, native GMP) | runs, computes, touch and keyboard; exchange rates over TLS | iPhone, host |
-| cube.run (libGDX, OpenGL ES) | plays on the iPhone's GPU (ANGLE on Metal), touch, saves its coins; SoundPool effects since 0.72 | iPhone; sound on host |
+| cube.run (libGDX, OpenGL ES) | plays on the iPhone's GPU (ANGLE on Metal), touch, saves its coins; SoundPool effects (sound since 0.72) | iPhone (sound too) |
 | WhatsApp | starts, EULA, on to its registration screen | iPhone |
 | NewPipe | main UI and navigation; resumes from its snapshot in under a second | iPhone, host |
 | Molly (Signal fork), Element (Matrix) | start to their first screens | host |
