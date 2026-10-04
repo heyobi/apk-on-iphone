@@ -96,6 +96,11 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.CodecTest /system/lib64/libaoi_media.so
     check "MediaPlayer (its service, NuPlayer, in the process; binder relays)" "mediaplayer: duration 1 s, playing true, position moved true" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.MediaPlayerTest /system/lib64/libaoi_media.so
+    # Runtime.exec: vfork + execve start the program as a guest process of its own
+    # (core/proc.c), its stdout a pipe back; exit codes and a missing program as on Android.
+    # shellcheck disable=SC2086
+    check "Runtime.exec (child processes)" "exec: hello (exit 0), 42 (exit 3), missing IOException" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ExecTest
     # Games' sound effects: android.media.SoundPool (libsoundpool.so) decodes a WAV with
     # the codecs and plays it as a static AudioTrack (the app's shared buffer).
     # shellcheck disable=SC2086

@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <netdb.h>
@@ -46,6 +47,14 @@
 #define PAGE        AOI_VM_PAGE
 #define GUEST_PID   1000
 
+/* A vfork()ed child running in its parent until its execve (see vfork_start). */
+struct aoi_vfork {
+    int thread, pid;
+    struct aoi_cpu cpu;                         /* the parent at its svc */
+    uint64_t sigmask;
+    struct aoi_proc_fd fd[AOI_PROC_FDS];        /* the parent's fd table */
+};
+
 static uint64_t up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 static uint64_t down(uint64_t v, uint64_t a) { return v & ~(a - 1); }
 
@@ -54,7 +63,7 @@ static uint64_t down(uint64_t v, uint64_t a) { return v & ~(a - 1); }
 enum { L_EPERM = 1, L_ENOENT = 2, L_ESRCH = 3, L_EINTR = 4, L_EIO = 5, L_EBADF = 9, L_ECHILD = 10,
        L_EAGAIN = 11, L_ENOMEM = 12, L_EACCES = 13, L_EFAULT = 14, L_EBUSY = 16, L_EEXIST = 17,
        L_EXDEV = 18, L_ENOTDIR = 20, L_EISDIR = 21, L_EINVAL = 22, L_ENFILE = 23, L_EMFILE = 24,
-       L_ENOTTY = 25, L_EFBIG = 27, L_ENOSPC = 28, L_ESPIPE = 29, L_EROFS = 30, L_EPIPE = 32,
+       L_E2BIG = 7, L_ENOEXEC = 8, L_ENOTTY = 25, L_EFBIG = 27, L_ENOSPC = 28, L_ESPIPE = 29, L_EROFS = 30, L_EPIPE = 32,
        L_ERANGE = 34, L_ENAMETOOLONG = 36, L_ENOSYS = 38, L_ENOTEMPTY = 39, L_ELOOP = 40,
        L_ENODATA = 61, L_EOVERFLOW = 75, L_ENOTSOCK = 88, L_ENOTSUP = 95, L_EAFNOSUPPORT = 97,
        L_ENOTCONN = 107, L_ETIMEDOUT = 110, L_ECONNREFUSED = 111,
@@ -317,7 +326,7 @@ static int fd_new(struct aoi_proc *p, int host, const char *path, int min)
         if (!p->fd[i].used) {
             p->fd[i].used = 1; p->fd[i].host = host; p->fd[i].dir = NULL; p->fd[i].kind = AOI_FD_FILE;
             p->fd[i].nonblock = 0; p->fd[i].count = 0; p->fd[i].sem = 0; p->fd[i].ep = NULL;
-            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = p->fd[i].seals = p->fd[i].evid = 0;
+            p->fd[i].pair = p->fd[i].end = p->fd[i].ptype = p->fd[i].seals = p->fd[i].evid = p->fd[i].cloexec = 0;
             if (p->fd[i].path != path) join(p->fd[i].path, AOI_PATH, "", path);
             return i;
         }
@@ -646,9 +655,12 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     return NULL;
 }
 
+static void children_free(struct aoi_proc *p);
+
 void aoi_proc_free(struct aoi_proc *p)
 {
     int i;
+    children_free(p);
     aoi_binder_free(p);
     if (p->input_w > 0) { close(p->input_w); p->input_w = 0; }
     shm_sync(p, 0, ~0ULL >> 1, 1);                                 /* shared file mappings reach their files */
@@ -968,6 +980,7 @@ static int schedule(struct aoi_proc *p)
         }
         for (k = 1; k <= AOI_PROC_THREADS; k++) {
             i = (p->cur + k) % AOI_PROC_THREADS;
+            if (p->vf && i != p->vf->thread) continue;             /* a vfork child runs alone */
             if (p->th[i].state == AOI_T_RUN) { next = i; break; }
         }
         if (next >= 0) break;
@@ -2114,6 +2127,266 @@ static uint64_t dns_open(struct aoi_proc *p, struct aoi_proc_fd *f)
     return 0;
 }
 
+/* O_CLOEXEC and its kin on a new fd: the guest's close-on-exec flag (the host's fds are
+ * all FD_CLOEXEC; this one decides what a child's execve keeps). */
+static void note_cloexec(struct aoi_proc *p, uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t r)
+{
+    int32_t two[2];
+    int on = -1, k;
+    switch (nr) {
+    case 56: on = (a2 & 02000000) != 0; break;                     /* openat */
+    case 198: case 85: case 19: on = (a1 & 02000000) != 0; break;  /* socket, timerfd_create, eventfd2 */
+    case 20: on = (a0 & 02000000) != 0; break;                     /* epoll_create1 */
+    case 279: on = (a1 & 1) != 0; break;                           /* memfd_create: MFD_CLOEXEC */
+    case 24: on = (a2 & 02000000) != 0; break;                     /* dup3 */
+    case 242: on = (a3 & 02000000) != 0; break;                    /* accept4 */
+    case 25: if (a1 == 1030) on = 1; break;                        /* fcntl F_DUPFD_CLOEXEC */
+    case 59: case 199:                                             /* pipe2, socketpair: two fds */
+        if (((nr == 59 ? a1 : a1) & 02000000) && get(p, nr == 59 ? a0 : a3, two, 8))
+            for (k = 0; k < 2; k++) if (two[k] >= 0 && two[k] < AOI_PROC_FDS) p->fd[two[k]].cloexec = 1;
+        return;
+    default: return;
+    }
+    if (on > 0 && r < AOI_PROC_FDS) p->fd[r].cloexec = 1;
+}
+
+/* ---------- child processes: vfork, execve, wait (Runtime.exec) ----------
+ * Java starts a program with vfork() and execve() (libopenjdk's childproc.c; bionic's
+ * posix_spawn too). The child runs here as vfork's does: in the parent's memory, on the calling thread,
+ * while the process's other threads wait (schedule). It has a copy of the fd table,
+ * so its dup2s and closes are its own. Its execve starts the program as a guest
+ * process of its own on a host thread (struct aoi_child), with the fds it did not
+ * mark close-on-exec; the parent then returns from vfork with the child's pid.
+ * wait4/waitid and kill reach the child by that pid. */
+
+
+struct aoi_child {
+    int pid;
+    volatile int done, status;                  /* wait4's status: code << 8, or the signal */
+    volatile int orphan;                        /* the parent went first: the thread frees this */
+    struct aoi_proc *proc;
+};
+
+static uint64_t vfork_start(struct aoi_proc *p, struct aoi_cpu *c)
+{
+    struct aoi_vfork *v;
+    int i;
+    if (p->vf) return err(L_EAGAIN);
+    if (!(v = malloc(sizeof *v))) return err(L_ENOMEM);
+    if (p->next_pid < 20000) p->next_pid = 20000;
+    v->thread = p->cur; v->pid = p->next_pid++;
+    v->cpu = *c; v->sigmask = p->th[p->cur].sigmask;
+    memcpy(v->fd, p->fd, sizeof v->fd);
+    for (i = 0; i < AOI_PROC_FDS; i++) {                           /* the child's own copies */
+        struct aoi_proc_fd *f = &p->fd[i];
+        if (!f->used) continue;
+        f->dir = NULL; f->req = NULL; f->nreq = 0;
+        if (f->kind == AOI_FD_DNS) { f->kind = AOI_FD_FILE; f->peer = -1; }
+        if ((f->host = dup(v->fd[i].host)) < 0) { f->used = 0; continue; }
+        if (f->kind == AOI_FD_EPOLL && f->ep) f->ep->refs++;
+        if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, 1);
+    }
+    p->vf = v;
+    if (p->trace) fprintf(p->trace, "[proc] vfork: child %d\n", v->pid);
+    return 0;                                                      /* the child returns 0 */
+}
+
+/* The child execs or exits: its fds go, and the parent returns from vfork with `ret`. */
+static void vfork_end(struct aoi_proc *p, struct aoi_cpu *c, uint64_t ret)
+{
+    struct aoi_vfork *v = p->vf;
+    int i;
+    for (i = 0; i < AOI_PROC_FDS; i++) {
+        struct aoi_proc_fd *f = &p->fd[i];
+        if (!f->used) continue;
+        if (f->dir) closedir(f->dir); else close(f->host);
+        if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
+        if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
+        free(f->req);
+    }
+    memcpy(p->fd, v->fd, sizeof p->fd);
+    p->th[v->thread].sigmask = v->sigmask;
+    memcpy(c->x, v->cpu.x, sizeof c->x);
+    memcpy(c->vreg, v->cpu.vreg, sizeof c->vreg);
+    c->sp = v->cpu.sp; c->n = v->cpu.n; c->z = v->cpu.z; c->c = v->cpu.c; c->v = v->cpu.v;
+    c->fpcr = v->cpu.fpcr; c->fpsr = v->cpu.fpsr; c->tpidr = v->cpu.tpidr;
+    c->x[0] = ret;
+    c->pc = v->cpu.pc + 4;                                         /* after the vfork's svc */
+    c->excl_valid = 0;
+    c->stop = AOI_STOP_NEWPC;
+    p->vf = NULL;
+    free(v);
+}
+
+static struct aoi_child *child_new(struct aoi_proc *p)
+{
+    struct aoi_child **t, *ch;
+    int i;
+    for (i = 0; i < p->nchild && p->child[i]; i++) {}
+    if (i == p->nchild) {
+        if (!(t = realloc(p->child, sizeof *t * (size_t)(p->nchild + 8)))) return NULL;
+        memset(t + p->nchild, 0, sizeof *t * 8);
+        p->child = t; p->nchild += 8;
+    }
+    if (!(ch = calloc(1, sizeof *ch))) return NULL;
+    p->child[i] = ch;
+    return ch;
+}
+
+static void *child_main(void *arg)
+{
+    struct aoi_child *ch = arg;
+    struct aoi_proc *c = ch->proc;
+    int i, status;
+    for (;;) {
+        enum aoi_stop st = aoi_proc_run(c, c->cpu.steps + 50000000);
+        if (c->stop_request) { status = 9; break; }                /* killed (SIGKILL's status) */
+        if (st == AOI_RUN) continue;
+        status = st == AOI_STOP_EXIT ? (c->cpu.exit_code & 0xff) << 8 : 11;   /* a fault: as SIGSEGV */
+        break;
+    }
+    if (c->log) fprintf(c->log, "I/aoi: process %d ended: %s %d after %llu instructions\n", ch->pid,
+                        status & 0x7f ? "signal" : "exit", status & 0x7f ? status : status >> 8,
+                        (unsigned long long)c->cpu.steps);
+    for (i = 0; i < 3; i++)                                        /* (aoi_proc_free keeps fds 0-2) */
+        if (c->fd[i].used && c->fd[i].host > 2) close(c->fd[i].host);
+    if (c->trace) fclose(c->trace);
+    aoi_proc_free(c);
+    free(c);
+    ch->proc = NULL;
+    ch->status = status;
+    {
+        int orphan = __atomic_load_n(&ch->orphan, __ATOMIC_SEQ_CST);   /* (read first: see children_free) */
+        __atomic_store_n(&ch->done, 1, __ATOMIC_SEQ_CST);
+        if (orphan) free(ch);
+    }
+    return NULL;
+}
+
+/* The vfork child's execve: path, argv and envp from guest memory; a "#!" script runs
+ * its interpreter. Errors return to the child (it reports them and exits); success
+ * ends the vfork. */
+static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, uint64_t av, uint64_t ev)
+{
+    static _Thread_local char strs[64 * 1024];
+    const char *argv[258], *envp[258];
+    char g[AOI_PATH], h[AOI_PATH], head[256], interp[AOI_PATH] = "", iarg[256] = "";
+    size_t used = 0;
+    int argc = 0, envc = 0, k, fd;
+    struct stat st;
+    struct aoi_proc *np;
+    struct aoi_child *ch;
+    pthread_t th;
+    const char *e;
+    for (k = 0; k < 2; k++) {                                      /* argv, then envp */
+        uint64_t a = k ? ev : av, sp;
+        const char **out = k ? envp : argv;
+        int *n = k ? &envc : &argc;
+        while (a && *n < 256 && get(p, a + 8 * (uint64_t)*n, &sp, 8) && sp) {
+            size_t l = 0;
+            while (used + l < sizeof strs - 1 && get(p, sp + l, strs + used + l, 1) && strs[used + l]) l++;
+            strs[used + l] = 0;
+            out[(*n)++] = strs + used;
+            used += l + 1;
+        }
+        out[*n] = NULL;
+    }
+    {
+        size_t l = 0;
+        while (l < sizeof g - 1 && get(p, pa + l, g + l, 1) && g[l]) l++;
+        g[l] = 0;
+    }
+    if (!g[0]) return err(L_ENOENT);
+    if (resolve(p, p->cwd, g, 1, h)) return err(L_ENOENT);
+    snprintf(g, sizeof g, "%s", h);
+    to_host(p, g, h);
+    if (!h[0] || stat(h, &st) || !S_ISREG(st.st_mode)) return err(L_ENOENT);
+    if ((fd = open(h, O_RDONLY | O_CLOEXEC)) < 0) return herr();
+    k = (int)read(fd, head, sizeof head - 1);
+    close(fd);
+    head[k > 0 ? k : 0] = 0;
+    if (k > 2 && head[0] == '#' && head[1] == '!') {               /* a script: its interpreter, an argument */
+        char *s = head + 2, *t;
+        while (*s == ' ' || *s == '\t') s++;
+        for (t = s; *t && *t != ' ' && *t != '\t' && *t != '\n'; t++) {}
+        snprintf(interp, sizeof interp, "%.*s", (int)(t - s), s);
+        while (*t == ' ' || *t == '\t') t++;
+        s = t;
+        for (; *t && *t != '\n'; t++) {}
+        while (t > s && (t[-1] == ' ' || t[-1] == '\t' || t[-1] == '\r')) t--;
+        snprintf(iarg, sizeof iarg, "%.*s", (int)(t - s), s);
+        if (argc > 254) return err(L_E2BIG);
+        memmove(argv + (iarg[0] ? 2 : 1), argv, sizeof *argv * (size_t)(argc + 1));
+        argv[0] = interp;
+        if (iarg[0]) argv[1] = iarg;
+        argv[iarg[0] ? 2 : 1] = g;
+        argc += iarg[0] ? 2 : 1;
+    } else if (k < 4 || memcmp(head, "\177ELF", 4)) return err(L_ENOEXEC);
+    if (!(np = calloc(1, sizeof *np))) return err(L_ENOMEM);
+    if ((e = aoi_proc_exec(np, p->root, interp[0] ? interp : g, argc, argv, envp))) {
+        if (p->log) fprintf(p->log, "I/aoi: exec %s: %s\n", g, e);
+        aoi_proc_free(np); free(np);
+        return err(L_ENOEXEC);
+    }
+    snprintf(np->data, sizeof np->data, "%s", p->data);
+    snprintf(np->cwd, sizeof np->cwd, "%s", p->cwd);
+    np->uid = p->uid;
+    np->log = p->log;
+    np->own_stdio = 1;
+    if (getenv("AOI_CHILD_TRACE") && (np->trace = fopen(getenv("AOI_CHILD_TRACE"), "a")))   /* (host debugging) */
+        setvbuf(np->trace, NULL, _IOLBF, 0);
+    for (k = 0; k < AOI_PROC_FDS; k++) {                           /* what it inherits */
+        struct aoi_proc_fd *f = &p->fd[k], *t = &np->fd[k];
+        int d;
+        if (k < 3) t->used = 0;
+        if (!f->used || f->cloexec || f->kind == AOI_FD_EPOLL || f->kind == AOI_FD_BINDER) continue;
+        if ((d = dup(f->host)) < 0) continue;
+        *t = *f;
+        t->host = d; t->dir = NULL; t->req = NULL; t->nreq = 0; t->ep = NULL; t->pair = 0;
+        if (t->kind == AOI_FD_DNS) { t->kind = AOI_FD_FILE; t->peer = -1; }
+        if (t->kind == AOI_FD_EVENTFD) { t->count = *ev_count(p, f); t->sem = ev_sem(p, f); t->evid = 0; }
+    }
+    if (!(ch = child_new(p))) { aoi_proc_free(np); free(np); return err(L_ENOMEM); }
+    ch->pid = p->vf->pid;
+    ch->proc = np;
+    if (pthread_create(&th, NULL, child_main, ch)) {
+        aoi_proc_free(np); free(np);
+        for (k = 0; k < p->nchild; k++) if (p->child[k] == ch) p->child[k] = NULL;
+        free(ch);
+        return err(L_EAGAIN);
+    }
+    pthread_detach(th);
+    if (p->log) fprintf(p->log, "I/aoi: process %d: %s\n", ch->pid, g);
+    vfork_end(p, c, (uint64_t)ch->pid);
+    return (uint64_t)ch->pid;
+}
+
+/* A child that ended, for wait4/waitid: its slot, or -1 (none yet); -2: no such child. */
+static int child_find(struct aoi_proc *p, int64_t pid, int done_only)
+{
+    int i, any = 0;
+    for (i = 0; i < p->nchild; i++) {
+        struct aoi_child *ch = p->child[i];
+        if (!ch || (pid > 0 && ch->pid != pid)) continue;
+        any = 1;
+        if (!done_only || __atomic_load_n(&ch->done, __ATOMIC_SEQ_CST)) return i;
+    }
+    return any ? -1 : -2;
+}
+
+static void children_free(struct aoi_proc *p)
+{
+    int i;
+    for (i = 0; i < p->nchild; i++) {
+        struct aoi_child *ch = p->child[i];
+        if (!ch) continue;
+        if (__atomic_load_n(&ch->done, __ATOMIC_SEQ_CST)) free(ch);
+        else { if (ch->proc) ch->proc->stop_request = 1; __atomic_store_n(&ch->orphan, 1, __ATOMIC_SEQ_CST); }
+    }
+    free(p->child);
+    p->child = NULL; p->nchild = 0;
+}
+
 uint64_t aoi_proc_syscall(struct aoi_cpu *c)
 {
     struct aoi_proc *p = c->host_ctx;
@@ -2320,13 +2593,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_close:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        if (a0 > 2) { if (f->dir) closedir(f->dir); else close(f->host); }
+        if (a0 > 2 || p->own_stdio || p->vf) { if (f->dir) closedir(f->dir); else close(f->host); }
         if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
         if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
         if (f->kind == AOI_FD_DNS && f->peer >= 0) close(f->peer);
         free(f->req);
         f->used = 0; f->dir = NULL; f->ep = NULL; f->req = NULL; f->nreq = 0; f->connecting = 0;
-        epoll_forget(p, (int)a0);
+        if (!p->vf) epoll_forget(p, (int)a0);                      /* (a vfork child's copies: the parent's stay) */
         r = 0;
         break;
     case NR_lseek: {
@@ -2353,6 +2626,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             snprintf(g, AOI_PATH, "%s", f->path);
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
+            if (!(a3 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);   /* (linker64) */
             to_host(p, g, h);
             if ((a3 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
@@ -2423,7 +2697,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = (uint64_t)n;
             break;
         }
-        case 1: case 2: r = 0; break;                              /* F_GETFD / F_SETFD */
+        case 1: r = (uint64_t)f->cloexec; break;                   /* F_GETFD */
+        case 2: f->cloexec = (int)(a2 & 1); r = 0; break;          /* F_SETFD: (what a child's execve keeps) */
         case 3: r = 2 | (f->nonblock ? 04000 : 0); break;          /* F_GETFL: O_RDWR (+ O_NONBLOCK) */
         case 4: f->nonblock = (a2 & 04000) != 0; r = 0; break;     /* F_SETFL: O_NONBLOCK is what counts */
         case 5: case 36: {                                         /* F_GETLK, F_OFD_GETLK: nothing in the way */
@@ -2451,7 +2726,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((d = dup(f->host)) < 0) { r = herr(); break; }
         if (nr == NR_dup3) {
             struct aoi_proc_fd *t = &p->fd[a1];
-            if (t->used && a1 > 2) { if (t->dir) closedir(t->dir); else close(t->host); }
+            if (t->used && (a1 > 2 || p->own_stdio || p->vf)) { if (t->dir) closedir(t->dir); else close(t->host); }
             /* fds 0-2: the guest's own host fd, never dup2 onto the host's 0-2 (they are
              * the whole iOS process's, and the app's log may be one); the one they had
              * is the embedder's and stays open */
@@ -2459,7 +2734,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (t->used && t->kind == AOI_FD_EVENTFD) ev_ref(p, t, -1);
             t->used = 1; t->host = d; t->dir = NULL; t->kind = f->kind; t->nonblock = f->nonblock;
             t->pair = f->pair; t->end = f->end; t->ptype = f->ptype; t->seals = f->seals;
-            t->count = f->count; t->sem = f->sem; t->evid = f->evid;
+            t->count = f->count; t->sem = f->sem; t->evid = f->evid; t->cloexec = 0;
             if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, 1);
             if ((t->ep = f->ep)) f->ep->refs++;
             join(t->path, AOI_PATH, "", f->path);
@@ -2988,6 +3263,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = p->brk;                                                /* fixed: bionic does not grow it */
         break;
     case NR_exit: case NR_exit_group:
+        if (p->vf && p->cur == p->vf->thread) {                    /* a vfork child that did not exec */
+            struct aoi_child *ch = child_new(p);
+            int pid = p->vf->pid;
+            if (ch) { ch->pid = pid; ch->status = (int)(a0 & 0xff) << 8; ch->done = 1; }
+            vfork_end(p, c, (uint64_t)pid);
+            r = (uint64_t)pid;
+            break;
+        }
         c->exit_code = (int)a0;
         c->stop = AOI_STOP_EXIT;
         p->thread_exit = nr == NR_exit;                            /* exit ends only this thread */
@@ -2997,12 +3280,16 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         p->th[p->cur].clear_tid = a0;
         r = (uint64_t)p->th[p->cur].tid;
         break;
-    case NR_gettid: r = (uint64_t)p->th[p->cur].tid; break;
-    case NR_getpid: r = GUEST_PID; break;
-    case NR_clone: {                                               /* threads; fork is not done yet */
+    case NR_gettid: r = p->vf && p->cur == p->vf->thread ? (uint64_t)p->vf->pid : (uint64_t)p->th[p->cur].tid; break;
+    case NR_getpid: r = p->vf && p->cur == p->vf->thread ? (uint64_t)p->vf->pid : GUEST_PID; break;
+    case 221:                                                      /* execve: a vfork child's (Runtime.exec) */
+        r = p->vf && p->cur == p->vf->thread ? vfork_exec(p, c, a0, a1, a2) : err(L_ENOSYS);
+        break;
+    case NR_clone: {                                               /* threads and vfork; fork is not done */
         int i;
         struct aoi_thread *t = NULL;
-        if (!(a0 & 0x100) || !(a0 & 0x10000)) { r = err(L_ENOSYS); break; }  /* need CLONE_VM | CLONE_THREAD */
+        if ((a0 & 0x14100) == 0x4100) { r = vfork_start(p, c); break; }   /* vfork: a child process (Runtime.exec) */
+        if (!(a0 & 0x100) || !(a0 & 0x10000)) { r = err(L_ENOSYS); break; }   /* fork (a copy of memory): not done */
         for (i = 0; i < AOI_PROC_THREADS; i++) if (p->th[i].state == AOI_T_FREE) { t = &p->th[i]; break; }
         if (!t) { r = err(L_EAGAIN); break; }
         memset(t, 0, sizeof *t);
@@ -3123,6 +3410,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         int sig = (int)(nr == NR_tgkill ? a2 : a1), i;
         uint64_t target = nr == NR_tgkill ? a1 : a0;
         if (sig < 0 || sig > 64) { r = err(L_EINVAL); break; }
+        if (nr == NR_kill && (int64_t)target >= 20000) {          /* a child process */
+            int k = child_find(p, (int64_t)target, 0);
+            if (k < 0) { r = err(L_ESRCH); break; }
+            if (sig && !p->child[k]->done && p->child[k]->proc) p->child[k]->proc->stop_request = 1;
+            r = 0;
+            break;
+        }
         if (nr == NR_kill) {                                       /* the process: any thread takes it */
             if (target != GUEST_PID && target != 0 && (int64_t)target != -1) { r = err(L_ESRCH); break; }
             target = (uint64_t)p->th[p->cur].tid;
@@ -3350,9 +3644,34 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         snprintf(p->cwd, sizeof p->cwd, "%s", f->path);
         r = 0;
         break;
-    case 95: case 260:                                             /* waitid, wait4: no child processes here */
-        r = err(L_ECHILD);
+    case 95: case 260: {                                           /* waitid, wait4: our child processes */
+        int64_t pid = nr == 260 ? (int64_t)(int32_t)a0 : (a0 == 1 ? (int64_t)(int32_t)a1 : -1);   /* P_PID, else any */
+        uint64_t opts = nr == 260 ? a2 : a3;
+        int i = child_find(p, pid <= 0 ? -1 : pid, 1);
+        if (i == -2) { r = err(L_ECHILD); break; }
+        if (i < 0) { r = (opts & 1) ? 0 : block_and_retry(p, 10000000); break; }   /* WNOHANG, else wait */
+        {
+            struct aoi_child *ch = p->child[i];
+            int32_t st = ch->status, cpid = ch->pid;
+            if (nr == 260) {
+                if (a1 && !put(p, a1, &st, 4)) { r = err(L_EFAULT); break; }
+                r = (uint64_t)cpid;
+            } else {
+                uint8_t si[128];
+                int32_t v;
+                memset(si, 0, sizeof si);
+                v = 17; memcpy(si, &v, 4);                         /* SIGCHLD */
+                v = (st & 0x7f) ? 2 : 1; memcpy(si + 8, &v, 4);    /* CLD_KILLED / CLD_EXITED */
+                memcpy(si + 16, &cpid, 4);
+                memcpy(si + 20, &p->uid, 4);
+                v = (st & 0x7f) ? (st & 0x7f) : (st >> 8) & 0xff; memcpy(si + 24, &v, 4);
+                if (a2 && !put(p, a2, si, sizeof si)) { r = err(L_EFAULT); break; }
+                r = 0;
+            }
+            if (!(nr == 95 && (opts & 0x01000000))) { free(ch); p->child[i] = NULL; }   /* (WNOWAIT keeps it) */
+        }
         break;
+    }
     case 136: {                                                    /* rt_sigpending: nothing pending */
         uint64_t z = 0;
         r = put(p, a0, &z, a1 < 8 ? a1 : 8) ? 0 : err(L_EFAULT);
@@ -3423,6 +3742,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = err(L_ENOSYS);
         break;
     }
+    if ((int64_t)r >= 0 && c->stop == AOI_RUN) note_cloexec(p, nr, a0, a1, a2, a3, r);
     if (c->stop != AOI_STOP_RESTART) trace_sys(p, nr, r);       /* a blocked retry is not a result */
     return r;
 }

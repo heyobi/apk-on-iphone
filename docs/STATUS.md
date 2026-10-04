@@ -662,6 +662,33 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**Runtime.exec: child processes (app 0.74).** An app's Runtime.exec / ProcessBuilder
+failed with "error=38, Function not implemented" (fork). Now (core/proc.c):
+- libopenjdk's childproc calls vfork() (clone CLONE_VM|CLONE_VFORK|SIGCHLD). The child
+  runs as vfork's does: in the parent's memory, on the calling thread, while the other
+  threads wait (schedule), with a copy of the fd table (its dup2s and closes are its
+  own; closing them leaves the parent's epoll lists alone). getpid/gettid answer its
+  pid (from 20000).
+- Its execve reads path, argv and envp, finds the file (ENOENT/ENOEXEC as Linux would,
+  so JDK_execvpe walks PATH; a "#!" script runs its interpreter) and starts it as a
+  guest process of its own on a host thread (struct aoi_child), with the fds not
+  marked close-on-exec (the guest's FD_CLOEXEC is tracked now: F_SETFD/F_GETFD,
+  O_CLOEXEC, pipe2, socket(pair), dup3, F_DUPFD_CLOEXEC, accept4, eventfd, epoll,
+  memfd, timerfd). The parent then returns from vfork with the pid. An _exit before
+  exec is the child's exit status.
+- Only vfork (and bionic's posix_spawn, which uses it): a real fork() needs a copy of
+  the memory and still answers ENOSYS (code that forks handles that; run in the
+  parent's memory, a fork child corrupted it: the storage test's stack check).
+- wait4/waitid report it (exit code or signal; WNOHANG, WNOWAIT), kill stops it
+  (Process.destroy). A child's fds 0-2 are its own pipes and close for real (a parent
+  waiting for EOF on its stdout saw none).
+- stat("/proc/self/exe") is the program: linker64 fell back to argv[0] ("sh") and
+  failed.
+tests/run_android.sh "Runtime.exec": aoi.ExecTest runs `toybox echo hello`,
+`sh -c 'echo $((6*7)); exit 3'` and a missing program: hello (exit 0), 42 (exit 3),
+IOException. The programs are the ones in the bundle (toybox, mksh); a snapshot does
+not keep running children. AOI_CHILD_TRACE=file traces a child's syscalls (host).
+
 **Chromium browsers show web pages (app 0.73).** Cromite (Chromium 153) renders
 chrome://version and an http page with CSS, JavaScript and a canvas (host, Mesa as the
 GPU). Its compositor had never drawn: three causes, each found with Chromium's own

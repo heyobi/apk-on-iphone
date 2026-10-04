@@ -396,6 +396,8 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path)
     uint32_t sz = (uint32_t)sizeof *p, nep = 0;
     int i, j;
 
+    if (p->vf) return "a child process is starting";
+
     for (i = 0; i < p->nshm; i++)                           /* one file shared by two live mappings: */
         for (j = 0; j < i; j++) {                           /* restored, they would be two copies */
             struct stat a, b;
@@ -484,6 +486,7 @@ const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root
     p->samples = NULL; p->nsamples = p->maxsamples = 0;
     p->stop_request = 0; p->snap_path[0] = 0; p->snap_request = 0;
     p->binder = NULL; p->sf = NULL; p->gralloc = NULL;
+    p->vf = NULL; p->child = NULL; p->nchild = 0;               /* (child processes are not saved) */
     p->input_w = 0; p->nshm = 0;
     memset(&p->vm, 0, sizeof p->vm);
     p->mem.vm = &p->vm;

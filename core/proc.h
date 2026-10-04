@@ -40,6 +40,7 @@ struct aoi_proc_fd {
     int64_t tnext, tint;            /* AOI_FD_TIMERFD: next expiry (monotonic ns, 0: disarmed), interval */
     int tclock;                     /* AOI_FD_TIMERFD: its clock (0 realtime, else monotonic) */
     int evid;                       /* AOI_FD_EVENTFD: its counter in aoi_proc.ev (0: f->count, unshared) */
+    int cloexec;                    /* FD_CLOEXEC as the guest set it: not passed to a child's execve */
 };
 
 enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AOI_FD_BINDER,
@@ -82,6 +83,9 @@ struct aoi_thread {
 /* An eventfd's counter, shared by every fd for it (dup, SCM_RIGHTS), as Linux's is. */
 struct aoi_evfd { int refs, sem; uint64_t count; };
 #define AOI_PROC_EVFDS 256
+
+struct aoi_vfork;
+struct aoi_child;
 
 struct aoi_proc {
     struct aoi_vm vm;
@@ -157,6 +161,10 @@ struct aoi_proc {
     struct aoi_thread th[AOI_PROC_THREADS];
     int cur;                        /* index of the thread whose registers are in cpu */
     int next_tid;
+    struct aoi_vfork *vf;           /* a vfork()ed child, run here until its execve (core/proc.c) */
+    struct aoi_child **child;       /* child processes (Runtime.exec): guest processes on host threads */
+    int nchild, next_pid;
+    int own_stdio;                  /* fds 0-2 are this process's own host fds (a child's pipes): close them */
     int thread_exit;                /* the running thread called exit (not exit_group) */
     uint64_t *samples;              /* if set: pc at the end of each time slice (profiling) */
     size_t nsamples, maxsamples;
