@@ -12,20 +12,42 @@ is no writable-executable memory. Android's own ART may still JIT-compile hot Ja
 methods inside the guest, but what it produces is AArch64 guest code that the
 interpreter runs like any other.
 
+## Screenshots
+
+On an iPhone 16 Pro: the app's list (each APK compiled ahead of time in the background)
+and cube.run, a libGDX game, on the iPhone's GPU (OpenGL ES through ANGLE on Metal):
+
+<p>
+<img src="docs/screenshots/iphone-home.jpg" width="240" alt="LiquidAPK's app list on an iPhone">
+<img src="docs/screenshots/iphone-cuberun.jpg" width="240" alt="cube.run's menu on an iPhone">
+<img src="docs/screenshots/iphone-cuberun-score.jpg" width="240" alt="cube.run's score screen on an iPhone">
+</p>
+
+From the host test (`build/iostest-gpu`: the phone's code path, Mesa as the GPU), version
+0.73-0.74: Cromite (Chromium 153) rendering a page with CSS, JavaScript and a canvas,
+and its chrome://version; Molly (Signal) and Qalculate!:
+
+<p>
+<img src="docs/screenshots/host-cromite-page.jpg" width="180" alt="Cromite rendering a test page">
+<img src="docs/screenshots/host-cromite-version.jpg" width="180" alt="Cromite's chrome://version">
+<img src="docs/screenshots/host-molly.jpg" width="180" alt="Molly's setup screen">
+<img src="docs/screenshots/host-qalculate.jpg" width="180" alt="Qalculate! calculator">
+</p>
+
 ## What runs today (app 0.74)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):
 
-| App | State |
-|---|---|
-| Qalculate! (Compose, native GMP) | runs, computes, touch and keyboard; exchange rates over TLS (ECB's certificate fix in 0.56, not yet confirmed on the phone) |
-| cube.run (libGDX, OpenGL ES) | runs on the iPhone's GPU (ANGLE on Metal); its SoundPool effects play since 0.72 (host-tested) |
-| WhatsApp | starts, EULA, on to its registration screen |
-| NewPipe | main UI and navigation |
-| Molly (Signal fork), Element (Matrix) | start to their first screens |
-| WebView apps (e.g. Uptodown) | Android's WebView 119 renders pages and runs JavaScript |
-| Kiwi / Cromite (Chromium browsers) | web pages render (CSS, JavaScript, canvas; host-tested in 0.73) |
+| App | State | Tested |
+|---|---|---|
+| Qalculate! (Compose, native GMP) | runs, computes, touch and keyboard; exchange rates over TLS | iPhone, host |
+| cube.run (libGDX, OpenGL ES) | plays on the iPhone's GPU (ANGLE on Metal), touch, saves its coins; SoundPool effects since 0.72 | iPhone; sound on host |
+| WhatsApp | starts, EULA, on to its registration screen | iPhone |
+| NewPipe | main UI and navigation; resumes from its snapshot in under a second | iPhone, host |
+| Molly (Signal fork), Element (Matrix) | start to their first screens | host |
+| WebView apps (e.g. Uptodown) | Android's WebView 119 renders pages and runs JavaScript | iPhone, host |
+| Kiwi / Cromite (Chromium browsers) | web pages render (CSS, JavaScript, canvas) since 0.73 | host |
 
 What an app gets: windows drawn by HWUI on the GPU (OpenGL ES through ANGLE on Metal),
 touch, the iOS keyboard, clipboard, back gesture, sound (AudioTrack, SoundPool, MediaPlayer, and
