@@ -151,7 +151,9 @@ def main():
              # (guest/media.c): MediaCodec looks for it there too (libcodec2_vndk)
              b"media.c2.hal.selection": b"aidl",
              # (which libcodec2_vndk honours from vendor API level 202404 on)
-             b"ro.vendor.api_level": b"202404"}
+             b"ro.vendor.api_level": b"202404",
+             # MediaPlayer's extractors in the process too (no media.extractor service)
+             b"media.stagefright.extractremote": b"false"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

@@ -64,10 +64,12 @@ public final class AudioTrackTest {
         }
         Thread.sleep(800);
         int pos = t.getPlaybackHeadPosition();
+        android.media.AudioTimestamp ts = new android.media.AudioTimestamp();
+        boolean got = t.getTimestamp(ts);
         t.stop();
         t.release();
         System.out.println("audiotrack: min " + (min > 0) + ", state " + t.getState() + ", wrote " + written
-                + ", played " + (pos >= rate / 4));
+                + ", played " + (pos >= rate / 4) + ", timestamp " + (got && ts.framePosition > 0));
         System.out.println("audiotrack: position " + pos);
     }
 }

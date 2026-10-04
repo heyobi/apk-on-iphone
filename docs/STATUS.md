@@ -662,6 +662,38 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**MediaPlayer plays (app 0.71).** Android's own MediaPlayer service (NuPlayer) runs in
+the app's process, with the extractors and the software codecs:
+- guest/media.c starts, on a native thread ("aoi-codecs"), what mediaserver's and
+  media.extractor's main() do: MediaPlayerService::instantiate() (it registers
+  "media.player" over aoi.MediaPlayerService), MediaExtractorFactory::LoadExtractors()
+  (MP4, MP3, Ogg, WAV, MKV, FLAC, AAC, AMR, MPEG-2, MIDI), then the codec registrant.
+  The libraries are opened in the default namespace (the linker's own
+  __loader_android_dlopen_ext); media.stagefright.extractremote=false.
+- **Binder relays** (core/binder.c): libbinder calls a local object directly, without
+  a parcel round trip, and MediaPlayerService's Client::invoke reads its request from
+  the parcel's start, which only a transaction rewinds (prepare() failed with
+  NOT_ENOUGH_DATA). "media.player", and every object passed through its calls, is
+  handed out as a relay handle: a call becomes BR_TRANSACTION for a looper thread, the
+  caller waits for its BC_REPLY, as between processes; objects in the parcels become
+  relay handles too (BR_INCREFS/BR_ACQUIRE to the sender before
+  BR_TRANSACTION_COMPLETE). Calls that may go into Java go to ART-attached loopers
+  only; native threads get relays from servicemanager. Snapshots keep relays (kind 48).
+- **BR_SPAWN_LOOPER**: when a pool thread takes the last work and no other waits, the
+  driver asks for one more (up to BINDER_SET_MAX_THREADS), as the kernel does. With one
+  looper MediaPlayer hung: notify() waited for MediaPlayer's lock while the thread
+  holding it waited for getCurrentPosition, queued behind notify.
+- **AudioTrack timestamps:** CreateTrackResponse lacked afTrackFlags, so outputId (13)
+  was read as flags with DIRECT set and AudioTrack asked IAudioTrack::getTimestamp
+  (unsupported). Now the mixer's ExtendedTimestamp (server and kernel position, time)
+  is used: AudioTrack.getTimestamp works and NuPlayer's clock moves (the position).
+- Stand-ins MediaPlayer waits for: media.extractor, media.codec, media.metrics,
+  permission (core/af.c); POSIX timers (timer_create..., never fire: Watchdog).
+tests/run_android.sh "MediaPlayer": aoi.MediaPlayerTest plays a 1 s WAV of 440 Hz:
+duration 1 s, playing, the position moves; $AOI_AUDIO_OUT holds the tone. "AudioTrack"
+now also checks getTimestamp. The IPA gets the extractors, libmediaplayerservice and
+its libraries (ios/android-files.txt). Not yet: MediaPlayer's video on a Surface.
+
 **No more crash on MediaCodec; the software codecs (app 0.69, 0.70).**
 - Any app that touched MediaCodecList (ExoPlayer, SoundPool loading a sound, a video)
   aborted: Codec2Client CHECKs that hwservicemanager runs. /dev/hwbinder now has one
@@ -725,8 +757,8 @@ the way core/sf.c is SurfaceFlinger), so AudioTrack plays:
   path is an AudioTrack.
 tests/run_android.sh "AudioTrack": aoi.AudioTrackTest plays 0.5 s of 440 Hz, 44.1 kHz
 stereo; all 22050 frames are played (the position), and $AOI_AUDIO_OUT holds 24000
-frames of a clean 440 Hz tone at 48 kHz (no discontinuity). Still without sound:
-anything that needs a decoder (MediaPlayer, SoundPool's files, ExoPlayer): next.
+frames of a clean 440 Hz tone at 48 kHz (no discontinuity). Decoders: see 0.70 and 0.71
+above.
 
 **English, errors the user sees, disk space, more syscalls (app 0.67).**
 - The interface is English, or Turkish when the phone's first language is Turkish

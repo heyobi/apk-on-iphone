@@ -1630,3 +1630,19 @@
 /system/lib64/libstagefright_enc_common.so
 /system/lib64/libstagefright_flacdec.so
 /system/lib64/libvpx.so
+# MediaPlayer's service and the extractors (a trace of aoi.MediaPlayerTest)
+/apex/com.android.media/lib64/extractors/libaacextractor.so
+/apex/com.android.media/lib64/extractors/libamrextractor.so
+/apex/com.android.media/lib64/extractors/libflacextractor.so
+/apex/com.android.media/lib64/extractors/libmidiextractor.so
+/apex/com.android.media/lib64/extractors/libmkvextractor.so
+/apex/com.android.media/lib64/extractors/libmp3extractor.so
+/apex/com.android.media/lib64/extractors/libmp4extractor.so
+/apex/com.android.media/lib64/extractors/libmpeg2extractor.so
+/apex/com.android.media/lib64/extractors/liboggextractor.so
+/apex/com.android.media/lib64/extractors/libwavextractor.so
+/apex/com.android.media/lib64/libstagefright_flacdec.so
+/system/lib64/libdrmframework.so
+/system/lib64/libdrmframeworkcommon.so
+/system/lib64/libmediaplayerservice.so
+/system/lib64/libstagefright_httplive.so

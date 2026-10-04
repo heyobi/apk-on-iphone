@@ -15,7 +15,9 @@
  * through the app's own mapping of the memfd, so it is the memory the app sees.
  *
  * audio_track_cblk_t in this build (ClientProxy code in libaudioclient.so): mServer 0,
- * mFutex 0x08, mVolumeLR 0x10, mBufferSizeInFrames 0xa8, mFlags 0xb0, then the
+ * mFutex 0x08, mVolumeLR 0x10, the ExtendedTimestamp queue's mSequence 0x3c and value
+ * 0x40 (mPosition[5], mTimeNs[5], mTimebaseOffset[2], mFlushed: AudioTrack::
+ * getTimestamp, which MediaPlayer's clock follows), mBufferSizeInFrames 0xa8, mFlags 0xb0, then the
  * streaming part: mFront 0xb8, mRear 0xbc, mFlush 0xc0, mStop 0xc4, mUnderrunFrames
  * 0xc8, mUnderrunCount 0xcc; the frames start at 0xe8 (AudioTrack::createTrack_l:
  * buffers = cblk + 1).
@@ -37,7 +39,7 @@
 #define TICK_NS 10000000LL                      /* the mixer runs every 10 ms */
 
 enum {                                          /* audio_track_cblk_t */
-    C_SERVER = 0x00, C_FUTEX = 0x08, C_VOLUME = 0x10, C_BUFSIZE = 0xa8, C_FLAGS = 0xb0,
+    C_SERVER = 0x00, C_FUTEX = 0x08, C_VOLUME = 0x10, C_TS_SEQ = 0x3c, C_TS = 0x40, C_BUFSIZE = 0xa8, C_FLAGS = 0xb0,
     C_FRONT = 0xb8, C_REAR = 0xbc, C_FLUSH = 0xc0, C_STOP = 0xc4, C_UNDER_FRAMES = 0xc8, C_UNDER_COUNT = 0xcc,
     C_SIZE = 0xe8
 };
@@ -244,6 +246,16 @@ static void mix_track(struct aoi_proc *p, struct track *t, float *mix, uint32_t 
     if (!used) return;
     s32(p, va, C_FRONT, front + (int32_t)used);
     s32(p, va, C_SERVER, c32(p, va, C_SERVER) + (int32_t)used);
+    {                                                  /* the timestamp: frames played now (server and "kernel") */
+        int64_t ts[13];
+        int32_t seq = c32(p, va, C_TS_SEQ);
+        memset(ts, 0, sizeof ts);
+        ts[1] = ts[3] = (uint32_t)c32(p, va, C_SERVER); /* LOCATION_SERVER, LOCATION_KERNEL */
+        ts[5 + 1] = ts[5 + 3] = aoi_mono_ns();
+        s32(p, va, C_TS_SEQ, seq + 1);                 /* SingleStateQueue: odd while written */
+        aoi_vm_write(&p->vm, va + C_TS, ts, sizeof ts, 0);
+        s32(p, va, C_TS_SEQ, seq + 2);
+    }
     {                                                  /* room again: wake a writer (ServerProxy::releaseBuffer) */
         int32_t old = c32(p, va, C_FUTEX);
         s32(p, va, C_FUTEX, old | CBLK_FUTEX_WAKE);
@@ -424,9 +436,9 @@ static void create_track(struct aoi_proc *p, struct aoi_af *af, struct aoi_reade
         p_layout(rep, 2);                                                /* afChannelMask */
         p_format(rep, 1);                                                /* afFormat: PCM 16 */
         aoi_p32(rep, 40);                                                /* afLatencyMs */
+        aoi_p32(rep, 0);                                                 /* afTrackFlags: mixed, not direct */
         aoi_p32(rep, OUT_IO);                                            /* outputId */
         aoi_p32(rep, (uint32_t)t->port);                                 /* portId */
-        aoi_p32(rep, 0);
         aoi_phandle(rep, t->handle);                                     /* audioTrack */
         size = rep->n - at;
         memcpy(rep->d + at, &size, 4);
@@ -485,6 +497,14 @@ static void resources(struct aoi_proc *p, void *self, uint32_t code, struct aoi_
     aoi_p32(rep, 0);
 }
 
+static void permissions(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
+{
+    (void)p; (void)self;
+    trace("permission", code, req);
+    ok(rep);
+    aoi_p32(rep, code == 1 || code == 4);              /* checkPermission, isRuntimePermission: true; else 0 */
+}
+
 /* ---------- life ---------- */
 
 void aoi_af_init(struct aoi_proc *p)
@@ -500,6 +520,14 @@ void aoi_af_init(struct aoi_proc *p)
     af->resources = aoi_binder_native(p, "media.resource_manager", "android.media.IResourceManagerService", resources, af);
     /* the same answers for IPackageManagerNative, which MediaCodec's metrics wait for */
     af->packages = aoi_binder_native(p, "package_native", "android.content.pm.IPackageManagerNative", resources, af);
+    /* media.extractor and media.codec: MediaPlayerService links to their deaths only (the
+     * extractors run in the app, media.stagefright.extractremote=false) */
+    aoi_binder_native(p, "media.extractor", "android.media.IMediaExtractorService", resources, af);
+    aoi_binder_native(p, "media.codec", "android.hardware.IOMX", resources, af);
+    aoi_binder_native(p, "media.metrics", "android.media.IMediaMetricsService", resources, af);   /* (waited for) */
+    /* IPermissionController: native services check permissions with it (MediaCodec's
+     * resource manager, AudioFlinger's clients): one app, its permissions granted */
+    aoi_binder_native(p, "permission", "android.os.IPermissionController", permissions, af);
 }
 
 void aoi_af_free(struct aoi_proc *p)
@@ -516,7 +544,7 @@ void aoi_af_free(struct aoi_proc *p)
  * DEAD_OBJECT, and AudioTrack makes itself a new one (restoreTrack_l), as after an
  * audioserver restart. */
 
-enum { N_FLINGER = 32, N_POLICY = 33, N_TRACK = 34, N_RESOURCES = 35 };
+enum { N_FLINGER = 32, N_POLICY = 33, N_TRACK = 34, N_RESOURCES = 35, N_PERMISSIONS = 36 };
 
 int aoi_af_snap(struct aoi_proc *p, FILE *f, int save)
 {
@@ -550,7 +578,7 @@ int aoi_af_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *
     struct aoi_af *af = p->af;
     if (!af) return -1;
     *idx = 0;
-    if (self == af) { *kind = fn == flinger ? N_FLINGER : fn == policy ? N_POLICY : N_RESOURCES; return 0; }
+    if (self == af) { *kind = fn == flinger ? N_FLINGER : fn == policy ? N_POLICY : fn == permissions ? N_PERMISSIONS : N_RESOURCES; return 0; }
     if ((char *)self >= (char *)af->t && (char *)self < (char *)(af->t + TRACKS)) {
         *kind = N_TRACK; *idx = (int32_t)((struct track *)self - af->t); return 0;
     }
@@ -565,6 +593,7 @@ int aoi_af_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_
     case N_FLINGER: *fn = flinger; *self = af; *iface = "android.media.IAudioFlingerService"; return 0;
     case N_POLICY: *fn = policy; *self = af; *iface = "android.media.IAudioPolicyService"; return 0;
     case N_RESOURCES: *fn = resources; *self = af; *iface = "android.media.IResourceManagerService"; return 0;
+    case N_PERMISSIONS: *fn = permissions; *self = af; *iface = "android.os.IPermissionController"; return 0;
     case N_TRACK:
         if (idx < 0 || idx >= TRACKS) return -1;
         *fn = track; *self = &af->t[idx]; *iface = "android.media.IAudioTrack"; return 0;

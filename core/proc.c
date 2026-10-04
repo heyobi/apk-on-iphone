@@ -3192,6 +3192,21 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case 28:                                                       /* inotify_rm_watch */
         r = fd_get(p, a0) ? 0 : err(L_EBADF);
         break;
+    case 107: {                                                    /* timer_create: POSIX timers that never fire */
+        uint32_t id = ++p->posix_timers;                           /* (libmedia's Watchdog: a timeout that would */
+        r = put(p, a2, &id, 4) ? 0 : err(L_EFAULT);                /* abort a hung call) */
+        break;
+    }
+    case 108: {                                                    /* timer_gettime: disarmed */
+        uint8_t z[32] = { 0 };
+        r = put(p, a1, z, sizeof z) ? 0 : err(L_EFAULT);
+        break;
+    }
+    case 109: case 111: r = 0; break;                              /* timer_getoverrun, timer_delete */
+    case 110:                                                      /* timer_settime(id, flags, new, old) */
+        if (a3) { uint8_t z[32] = { 0 }; if (!put(p, a3, z, sizeof z)) { r = err(L_EFAULT); break; } }
+        r = 0;
+        break;
     case 164:                                                      /* setrlimit: the limits stay the host's */
     case 223:                                                      /* fadvise64: a hint */
     case 81: case 84: case 267:                                    /* sync, sync_file_range, syncfs */

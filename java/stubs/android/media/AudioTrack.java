@@ -13,4 +13,5 @@ public class AudioTrack {
     public int getPlaybackHeadPosition() { return 0; }
     public int getState() { return 0; }
     public int getSampleRate() { return 0; }
+    public boolean getTimestamp(AudioTimestamp t) { return false; }
 }

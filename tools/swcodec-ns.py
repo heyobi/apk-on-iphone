@@ -5,14 +5,15 @@ libraries. Here the app process loads libmedia_codecserviceregistrant.so: each
 library of that APEX that /system/lib64 does not have gets a symlink there (the
 system namespace then finds them, and the ones both have are the system's: one
 libhidlbase, one hwbinder state in the process), and public.libraries.txt names the
-registrant, so an app's class-loader namespace may load it. The linker checks a
+registrant and MediaPlayer's service (libmediaplayerservice.so), so an app's
+class-loader namespace may load them. The linker checks a
 library's real path: linkerconfig's [system] section permits the APEX's directory
 to the default namespace. Idempotent."""
 import os
 import sys
 
 APEX = "apex/com.android.media.swcodec/lib64"
-LIB = "libmedia_codecserviceregistrant.so"
+LIBS = ("libmedia_codecserviceregistrant.so", "libmediaplayerservice.so")
 
 
 def main():
@@ -41,8 +42,9 @@ def main():
         open(cfg, "w").write("\n".join(out))
     pl = os.path.join(root, "system/etc/public.libraries.txt")
     text = open(pl).read()
-    if LIB not in text:
-        open(pl, "a").write(f"{LIB} nopreload\n")
+    for lib in LIBS:
+        if lib not in text:
+            open(pl, "a").write(f"{lib} nopreload\n")
     print(f"swcodec: {n} libraries linked into /system/lib64", file=sys.stderr)
 
 
