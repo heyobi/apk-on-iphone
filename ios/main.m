@@ -583,8 +583,16 @@ static Launcher *launcher;
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
 
 - (void)viewDidAppear:(BOOL)animated {
+    static BOOL once;
     [super viewDidAppear:animated];
-    [self startWarm];
+    if (!once) {                                         /* compiled apps without a fitting snapshot: saved now */
+        once = YES;
+        for (AoiApp *a in [AoiApp all])
+            if (a.compiled && !aoi_android_snapshot_fits(a.dir.UTF8String)
+                && ![NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".nosnap"]])
+                [self.prepareQueue addObject:a.pkg];
+    }
+    [self idleNext];
 }
 
 /* The app's display: the safe area, in points at 2x (aoi.DisplayManager). */
@@ -649,7 +657,7 @@ static Launcher *launcher;
  * cannot be saved (GL games, WebView) are marked (.nosnap) and left alone. */
 - (void)prepareApp:(AoiApp *)a {
     NSFileManager *fm = NSFileManager.defaultManager;
-    if ([fm fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]] || [fm fileExistsAtPath:[a.dir stringByAppendingString:@".nosnap"]]
+    if (aoi_android_snapshot_fits(a.dir.UTF8String) || [fm fileExistsAtPath:[a.dir stringByAppendingString:@".nosnap"]]
         || !a.compiled)
         return;
     if (self.runningPkg || self.preparing) {
@@ -806,7 +814,9 @@ static NSString *duration_text(double s) {
             btn = @"İptal"; sym = @"xmark.circle.fill";
         } else if ([self.preparing.pkg isEqualToString:a.pkg] && !self.preparingShown) {
             text = @"Derlendi ✓ · ilk açılış arka planda hazırlanıyor…";
-        } else if (a.compiled && [NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]]) {
+        } else if ([self.prepareQueue containsObject:a.pkg]) {
+            text = @"Derlendi ✓ · ilk açılışı hazırlanacak";
+        } else if (a.compiled && aoi_android_snapshot_fits(a.dir.UTF8String)) {
             text = [st isEqualToString:@"verify"] ? @"Hazır ✓ · anında açılır (temel derleme)" : @"Hazır ✓ · anında açılır";
         } else if ([st isEqualToString:@"speed"] || [st isEqualToString:@"speed-profile"]) {
             text = @"Derlendi ✓";

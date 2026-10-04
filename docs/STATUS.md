@@ -676,6 +676,9 @@ redraw_request), so nothing starts twice; another app's tap ends it and it is sa
 later. Apps that cannot be saved (a GLSurfaceView keeping its context, Chromium's GPU
 state, WebView) get a .nosnap marker and are not tried again until the next compile.
 tools/iostest.c AOI_APP_HIDDEN=1 [AOI_APP_SHOW_AFTER=N].
+0.63: apps compiled before (0.61, 0.62) are queued too: when the launcher appears, every
+compiled app without a snapshot that fits (aoi_android_snapshot_fits: the key of its
+APK and odex as they are now) and without .nosnap is saved this way, one at a time.
 
 **Compiled once, with its progress; Android up before the tap (app 0.61).** From the
 0.60 phone log and what it asked for ("one build, visible; the 7 s simulator at once"):

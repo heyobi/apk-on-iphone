@@ -58,6 +58,10 @@ int aoi_android_go(const char *root, const char *datadir, const char *logpath, c
 int aoi_android_app_hidden(const char *root, const char *datadir, const char *logpath, const char *display,
                            aoi_log_fn log, void *ctx);
 
+/* Whether the app has a snapshot made for its APK and compiled code as they are now
+ * (display and build are checked when it loads). */
+int aoi_android_snapshot_fits(const char *datadir);
+
 /* The app aoi_android_app_hidden runs goes to this screen and stays (0), or -1. */
 int aoi_android_show(aoi_frame_fn frame, void (*home)(void *), void *frame_ctx);
 

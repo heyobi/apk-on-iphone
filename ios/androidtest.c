@@ -1029,6 +1029,14 @@ static void *hidden_watch(void *arg)
     return NULL;
 }
 
+int aoi_android_snapshot_fits(const char *datadir)
+{
+    char key[256], snap[1100];
+    snprintf(snap, sizeof snap, "%s.snap", datadir);
+    snap_key(datadir, key, sizeof key);
+    return !access(snap, R_OK) && snap_key_ok(snap, key);
+}
+
 int aoi_android_app_hidden(const char *root, const char *datadir, const char *logpath, const char *display,
                            aoi_log_fn log, void *ctx)
 {
