@@ -89,6 +89,10 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "SoundPool (libsoundpool, audio service)" "soundpool: built and released" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.SoundPoolTest
+    # Sound: an AudioTrack plays a tone through our AudioFlinger (core/af.c), all of it.
+    # shellcheck disable=SC2086
+    check "AudioTrack (core/af.c: AudioFlinger, the mixer's clock)" "audiotrack: min true, state 0, wrote 44100, played true" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.AudioTrackTest
     # The network: aoi.ConnectivityService, DNS through netd's dnsproxyd (answered by the
     # host's resolver) and an HTTP GET on the host's sockets, from a local server.
     if command -v python3 >/dev/null 2>&1; then

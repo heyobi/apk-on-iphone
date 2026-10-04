@@ -98,6 +98,9 @@ struct aoi_proc {
     int nuffd_reg;
     struct aoi_binder *binder;      /* in-process binder driver state (core/binder.c), or NULL */
     struct aoi_sf *sf;              /* SurfaceFlinger state (core/sf.c), or NULL */
+    struct aoi_af *af;              /* AudioFlinger state (core/af.c), or NULL */
+    void (*audio)(void *ctx, const int16_t *lr, unsigned frames);   /* the mixed output: 48 kHz stereo (or NULL) */
+    void *audio_ctx;
     struct aoi_gralloc *gralloc;    /* graphics buffers (core/gralloc.c), or NULL */
     /* if set: called with each new frame SurfaceFlinger puts on screen, as tightly
      * packed 4-byte pixels (R, G, B, X/A) */
@@ -171,6 +174,15 @@ const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t 
 /* A host fd becomes a guest fd of the given kind (AOI_FD_PIPE: read/write and
  * readiness through the host, non-blocking underneath). The guest fd, or -1. */
 int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind);
+
+/* A memfd of `size` zero bytes made for the guest by a host-side service (AudioFlinger's
+ * track buffers), named "memfd:<name>": the guest fd, or -1. */
+int aoi_proc_memfd(struct aoi_proc *p, const char *name, uint64_t size);
+/* The host fd behind guest fd `fd`, or -1. */
+int aoi_proc_host_fd(struct aoi_proc *p, int fd);
+
+/* Wakes up to n guest threads waiting on the futex word at guest address addr. */
+int aoi_proc_futex_wake(struct aoi_proc *p, uint64_t addr, int n);
 
 /* Read-write anonymous guest memory for a host-side service (gralloc buffers), named
  * `name` in crash reports: its address, or an error value (>= -4096). */

@@ -141,7 +141,11 @@ def main():
              b"sys.use_memfd": b"true",
              # ART saves the methods its JIT finds hot into the app's profile, which a
              # big app's second dex2oat (speed-profile, ios/androidtest.c) compiles
-             b"dalvik.vm.usejitprofiles": b"true"}
+             b"dalvik.vm.usejitprofiles": b"true",
+             # AAudio (native games, Chromium) without MMAP: its legacy path is an
+             # AudioTrack, which our AudioFlinger (core/af.c) plays; there is no
+             # "media.aaudio" service
+             b"aaudio.mmap_policy": b"1", b"aaudio.mmap_exclusive_policy": b"1"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

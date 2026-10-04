@@ -83,6 +83,9 @@ int aoi_android_last_end(char *why, size_t n);
 /* The running app's screen is sent again (the iOS screen was hidden and drops frames meanwhile). */
 void aoi_android_redraw(void);
 
+/* The sound output starts again after iOS interrupted it (a call, another app's audio session). */
+void aoi_android_audio_kick(void);
+
 /* A touch for the running app (from any thread): action 0 down, 1 up, 2 move, 4
  * cancel, at (x, y) in its screen pixels (the frames' size). Ignored when no app runs. */
 void aoi_android_touch(int action, float x, float y);

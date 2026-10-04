@@ -81,6 +81,7 @@ static struct aoi_binder *state(struct aoi_proc *p)
     if (!p->binder && (p->binder = calloc(1, sizeof *p->binder))) {
         p->binder->nnat = 1;
         aoi_sf_init(p);                                        /* native services exist from the start */
+        aoi_af_init(p);
         aoi_gralloc_init(p);
     }
     return p->binder;
@@ -390,6 +391,7 @@ void aoi_binder_mapped(struct aoi_proc *p, uint64_t addr, uint64_t len)
 void aoi_binder_free(struct aoi_proc *p)
 {
     aoi_sf_free(p);
+    aoi_af_free(p);
     aoi_gralloc_free(p);
     free(p->binder);
     p->binder = NULL;
@@ -413,7 +415,8 @@ int aoi_binder_snap(struct aoi_proc *p, FILE *f, int save)
         if (fwrite(b, sizeof *b, 1, f) != 1) return -1;
         for (h = 1; h < b->nnat; h++) {
             if (aoi_sf_native_id(p, b->nat[h].self, b->nat[h].fn, &ki[0], &ki[1]) &&
-                aoi_gralloc_native_id(p, b->nat[h].self, b->nat[h].fn, &ki[0], &ki[1])) return -1;
+                aoi_gralloc_native_id(p, b->nat[h].self, b->nat[h].fn, &ki[0], &ki[1]) &&
+                aoi_af_native_id(p, b->nat[h].self, b->nat[h].fn, &ki[0], &ki[1])) return -1;
             if (fwrite(ki, sizeof ki, 1, f) != 1) return -1;
         }
         return 0;
@@ -428,7 +431,8 @@ int aoi_binder_snap(struct aoi_proc *p, FILE *f, int save)
         struct native *n = &b->nat[h];
         if (fread(ki, sizeof ki, 1, f) != 1) return -1;
         if (aoi_sf_native_ref(p, ki[0], ki[1], &n->fn, &n->self, &n->iface) &&
-            aoi_gralloc_native_ref(p, ki[0], ki[1], &n->fn, &n->self, &n->iface)) return -1;
+            aoi_gralloc_native_ref(p, ki[0], ki[1], &n->fn, &n->self, &n->iface) &&
+            aoi_af_native_ref(p, ki[0], ki[1], &n->fn, &n->self, &n->iface)) return -1;
     }
     return 0;
 }

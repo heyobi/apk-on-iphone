@@ -351,6 +351,27 @@ int aoi_proc_fd_install(struct aoi_proc *p, int host, const char *path, int kind
     return n;
 }
 
+int aoi_proc_memfd(struct aoi_proc *p, const char *name, uint64_t size)
+{
+    char g[AOI_PATH], h[AOI_PATH];
+    int d, n;
+    snprintf(g, sizeof g, "/data/local/tmp/.memfd-XXXXXX");
+    aoi_proc_host_path(p, g, h);
+    if (!h[0] || (d = mkstemp(h)) < 0) return -1;
+    unlink(h);
+    fcntl(d, F_SETFD, FD_CLOEXEC);
+    if (ftruncate(d, (off_t)size)) { close(d); return -1; }
+    snprintf(g, sizeof g, "memfd:%s", name);
+    if ((n = fd_new(p, d, g, 0)) < 0) { close(d); return -1; }
+    p->fd[n].seals = 1;                                            /* F_SEAL_SEAL, as without MFD_ALLOW_SEALING */
+    return n;
+}
+
+int aoi_proc_host_fd(struct aoi_proc *p, int fd) { return fd >= 0 && fd < AOI_PROC_FDS && p->fd[fd].used ? p->fd[fd].host : -1; }
+
+static int futex_wake(struct aoi_proc *p, uint64_t addr, int n, uint32_t bitset);
+int aoi_proc_futex_wake(struct aoi_proc *p, uint64_t addr, int n) { return futex_wake(p, addr, n, ~0u); }
+
 static struct aoi_proc_fd *fd_get(struct aoi_proc *p, uint64_t fd)
 {
     return fd < AOI_PROC_FDS && p->fd[fd].used ? &p->fd[fd] : NULL;
@@ -914,7 +935,10 @@ static int schedule(struct aoi_proc *p)
     uint64_t steps = p->cpu.steps;
     int i, k, next = -1;
     for (;;) {
-        int64_t now = now_ns(), soonest = 0;
+        int64_t now, soonest = 0;
+        if (p->af) aoi_af_tick(p);                                 /* (it may wake a writer) */
+        now = now_ns();
+        soonest = p->af ? aoi_af_next(p) : 0;
         for (i = 0; i < AOI_PROC_THREADS; i++) {
             struct aoi_thread *t = &p->th[i];
             if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline && t->deadline <= now) {
@@ -933,7 +957,7 @@ static int schedule(struct aoi_proc *p)
         if (next >= 0) break;
         if (!soonest) return -1;
         {
-            int64_t d = soonest - now;
+            int64_t d = soonest > now ? soonest - now : 0;
             struct timespec ts;
             if (p->trace) {
                 fprintf(p->trace, "[sched] idle %.3f ms:", (double)d / 1e6);
@@ -1000,6 +1024,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         }
         if (p->redraw_request && p->sf) { p->redraw_request = 0; aoi_sf_redraw(p); }
         if (p->sf) aoi_sf_tick(p);                                 /* vsync events that are due */
+        if (p->af) aoi_af_tick(p);                                 /* the audio output's clock */
         st = aoi_cpu_run(&p->cpu, end);
         if (st == AOI_STOP_FAULT && sig_fault(p)) continue;
         if (st == AOI_RUN && p->samples && p->nsamples < p->maxsamples)   /* time slices, not waits */

@@ -111,10 +111,10 @@ jobs:
             -o "$APP/ApkOnIphone" \
             ios/main.m ios/gmptest.c ios/vmprobe.c ios/androidtest.c \
             core/apk.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c \
-            core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c core/snap.c core/hle.c \
+            core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/af.c core/gralloc.c core/snap.c core/hle.c \
             -DAOI_GPU -Iangle-ios/include gpu/host.c build/angle_ios.o angle-ios/lib/libEGL.a angle-ios/lib/libGLES.a angle-ios/lib/libANGLE.a \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics \
-            -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -framework BackgroundTasks -lz -lc++
+            -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -framework AudioToolbox -framework BackgroundTasks -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
           cp ios/PrivacyInfo.xcprivacy "$APP/PrivacyInfo.xcprivacy"
           cp -R ios/en.lproj ios/tr.lproj "$APP/"

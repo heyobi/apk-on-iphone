@@ -662,6 +662,38 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**Sound (app 0.68).** AudioFlinger and AudioPolicy are native services now (core/af.c,
+the way core/sf.c is SurfaceFlinger), so AudioTrack plays:
+- "media.audio_flinger" (IAudioFlingerService) and "media.audio_policy"
+  (IAudioPolicyService), codes from the guest's audioflinger-aidl-cpp.so and
+  audiopolicy-aidl-cpp.so (tools/aidlcodes.py), parcel layouts from their
+  readFromParcel code (CreateTrackRequest/Response, SharedFileRegion,
+  AudioChannelLayout, AudioFormatDescription). getOutput, sampleRate, frameCount,
+  latency, session ids: one 48 kHz stereo output (io 13).
+- createTrack makes an IAudioTrack and a memfd (aoi_proc_memfd) with the
+  audio_track_cblk_t and the ring of frames; offsets found in libaudioclient.so
+  (mServer 0, mFutex 8, mVolumeLR 0x10, mBufferSizeInFrames 0xa8, mFlags 0xb0, mFront
+  0xb8, mRear 0xbc, mFlush 0xc0, mStop 0xc4; frames at 0xe8). The cblk is read and
+  written through the app's own mapping of it (found by the memfd's name in p->maps).
+- The mixer: aoi_af_tick, from the scheduler (and the idle wait, which now also
+  sleeps until the mixer's next tick), takes what a 48 kHz clock has used since the
+  last tick from every started track: u8/s16/s24/s32/float, mono to 8 channels (the
+  first two), resampled (linear), with the track's volume (mVolumeLR minifloats);
+  moves mFront and mServer (the app's position), counts underruns, honours mFlush and
+  mStop, and wakes a writer waiting on mFutex. start/stop (plays out to mStop)/pause/
+  flush. The mix goes to p->audio: on iOS a 1 s ring and an AudioQueue (paused after
+  3 s of silence; the audio session is Playback, mixed with other apps' sound, and
+  restarted after an interruption); in aoiproc to $AOI_AUDIO_OUT (raw s16le).
+- Snapshots: a restored track cannot go on (its memfd is a copy then): it is marked
+  CBLK_INVALID in the app's cblk and answers DEAD_OBJECT, and AudioTrack makes a new
+  one (restoreTrack_l), as after an audioserver restart.
+- AAudio is told not to use MMAP (aaudio.mmap_policy 1, tools/mkprops.py): its legacy
+  path is an AudioTrack.
+tests/run_android.sh "AudioTrack": aoi.AudioTrackTest plays 0.5 s of 440 Hz, 44.1 kHz
+stereo; all 22050 frames are played (the position), and $AOI_AUDIO_OUT holds 24000
+frames of a clean 440 Hz tone at 48 kHz (no discontinuity). Still without sound:
+anything that needs a decoder (MediaPlayer, SoundPool's files, ExoPlayer): next.
+
 **English, errors the user sees, disk space, more syscalls (app 0.67).**
 - The interface is English, or Turkish when the phone's first language is Turkish
   (L(tr, en) in ios/main.m; CFBundleLocalizations en/tr, InfoPlist.strings for the

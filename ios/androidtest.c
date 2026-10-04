@@ -45,6 +45,89 @@ static void say(aoi_log_fn log, void *ctx, const char *fmt, ...)
     log(ctx, buf);
 }
 
+/* ---------- sound out ----------
+ * AudioFlinger (core/af.c) hands its 48 kHz stereo mix to audio_push on the guest's
+ * thread; a ring of one second holds it and an AudioQueue plays it (its own thread
+ * takes from the ring, silence when it runs dry). The queue starts with the first
+ * sound and stops after 3 s without any, so a quiet app costs nothing. */
+#define RING (48000 * 2)                              /* samples: 1 s of stereo */
+static int16_t ring[RING];
+static volatile uint64_t ring_w, ring_r;              /* samples written / read, ever */
+static volatile int64_t audio_last;                   /* when the guest last sent sound (ns) */
+
+static void audio_push(void *ctx, const int16_t *lr, unsigned frames)
+{
+    uint64_t w = ring_w, r = ring_r, n = 2ull * frames, i;
+    int loud = 0;
+    (void)ctx;
+    for (i = 0; i < n && !loud; i++) loud = lr[i] != 0;
+    if (!loud && w == r) return;                      /* silence with nothing queued: no need to wake the queue */
+    if (w - r + n > RING) return;                     /* the queue is behind (it has stopped?): drop */
+    for (i = 0; i < n; i++) ring[(w + i) % RING] = lr[i];
+    __atomic_store_n(&ring_w, w + n, __ATOMIC_RELEASE);
+    audio_last = aoi_mono_ns();
+#ifdef __APPLE__
+    void audio_start(void);
+    audio_start();
+#endif
+}
+
+#ifdef __APPLE__
+#include <AudioToolbox/AudioToolbox.h>
+static AudioQueueRef queue;
+static volatile int playing;
+static pthread_mutex_t audio_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void audio_fill(void *ctx, AudioQueueRef q, AudioQueueBufferRef b)
+{
+    int16_t *out = b->mAudioData;
+    uint64_t r = ring_r, w = __atomic_load_n(&ring_w, __ATOMIC_ACQUIRE), want = b->mAudioDataBytesCapacity / 2, i;
+    (void)ctx;
+    for (i = 0; i < want; i++) out[i] = r + i < w ? ring[(r + i) % RING] : 0;
+    __atomic_store_n(&ring_r, r + (w - r < want ? w - r : want), __ATOMIC_RELEASE);
+    b->mAudioDataByteSize = (UInt32)(want * 2);
+    AudioQueueEnqueueBuffer(q, b, 0, NULL);
+    if (w == r && aoi_mono_ns() - audio_last > 3000000000LL) {   /* quiet for 3 s: pause (buffers stay queued) */
+        pthread_mutex_lock(&audio_lock);
+        if (playing) { AudioQueuePause(q); playing = 0; }
+        pthread_mutex_unlock(&audio_lock);
+    }
+}
+
+void audio_start(void)
+{
+    AudioStreamBasicDescription f;
+    int k;
+    if (playing) return;
+    pthread_mutex_lock(&audio_lock);
+    if (!queue) {
+        memset(&f, 0, sizeof f);
+        f.mSampleRate = 48000; f.mFormatID = kAudioFormatLinearPCM;
+        f.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+        f.mBytesPerPacket = f.mBytesPerFrame = 4; f.mFramesPerPacket = 1; f.mChannelsPerFrame = 2; f.mBitsPerChannel = 16;
+        if (AudioQueueNewOutput(&f, audio_fill, NULL, NULL, NULL, 0, &queue) != noErr) queue = NULL;
+        for (k = 0; queue && k < 3; k++) {            /* 3 x 1024 frames: ~64 ms queued */
+            AudioQueueBufferRef b;
+            if (AudioQueueAllocateBuffer(queue, 4096, &b) == noErr) {
+                memset(b->mAudioData, 0, 4096);
+                b->mAudioDataByteSize = 4096;
+                AudioQueueEnqueueBuffer(queue, b, 0, NULL);
+            }
+        }
+    }
+    if (queue && AudioQueueStart(queue, NULL) == noErr) playing = 1;
+    pthread_mutex_unlock(&audio_lock);
+}
+
+void aoi_android_audio_kick(void)
+{
+    playing = 0;                                      /* (iOS paused it: a call, another app's session) */
+    if (queue && ring_w != ring_r) audio_start();
+}
+#else
+void aoi_android_audio_kick(void) {}
+#endif
+
 /* The process's memory now and at its peak, in MB (iOS: phys_footprint, which
  * jetsam judges; elsewhere: peak RSS for both). */
 static void memory_mb(double *now, double *peak)
@@ -564,6 +647,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     p->frame = frame;
     p->home = home;
     p->clip = clipboard;
+    if (frame) p->audio = audio_push;   /* an app: its sound to the speaker */
     p->ime = keyboard;
     p->frame_ctx = frame_ctx;
 #ifdef AOI_GPU

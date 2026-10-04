@@ -434,7 +434,7 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path)
     w(f, epi, sizeof epi); w(f, off, sizeof off);
     e = save_data(p, f);
     if (!e) e = save_memory(p, f);
-    if (!e && (aoi_gralloc_snap(p, f, 1) || aoi_sf_snap(p, f, 1) || aoi_binder_snap(p, f, 1))) e = "service state";
+    if (!e && (aoi_gralloc_snap(p, f, 1) || aoi_sf_snap(p, f, 1) || aoi_af_snap(p, f, 1) || aoi_binder_snap(p, f, 1))) e = "service state";
     w(f, SNAP_MAGIC, 8);
     if (!e && (fflush(f) || ferror(f) || fsync(fileno(f)))) e = "write failed (is the device full?)";   /* all of it, before it replaces the last */
     if (fclose(f) && !e) e = "write failed";
@@ -507,7 +507,7 @@ const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root
     if ((e = load_data(p, f)) || (e = load_memory(p, f))) goto fail;
     reopen_fds(p, off);
     fds_ok = 1;
-    if (aoi_gralloc_snap(p, f, 0) || aoi_sf_snap(p, f, 0) || aoi_binder_snap(p, f, 0)) { e = "service state"; goto fail; }
+    if (aoi_gralloc_snap(p, f, 0) || aoi_sf_snap(p, f, 0) || aoi_af_snap(p, f, 0) || aoi_binder_snap(p, f, 0)) { e = "service state"; goto fail; }
     if (!r(f, magic, 8) || memcmp(magic, SNAP_MAGIC, 8)) { e = "truncated"; goto fail; }
     fclose(f);
     for (j = 0; j < nep; j++) if (!eps[j]->refs) { free(eps[j]->e); free(eps[j]); }

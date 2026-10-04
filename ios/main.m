@@ -1618,6 +1618,19 @@ static void home_cb(void *ctx) {
         [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue
                                                     usingBlock:^(NSNotification *note) { compile_hold_update(); }];
     compile_hold_update();
+    {                                                     /* the apps' sound: plays with the silent switch on (media),
+                                                             * mixed with other apps' (it does not stop their music) */
+        AVAudioSession *as = AVAudioSession.sharedInstance;
+        [as setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+        [as setActive:YES error:nil];
+        [NSNotificationCenter.defaultCenter addObserverForName:AVAudioSessionInterruptionNotification object:nil
+                                                         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            if ([note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded) {
+                [AVAudioSession.sharedInstance setActive:YES error:nil];
+                aoi_android_audio_kick();
+            }
+        }];
+    }
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidReceiveMemoryWarningNotification object:nil
                                                      queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
         [launcher append:L(@"iOS: bellek azaldı; açık uygulama kaydediliyor.", @"iOS: memory is low; saving the open app.")];

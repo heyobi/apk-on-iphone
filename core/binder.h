@@ -38,6 +38,15 @@ void aoi_sf_init(struct aoi_proc *p);
 void aoi_sf_tick(struct aoi_proc *p);
 void aoi_sf_free(struct aoi_proc *p);
 
+/* AudioFlinger and AudioPolicy (core/af.c). */
+void aoi_af_init(struct aoi_proc *p);
+void aoi_af_free(struct aoi_proc *p);
+void aoi_af_tick(struct aoi_proc *p);        /* mixes what the output clock has used since the last tick */
+int64_t aoi_af_next(struct aoi_proc *p);     /* when the next tick is due (guest ns), 0 if nothing plays */
+int aoi_af_snap(struct aoi_proc *p, FILE *f, int save);
+int aoi_af_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *kind, int32_t *idx);
+int aoi_af_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_fn *fn, void **self, const char **iface);
+
 /* gralloc (core/gralloc.c): the allocator service, and the buffers it handed out. */
 struct aoi_gbuf {
     int used, refs;
