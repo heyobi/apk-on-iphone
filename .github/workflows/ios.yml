@@ -114,7 +114,7 @@ jobs:
             core/linux.c core/load.c core/dl.c core/bionic.c core/proc.c core/binder.c core/sf.c core/gralloc.c core/snap.c core/hle.c \
             -DAOI_GPU -Iangle-ios/include gpu/host.c build/angle_ios.o angle-ios/lib/libEGL.a angle-ios/lib/libGLES.a angle-ios/lib/libANGLE.a \
             -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework QuartzCore -framework CoreGraphics \
-            -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -lz -lc++
+            -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -framework BackgroundTasks -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
           cp ios/PrivacyInfo.xcprivacy "$APP/PrivacyInfo.xcprivacy"
           cp ios/icons/*.png "$APP/"

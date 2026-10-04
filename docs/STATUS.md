@@ -662,6 +662,18 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**The compile in the background, the iOS way; out of an app by the right edge (app 0.66).**
+- A compile (and the save after it) asks iOS for a continued-processing task (iOS 26
+  BGContinuedProcessingTask, BGTaskSchedulerPermittedIdentifiers
+  "com.heyobi.apkoniphone.compile.*", registered when first needed): iOS shows the
+  compile's progress in its own UI and keeps LiquidAPK running in the background until
+  the queue and the saves are done. The silent-audio keep-alive stays only as the
+  fallback (an older iOS, or a sideloaded copy re-signed under another bundle
+  identifier, which no longer matches the permitted identifier).
+- The two-finger tap that closed an app is gone (it reached apps that use two fingers);
+  a glass drop pulled from the right edge (the mirror of the back gesture) goes to the
+  launcher, the app staying alive behind it.
+
 **A code review's fixes (app 0.65).** A read-through of ios/ and core/proc.c found:
 - **A stop while an app was still starting was lost** (`running` is set only after its
   libraries, snapshot load and exec): tapping B during A's first seconds left B waiting

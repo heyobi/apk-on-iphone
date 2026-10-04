@@ -7,6 +7,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <AVFoundation/AVFoundation.h>
+#import <BackgroundTasks/BackgroundTasks.h>
 #include <math.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -19,6 +20,14 @@
 
 #define APP_NAME @"LiquidAPK"
 
+/* The interface speaks Turkish on a Turkish device, English everywhere else. */
+static NSString *L(NSString *tr, NSString *en) {
+    static int turkish = -1;
+    if (turkish < 0) turkish = [NSLocale.preferredLanguages.firstObject hasPrefix:@"tr"];
+    return turkish ? tr : en;
+}
+
+static void work_begun(void);
 static void log_cb(void *ctx, const char *line);
 static void frame_cb(void *ctx, const unsigned char *px, unsigned w, unsigned h);
 static void home_cb(void *ctx);
@@ -216,22 +225,27 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 }
 @end
 
-/* ---------- the back gesture: a glass drop pulled from the left edge ---------- */
+/* ---------- the edge gestures: a glass drop pulled from the left edge (Android's back)
+ * or from the right edge (out of the app, to the launcher; the app goes on running) ---------- */
 
 @interface BackBubble : UIView
 @property(nonatomic, strong) UIVisualEffectView *glass;
 @property(nonatomic, strong) UIImageView *chevron;
-@property(nonatomic) BOOL armed;
+@property(nonatomic) BOOL armed, right;
+- (instancetype)initRight:(BOOL)right;
 @end
 
 @implementation BackBubble
-- (instancetype)init {
+- (instancetype)init { return [self initRight:NO]; }
+- (instancetype)initRight:(BOOL)right {
     if ((self = [super initWithFrame:CGRectZero])) {
+        self.right = right;
         self.userInteractionEnabled = NO;
         self.glass = glass_view(32, NO);
         [self addSubview:self.glass];
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightBold];
-        self.chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.left" withConfiguration:cfg]];
+        self.chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:right ? @"square.grid.2x2.fill" : @"chevron.left"
+                                                                   withConfiguration:cfg]];
         self.chevron.tintColor = UIColor.whiteColor;
         self.chevron.contentMode = UIViewContentModeCenter;
         [self.glass.contentView addSubview:self.chevron];
@@ -248,10 +262,12 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
     const CGFloat full = 96;
     CGFloat p = MIN(MAX(t, 0) / full, 1), over = MAX(t - full, 0);
     CGFloat w = 18 + 46 * p + over * 0.12, h = 72 - 14 * p + over * 0.04;
-    self.frame = CGRectMake(-24 * (1 - p), y - h / 2, w + 8, h);
+    CGFloat W = self.superview.bounds.size.width;
+    self.frame = self.right ? CGRectMake(W - (w + 8) + 24 * (1 - p), y - h / 2, w + 8, h)
+                            : CGRectMake(-24 * (1 - p), y - h / 2, w + 8, h);
     self.glass.frame = self.bounds;
     self.glass.layer.cornerRadius = MIN(h, w + 8) / 2;
-    self.chevron.frame = CGRectMake(self.bounds.size.width - 44, 0, 36, h);
+    self.chevron.frame = self.right ? CGRectMake(8, 0, 36, h) : CGRectMake(self.bounds.size.width - 44, 0, 36, h);
     self.chevron.alpha = p * p;
     self.chevron.transform = CGAffineTransformMakeScale(0.6 + 0.4 * p, 0.6 + 0.4 * p);
     BOOL armed = p >= 1;
@@ -268,7 +284,7 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
     [UIView animateWithDuration:back ? 0.3 : 0.45 delay:0 usingSpringWithDamping:back ? 0.9 : 0.55 initialSpringVelocity:0.5
                         options:UIViewAnimationOptionBeginFromCurrentState animations:^{
         if (back) { self.alpha = 0; self.transform = CGAffineTransformMakeScale(0.4, 0.4); }
-        else { CGRect f = self.frame; f.origin.x = -f.size.width; self.frame = f; }
+        else { CGRect f = self.frame; f.origin.x = self.right ? self.superview.bounds.size.width : -f.size.width; self.frame = f; }
     } completion:^(BOOL f) { [self removeFromSuperview]; }];
 }
 @end
@@ -362,13 +378,11 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
         [self.screen.topAnchor constraintEqualToAnchor:g.topAnchor],
         [self.screen.bottomAnchor constraintEqualToAnchor:g.bottomAnchor],
     ]];
-    UIScreenEdgePanGestureRecognizer *e = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(edge:)];
-    e.edges = UIRectEdgeLeft;
-    [self.view addGestureRecognizer:e];
-    UITapGestureRecognizer *two = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(close)];
-    two.numberOfTouchesRequired = 2;                    /* two fingers: back to the launcher */
-    two.cancelsTouchesInView = NO;
-    [self.screen addGestureRecognizer:two];
+    for (NSNumber *edge in @[ @(UIRectEdgeLeft), @(UIRectEdgeRight) ]) {   /* left: back; right: to the launcher */
+        UIScreenEdgePanGestureRecognizer *e = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(edge:)];
+        e.edges = (UIRectEdge)edge.unsignedIntegerValue;
+        [self.view addGestureRecognizer:e];
+    }
 
     self.loading = glass_view(28, NO);
     self.loading.translatesAutoresizingMaskIntoConstraints = NO;
@@ -420,12 +434,13 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 }
 
 - (void)edge:(UIScreenEdgePanGestureRecognizer *)g {
+    BOOL right = g.edges == UIRectEdgeRight;
     CGPoint at = [g locationInView:self.view];
-    CGFloat t = [g translationInView:self.view].x;
+    CGFloat t = [g translationInView:self.view].x * (right ? -1 : 1);
     switch (g.state) {
     case UIGestureRecognizerStateBegan:
         [self.bubble removeFromSuperview];
-        self.bubble = [BackBubble new];
+        self.bubble = [[BackBubble alloc] initRight:right];
         [self.view addSubview:self.bubble];
         [self.bubble pull:t atY:at.y];
         break;
@@ -433,8 +448,9 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
         [self.bubble pull:t atY:at.y];
         break;
     case UIGestureRecognizerStateEnded: {
-        BOOL back = self.bubble.armed || [g velocityInView:self.view].x > 900;
-        if (back) aoi_android_back();
+        BOOL back = self.bubble.armed || [g velocityInView:self.view].x * (right ? -1 : 1) > 900;
+        if (back && right) [self close];
+        else if (back) aoi_android_back();
         [self.bubble letGo:back];
         self.bubble = nil;
         break;
@@ -711,6 +727,7 @@ static NSString *compile_mark(AoiApp *a) { return [a.dir stringByAppendingString
     if (self.warmRunning && !self.warmApp) aoi_android_warm_stop();
     self.preparing = a;
     self.preparingShown = NO; self.preparingCancelled = NO;
+    if (!self.inBackground) work_begun();
     [a prepare];
     [self append:[NSString stringWithFormat:@"%@: ilk açılış arka planda hazırlanıyor", a.label]];
     NSString *root = self.root, *display = self.display, *logPath = [a.dir stringByAppendingString:@".log"];
@@ -907,6 +924,7 @@ static NSString *duration_text(double s) {
     int rc = aoi_android_compile(self.root.UTF8String, a.dir.UTF8String, a.compileLog.UTF8String, faster,
                                  log_cb, (__bridge void *)self);
     if (rc == 0 || rc == -1) {
+        work_begun();
         NSString *m = compile_mark(a), *was = [NSString stringWithContentsOfFile:m encoding:NSUTF8StringEncoding error:nil];
         int tries = was ? [[was componentsSeparatedByString:@" "].lastObject intValue] : 0;
         [[NSString stringWithFormat:@"%d %d", faster ? 1 : 0, tries] writeToFile:m atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1540,12 +1558,99 @@ static void home_cb(void *ctx) {
 }
 
 /* ---------- the compile in the background ----------
- * iOS suspends an app soon after it leaves the screen, and dex2oat with it. While a
- * compile (or the saving after it) runs, LiquidAPK plays silence, mixed with the other
- * apps' sound (UIBackgroundModes audio): iOS lets it run on, the compile ends, and the
- * player stops. Nothing plays once the work is done or LiquidAPK is back. */
+ * iOS suspends an app soon after it leaves the screen, and dex2oat with it. A compile
+ * (and the saving after it) is work the user started and can watch: when it begins,
+ * LiquidAPK asks iOS for a continued-processing task (iOS 26, BGContinuedProcessingTask):
+ * iOS shows its progress (the compile's) in the system UI and keeps LiquidAPK running in
+ * the background until it is done, or until the user stops it there. Where that is not
+ * available (an older iOS, or a sideloaded copy whose bundle identifier no longer
+ * matches Info.plist's BGTaskSchedulerPermittedIdentifiers), LiquidAPK plays silence in
+ * the background instead (UIBackgroundModes audio), mixed with other apps' sound. */
 static AVAudioPlayer *keep_player;
 static dispatch_source_t keep_timer;
+static id bg_task;                                      /* the BGContinuedProcessingTask running */
+static dispatch_source_t bg_timer;
+static BOOL bg_registered, bg_failed, bg_submitted;
+static NSString *bg_pattern;                            /* "<prefix>.compile.*" */
+static BOOL background_work(void);
+
+static void bg_done(BOOL ok)
+{
+    if (bg_timer) { dispatch_source_cancel(bg_timer); bg_timer = nil; }
+#if defined(__IPHONE_26_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_26_0
+    if (@available(iOS 26.0, *)) {
+        if (bg_task) [(BGContinuedProcessingTask *)bg_task setTaskCompletedWithSuccess:ok];
+    }
+#endif
+    bg_task = nil;
+    bg_submitted = NO;
+}
+
+#if defined(__IPHONE_26_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_26_0
+API_AVAILABLE(ios(26.0)) static void bg_update(BGContinuedProcessingTask *t)
+{
+    struct aoi_compile_info ci;
+    NSString *sub;
+    aoi_android_compile_info(&ci);
+    if (!background_work()) { bg_done(YES); return; }
+    if (ci.active) {
+        AoiApp *a = nil;
+        for (AoiApp *x in [AoiApp all]) if (!strcmp(ci.datadir, x.dir.UTF8String)) a = x;
+        t.progress.completedUnitCount = (int64_t)(ci.progress * 1000);
+        sub = [NSString stringWithFormat:L(@"%@ derleniyor · %%%.0f", @"Compiling %@ · %.0f%%"), a.label ?: @"", ci.progress * 100];
+    } else {
+        t.progress.completedUnitCount = 999;
+        sub = L(@"İlk açılış hazırlanıyor", @"Preparing the first launch");
+    }
+    [t updateTitle:APP_NAME subtitle:sub];
+}
+#endif
+
+/* Work started (a compile, from a tap or at launch): covered by one task until all of
+ * it (the queue, the saves after) is done. Called on the main thread, in the foreground. */
+static void work_begun(void)
+{
+#if defined(__IPHONE_26_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_26_0
+    if (@available(iOS 26.0, *)) {
+        NSError *e = nil;
+        if (bg_failed || bg_task || bg_submitted) return;
+        if (!bg_registered) {
+            NSString *bid = NSBundle.mainBundle.bundleIdentifier;
+            NSArray *ok = [NSBundle.mainBundle objectForInfoDictionaryKey:@"BGTaskSchedulerPermittedIdentifiers"];
+            bg_pattern = [bid stringByAppendingString:@".compile.*"];
+            if (![ok containsObject:bg_pattern]) { bg_failed = YES; return; }   /* (registering it would throw) */
+            @try {
+                bg_registered = [BGTaskScheduler.sharedScheduler registerForTaskWithIdentifier:bg_pattern usingQueue:dispatch_get_main_queue()
+                                                                                 launchHandler:^(__kindof BGTask *task) {
+                    BGContinuedProcessingTask *t = task;
+                    bg_task = t;
+                    t.progress.totalUnitCount = 1000;
+                    t.expirationHandler = ^{                 /* the user stopped it, or iOS: it pauses in the background */
+                        bg_task = nil;
+                        bg_done(NO);
+                        [t setTaskCompletedWithSuccess:NO];
+                    };
+                    bg_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+                    dispatch_source_set_timer(bg_timer, DISPATCH_TIME_NOW, NSEC_PER_SEC, NSEC_PER_SEC / 4);
+                    dispatch_source_set_event_handler(bg_timer, ^{ if (bg_task == t) bg_update(t); });
+                    dispatch_resume(bg_timer);
+                }];
+            } @catch (NSException *x) {
+                bg_registered = NO;
+            }
+            if (!bg_registered) { bg_failed = YES; return; }
+        }
+        BGContinuedProcessingTaskRequest *r =
+            [[BGContinuedProcessingTaskRequest alloc] initWithIdentifier:[bg_pattern stringByReplacingOccurrencesOfString:@"*"
+                                                                                withString:NSUUID.UUID.UUIDString]
+                                                                   title:APP_NAME
+                                                                subtitle:L(@"Derleniyor", @"Compiling")];
+        r.strategy = BGContinuedProcessingTaskRequestSubmissionStrategyFail;
+        if ([BGTaskScheduler.sharedScheduler submitTaskRequest:r error:&e]) bg_submitted = YES;
+        else NSLog(@"continued processing: %@", e);
+    }
+#endif
+}
 
 static NSData *silence_wav(void)
 {
@@ -1606,8 +1711,8 @@ static void keep_alive(BOOL on)
     launcher.inBackground = YES;
     compile_hold_update();
     if (work) {
-        keep_alive(YES);
-        [launcher append:@"LiquidAPK arka planda: derleme sürüyor."];
+        if (!bg_task) keep_alive(YES);                  /* no continued-processing task: the fallback */
+        [launcher append:L(@"LiquidAPK arka planda: derleme sürüyor.", @"LiquidAPK is in the background: the compile goes on.")];
     }
     __block UIBackgroundTaskIdentifier task = [app beginBackgroundTaskWithExpirationHandler:^{
         [app endBackgroundTask:task];
