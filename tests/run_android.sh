@@ -98,7 +98,7 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
         sleep 1
         # shellcheck disable=SC2086
         check "network (connectivity, DNS, HTTP on host sockets)" \
-            'network: connected true, internet true, 100, localhost 127.0.0.1, http 200 "merhaba ag"' $ENV $SCP \
+            'network: connected true, internet true, 100, callback true 2, localhost 127.0.0.1, http 200 "merhaba ag"' $ENV $SCP \
             -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.NetworkTest "$PORT"
         kill $HTTPD 2>/dev/null; rm -rf "$W"
     else echo "SKIP android: network (no python3)"; fi

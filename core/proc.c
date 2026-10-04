@@ -2071,6 +2071,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             p->snap_gpu_free = 0;
             r = err(L_ENOENT);
             break;
+        } else if (!strcmp(g, "/dev/aoi_warm")) {                  /* aoi.Main, started before its app: wait for it */
+            if (p->warm && !p->warm(p)) { r = block_and_retry(p, 20000000); break; }
+            r = err(L_ENOENT);
+            break;
         } else if (!strcmp(g, "/dev/aoi_snapshot")) {              /* aoi.Main: the app is up, save it */
             if (p->snap_path[0]) p->snap_request = 1;
             r = err(L_ENOENT);

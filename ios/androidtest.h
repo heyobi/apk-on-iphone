@@ -33,6 +33,24 @@ typedef void (*aoi_frame_fn)(void *ctx, const unsigned char *rgbx, unsigned widt
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, const char *display,
                     aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx);
 
+/* Android started before its app is chosen (the iOS app does it when it opens, and
+ * whenever no app runs): the runtime and the app-independent services come up with
+ * warmdir as /data (a /data like an app's, without an APK), then the process waits.
+ * The first time it is saved (warmdir.snap), so later warm starts resume in a second.
+ * aoi_android_go makes it the app's; this returns when that process ends: the app's
+ * exit code, or -2 if it ended without an app (aoi_android_stop). */
+int aoi_android_warm(const char *root, const char *warmdir, const char *display, aoi_log_fn log, void *ctx);
+
+/* Ends the warm process while it has no app (before it began too: aoi_android_warm
+ * then returns -2 at once). An app it became is not touched (aoi_android_stop). */
+void aoi_android_warm_stop(void);
+
+/* Hands the warm process an app, with aoi_android_app's arguments: 0 taken (it opens
+ * where Android already is; its snapshot, if any, is not used), -1 none waits (or for
+ * another display): start it with aoi_android_app. */
+int aoi_android_go(const char *root, const char *datadir, const char *logpath, const char *display,
+                   aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx);
+
 /* Ends the running app's process (after aoi_android_snapshot, it resumes from there). */
 void aoi_android_stop(void);
 
@@ -61,8 +79,42 @@ void aoi_android_key(int action, int value);
  * taken by itself once the app has started. Waits up to timeout s: 0 when written. */
 int aoi_android_snapshot(double timeout);
 
-/* Whether a dex2oat run (aoi_android_app starts one in the background) is still going. */
+/* The app's code compiled by dex2oat (androidtest.c), once per APK, in a thread of its
+ * own: the iOS app starts it at install or from the app's card; a launch never does.
+ * 0 started, 1 nothing to do (compiled already), -1 another one runs, -2 too little
+ * memory next to the running app. faster: an app compiled `verify` (more than 16 MB of
+ * dex) gets its hot code compiled, from its profile. Its output goes to logpath. */
+int aoi_android_compile(const char *root, const char *datadir, const char *logpath, int faster,
+                        aoi_log_fn log, void *ctx);
+
+/* How long it would take on the phone, in seconds (a rough figure, from the dex size). */
+double aoi_android_compile_estimate(const char *datadir, int faster);
+
+/* Whether one runs. */
 int aoi_android_compiling(void);
+
+/* Ends the one that runs (the app keeps what it had; its card offers it again). */
+void aoi_android_compile_cancel(void);
+
+/* The one that runs: for which app (datadir), its filter, progress 0..0.99, the seconds
+ * it has run and those it likely still takes (-1: not known yet, -2: nearly done), held (the phone is hot
+ * or in Low Power Mode). active 0: none runs. */
+struct aoi_compile_info {
+    int active, held;
+    char datadir[1024], filter[16];
+    double progress, elapsed, eta;
+};
+void aoi_android_compile_info(struct aoi_compile_info *ci);
+
+/* What the last finished run left for this APK: "speed", "verify", "speed-profile",
+ * "failed", or "" (never compiled, or cut short). */
+void aoi_android_compile_state(const char *datadir, char *out, size_t n);
+
+/* Removes the compiled code (the app runs uncompiled; it may be compiled again). */
+void aoi_android_compile_remove(const char *datadir);
+
+/* Called (on dex2oat's thread) when a run ends, with its state as above. */
+void aoi_android_set_compile_done(void (*fn)(const char *datadir, const char *state));
 
 /* Hold (1) or let go on (0) the background dex2oat: the iOS app calls it when the phone
  * gets hot (thermal state serious or critical) or enters Low Power Mode, and back. */

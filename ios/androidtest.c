@@ -396,9 +396,23 @@ static void snap_key_write(const char *snap, const char *key)
 
 static void compile_attach(struct aoi_proc *p);
 
+static int warm_take(struct aoi_proc *p);
+static pthread_mutex_t warm_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct aoi_proc *warm_p;             /* the warm process, while it has no app */
+static int warm_stopping;                   /* aoi_android_warm_stop: before or while it runs */
+static struct {                             /* the app aoi_android_go hands it */
+    int pending, done;
+    char root[1024], datadir[980], logpath[1024], display[64];
+    aoi_frame_fn frame;
+    void (*home)(void *);
+    void *frame_ctx;
+    aoi_log_fn log;
+    void *ctx;
+} warm_go;
+
 static int run_guest(const char *root, const char *datadir, int fd, const char *const *argv, int argc,
                      aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, const char *what, const char *snap,
-                     aoi_log_fn log, void *ctx)
+                     aoi_log_fn log, void *ctx, int warm)
 {
     static const char *const base[] = {
         "PATH=/system/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", "HOME=/",
@@ -409,6 +423,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     static char vals[3][4096];
     const char *cp[4], *envp[24];
     struct aoi_proc *p = calloc(1, sizeof *p);
+    static char snap_app[1100];
     const char *err;
     enum aoi_stop st;
     struct timespec t0, t1;
@@ -420,6 +435,7 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     while (base[ne]) { envp[ne] = base[ne]; ne++; }
     for (i = 0; cp[i]; i++) envp[ne++] = cp[i];
     if (frame && gpu_on()) envp[ne++] = "AOI_HWUI=1";
+    if (warm) envp[ne++] = "AOI_WARM=1";    /* aoi.Main waits for its app (aoi_android_warm) */
     envp[ne] = NULL;
 #ifdef AOI_GPU
     if (frame) aoi_hle_gpu = gpu_on();  /* libhwui's own GPU code, not the stand-ins (core/hle.c) */
@@ -469,6 +485,13 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     if (p->log) setvbuf(p->log, NULL, _IOLBF, 0);
     if (frame && getenv("AOI_APP_TRACE") && (p->trace = fopen(getenv("AOI_APP_TRACE"), "w")))   /* every syscall (host tests) */
         setvbuf(p->trace, NULL, _IOLBF, 0);
+    if (warm) {
+        p->warm = warm_take;
+        pthread_mutex_lock(&warm_lock);
+        warm_p = p;
+        if (warm_stopping) p->stop_request = 1;
+        pthread_mutex_unlock(&warm_lock);
+    }
     if (resumed) aoi_sf_redraw(p);      /* the screen it was showing */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     if (frame) {
@@ -484,6 +507,18 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     st = aoi_proc_run(p, 0);
     if (!strcmp(what, "dex2oat")) compile_attach(NULL);
     running = NULL;
+    if (warm) {
+        pthread_mutex_lock(&warm_lock);
+        warm_p = NULL;
+        warm_go.pending = 0;
+        pthread_mutex_unlock(&warm_lock);
+        if (warm_go.done) {                 /* it became an app: what follows is the app's */
+            what = "app";
+            snprintf(snap_app, sizeof snap_app, "%s.snap", warm_go.datadir);
+            snap = snap_app;
+            resumed = 0;
+        }
+    }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
     if (st == AOI_STOP_EXIT) {
@@ -498,6 +533,13 @@ static int run_guest(const char *root, const char *datadir, int fd, const char *
     }
     memory_mb(&now, &peak);
     say(log, ctx, "%s: memory %.0f MB now, %.0f MB peak", what, now, peak);
+    if (snap && rc != 0 && !p->stop_request) {      /* it died by itself: was its snapshot the way there? */
+        struct stat ss;
+        if ((resumed && secs < 30) || (!stat(snap, &ss) && time(NULL) - ss.st_mtime < 60)) {
+            unlink(snap);                           /* (resumed, it would die again: WhatsApp 0.60 did, each launch) */
+            say(log, ctx, "%s: it ended soon after its snapshot: the snapshot is dropped, the next launch starts afresh", what);
+        }
+    }
     if (p->log) fclose(p->log);
 #ifdef AOI_GPU
     if (frame) aoi_gpu_end();           /* the next app must not see this one's contexts or strings (not dex2oat's end) */
@@ -560,15 +602,17 @@ static int app_profile(const char *datadir, char *guest, size_t n)
 /* The APK's code compiled ahead of time by dex2oat, into oat/arm64/ next to it, where
  * ART looks. In the interpreter the app's dex code would otherwise be interpreted twice
  * (by ART, inside ours): 63 % of a frame.
- *   - up to 16 MB of dex: everything (`speed`), once: Qalculate 100 s on the phone.
- *   - more (Molly 59 MB: 41 min, 750 MB with `speed`): first `verify` (WhatsApp, 86 MB:
- *     249 s), then, once the app has a profile, `speed-profile`: its hot code (5 min).
- * Nobody waits minutes for an app to open: dex2oat runs in a thread of its own while the
- * app starts at once without it (ART runs the dex from the APK). It writes oat.new/arm64,
- * which then takes oat/arm64's place, so a launch never sees a half-written odex; the
- * next launch (the snapshot's key has the odex in it) starts with the compiled code.
- * oat/.state holds the filter of the last run that finished for this APK (speed, verify,
- * speed-profile, failed); a run cut short (iOS ended the app) leaves none: run again. */
+ *   - up to 16 MB of dex: everything (`speed`): Qalculate 100 s on the phone.
+ *   - more (Molly 59 MB: 41 min, 750 MB with `speed`): `verify` (WhatsApp, 86 MB: 249 s);
+ *     asked for again (faster), once the app has a profile: `speed-profile`, its hot code.
+ * It runs once per APK, when the iOS app asks (at install, or its "Derle"), in a thread of
+ * its own; an app may run meanwhile, uncompiled. A launch never starts one. It writes
+ * oat.new/arm64, which then takes oat/arm64's place, so a launch never sees a
+ * half-written odex; the next launch (the snapshot's key has the odex in it) starts with
+ * the compiled code. oat/.state holds the filter of the last run that finished for this
+ * APK (speed, verify, speed-profile, failed); one cut short (cancelled, memory, iOS ended
+ * the app) leaves none. Its progress: instructions run against what the filter takes per
+ * MB of dex (measured, and corrected by each finished run on this device). */
 struct compile_job {
     char root[1024], datadir[1024], filter[16], prof[400];
     int fd;
@@ -581,14 +625,95 @@ static int compiling;                       /* one dex2oat at a time */
 static struct aoi_proc *compile_proc;       /* its process while it runs */
 static int compile_hold;                    /* aoi_android_compile_hold: the phone is hot, Low Power Mode */
 static int compile_stopped;                 /* compile_cut ended it: memory was short */
+static int compile_cancelled;               /* aoi_android_compile_cancel */
 static aoi_log_fn compile_log;
 static void *compile_ctx;
+static char compile_dir[1024], compile_filter[16];
+static double compile_expect;               /* instructions it should take */
+static double compile_t0, compile_rate, compile_last_t, compile_last_steps;
+static uint64_t compile_steps;              /* of the run that ended, while none runs */
+static void (*compile_done_fn)(const char *datadir, const char *state);
+
+static double now_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* Instructions per MB of dex: measured (host and phone, 0.53-0.60): speed 3.2 G
+ * (NewPipe, Cromite, Qalculate), verify 0.2 G (Element, Molly, WhatsApp), speed-profile
+ * 0.37 G (Molly). Each finished run on this device corrects them (a file next to the
+ * apps: dirname(datadir)/.dex2oat-rates). */
+static const char *const filters[3] = { "speed", "verify", "speed-profile" };
+static const double per_mb[3] = { 3.2e9, 2.1e8, 3.7e8 };
+
+static int filter_index(const char *f)
+{
+    int i;
+    for (i = 0; i < 3; i++) if (!strcmp(f, filters[i])) return i;
+    return 0;
+}
+
+static void rates_path(const char *datadir, char *out, size_t n)
+{
+    const char *slash = strrchr(datadir, '/');
+    int len = slash ? (int)(slash - datadir) : 0;
+    snprintf(out, n, "%.*s/.dex2oat-rates", len, datadir);
+}
+
+static void rates_read(const char *datadir, double r[3])
+{
+    char path[1100];
+    FILE *f;
+    r[0] = r[1] = r[2] = 1;
+    rates_path(datadir, path, sizeof path);
+    if ((f = fopen(path, "r"))) {
+        if (fscanf(f, "%lf %lf %lf", &r[0], &r[1], &r[2]) != 3) r[0] = r[1] = r[2] = 1;
+        fclose(f);
+    }
+}
+
+static void rates_learn(const char *datadir, const char *filter, double actual, double expected)
+{
+    char path[1100];
+    double r[3], k;
+    int i = filter_index(filter);
+    FILE *f;
+    if (expected <= 0 || actual <= 0) return;
+    rates_read(datadir, r);
+    k = actual / (expected / r[i]);                    /* this run's own correction */
+    if (k < 0.1 || k > 10) return;
+    r[i] = r[i] * 0.5 + k * 0.5;
+    rates_path(datadir, path, sizeof path);
+    if ((f = fopen(path, "w"))) { fprintf(f, "%f %f %f\n", r[0], r[1], r[2]); fclose(f); }
+}
+
+static size_t apk_dex_bytes(const char *datadir)
+{
+    char apk[1100];
+    struct stat sa;
+    size_t dex = 0;
+    int d;
+    snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
+    if (stat(apk, &sa) || (d = open(apk, O_RDONLY)) < 0) return 0;
+    {
+        void *z = mmap(NULL, (size_t)sa.st_size, PROT_READ, MAP_PRIVATE, d, 0);
+        close(d);
+        if (z != MAP_FAILED) { dex = aoi_apk_dex_bytes(z, (size_t)sa.st_size); munmap(z, (size_t)sa.st_size); }
+    }
+    return dex;
+}
 
 static void compile_attach(struct aoi_proc *p)
 {
     pthread_mutex_lock(&compile_lock);
+    if (!p && compile_proc) compile_steps = compile_proc->cpu.steps;
     compile_proc = p;
-    if (p) p->pause_request = compile_hold;
+    if (p) {
+        p->pause_request = compile_hold;
+        if (compile_cancelled) p->stop_request = 1;
+    }
     pthread_mutex_unlock(&compile_lock);
 }
 
@@ -606,7 +731,7 @@ void aoi_android_compile_hold(int hold)
 }
 
 /* Memory is short with the app and dex2oat both running: dex2oat ends (its memory goes
- * back), the app keeps running, and a later launch compiles again. */
+ * back), the app keeps running; the app's card then offers to compile again. */
 static void compile_cut(void)
 {
     pthread_mutex_lock(&compile_lock);
@@ -615,6 +740,57 @@ static void compile_cut(void)
         compile_stopped = 1;
     }
     pthread_mutex_unlock(&compile_lock);
+}
+
+void aoi_android_compile_cancel(void)
+{
+    pthread_mutex_lock(&compile_lock);
+    if (compiling) {
+        compile_cancelled = 1;
+        if (compile_proc) compile_proc->stop_request = 1;
+    }
+    pthread_mutex_unlock(&compile_lock);
+}
+
+void aoi_android_set_compile_done(void (*fn)(const char *datadir, const char *state)) { compile_done_fn = fn; }
+
+void aoi_android_compile_info(struct aoi_compile_info *ci)
+{
+    double t = now_s(), steps;
+    memset(ci, 0, sizeof *ci);
+    pthread_mutex_lock(&compile_lock);
+    if (compiling) {
+        ci->active = 1;
+        ci->held = compile_hold;
+        snprintf(ci->datadir, sizeof ci->datadir, "%s", compile_dir);
+        snprintf(ci->filter, sizeof ci->filter, "%s", compile_filter);
+        steps = compile_proc ? (double)compile_proc->cpu.steps : 0;
+        if (t - compile_last_t >= 2 && !compile_hold && steps >= compile_last_steps) {   /* the recent rate */
+            double r = (steps - compile_last_steps) / (t - compile_last_t);
+            if (compile_last_t > 0 && r > 0) compile_rate = compile_rate > 0 ? compile_rate * 0.7 + r * 0.3 : r;
+            compile_last_t = t; compile_last_steps = steps;
+        }
+        ci->elapsed = t - compile_t0;
+        ci->progress = compile_expect > 0 ? steps / compile_expect : 0;
+        if (ci->progress > 0.99) ci->progress = 0.99;      /* the rest: it says when it is done */
+        ci->eta = steps >= compile_expect * 0.97 ? -2                  /* longer than it should: nearly done */
+                : compile_rate > 0 ? (compile_expect - steps) / compile_rate : -1;
+    }
+    pthread_mutex_unlock(&compile_lock);
+}
+
+void aoi_android_compile_state(const char *datadir, char *out, size_t n)
+{
+    char apk[1100], state[1100];
+    struct stat sd, sa;
+    FILE *f;
+    out[0] = 0;
+    snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
+    snprintf(state, sizeof state, "%s/app/apk/oat/.state", datadir);
+    if (stat(apk, &sa) || stat(state, &sd) || sd.st_mtime < sa.st_mtime || !(f = fopen(state, "r"))) return;
+    if (!fgets(out, (int)n, f)) out[0] = 0;
+    fclose(f);
+    out[strcspn(out, "\n")] = 0;
 }
 
 static void remove_dir(const char *dir)
@@ -633,6 +809,15 @@ static void remove_dir(const char *dir)
     rmdir(dir);
 }
 
+void aoi_android_compile_remove(const char *datadir)
+{
+    char dir[1100];
+    snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", datadir);
+    remove_dir(dir);
+    snprintf(dir, sizeof dir, "%s/app/apk/oat/.state", datadir);
+    unlink(dir);
+}
+
 static void *compile_thread(void *arg)
 {
     struct compile_job *j = arg;
@@ -641,7 +826,8 @@ static void *compile_thread(void *arg)
         "--class-loader-context=PCL[]", "--no-watch-dog", NULL, NULL };   /* its 9.5 min limit: big apps take longer */
     char dir[1100], newdir[1100], olddir[1100], state[1100], profarg[450], fa[64];
     const char *filter = j->filter;
-    int argc = 7, rc;
+    int argc = 7, rc, cancelled;
+    double expect;
     FILE *f;
 #ifdef __APPLE__
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);   /* behind the app's threads, on the cooler cores */
@@ -654,7 +840,7 @@ static void *compile_thread(void *arg)
     remove_dir(newdir);
     mkdir(newdir, 0755);
     snprintf(newdir, sizeof newdir, "%s/app/apk/oat.new/arm64", j->datadir); mkdir(newdir, 0755);
-    rc = run_guest(j->root, j->datadir, j->fd, argv, argc, NULL, NULL, NULL, "dex2oat", NULL, j->log, j->ctx);
+    rc = run_guest(j->root, j->datadir, j->fd, argv, argc, NULL, NULL, NULL, "dex2oat", NULL, j->log, j->ctx, 0);
     snprintf(dir, sizeof dir, "%s/app/apk/oat/arm64", j->datadir);
     snprintf(olddir, sizeof olddir, "%s/app/apk/oat/arm64.old", j->datadir);
     if (rc == 0) {                                  /* in place of the old one (a running app keeps its maps) */
@@ -669,18 +855,23 @@ static void *compile_thread(void *arg)
     remove_dir(newdir);
     snprintf(state, sizeof state, "%s/app/apk/oat/.state", j->datadir);
     pthread_mutex_lock(&compile_lock);
-    if (compile_stopped && rc) filter = NULL;           /* no state: compiled again at a later launch */
+    cancelled = compile_cancelled;
+    if ((compile_stopped || cancelled) && rc) filter = NULL;   /* no state: the card offers it again */
     compile_stopped = 0;
+    expect = compile_expect;
     pthread_mutex_unlock(&compile_lock);
     if (filter && (f = fopen(state, "w"))) { fprintf(f, "%s\n", filter); fclose(f); }
-    if (!filter) say(j->log, j->ctx, "dex2oat: stopped, memory is short; a later launch compiles the app");
+    if (rc == 0) rates_learn(j->datadir, j->filter, (double)compile_steps, expect);
+    if (!filter) say(j->log, j->ctx, cancelled ? "dex2oat: cancelled" : "dex2oat: stopped, memory is short; compile it again later");
     else if (!strcmp(filter, "failed")) say(j->log, j->ctx, "dex2oat: failed; the app runs uncompiled");
     else say(j->log, j->ctx, "dex2oat: done (%s): the next launch uses it", filter);
     close(j->fd);
-    free(j);
     pthread_mutex_lock(&compile_lock);
     compiling = 0;
+    compile_cancelled = 0;
     pthread_mutex_unlock(&compile_lock);
+    if (compile_done_fn) compile_done_fn(j->datadir, filter ? filter : "");
+    free(j);
     return NULL;
 }
 
@@ -693,91 +884,198 @@ int aoi_android_compiling(void)
     return c;
 }
 
-/* What dex2oat run this launch starts in the background, if any. */
-static void compile_apk(const char *root, const char *datadir, int fd, aoi_log_fn log, void *ctx)
+double aoi_android_compile_estimate(const char *datadir, int faster)
 {
-    char apk[1024], state[1024], last[32] = "", prof[400] = "";
+    char last[32];
+    double r[3];
+    size_t dex = apk_dex_bytes(datadir);
+    int i;
+    aoi_android_compile_state(datadir, last, sizeof last);
+    i = faster && !strcmp(last, "verify") ? 2 : dex > 16u << 20 ? 1 : 0;
+    rates_read(datadir, r);
+    return (double)dex / 1e6 * per_mb[i] * r[i] / 75e6;       /* the phone: ~75 M instructions/s on dex2oat */
+}
+
+int aoi_android_compile(const char *root, const char *datadir, const char *logpath, int faster, aoi_log_fn log, void *ctx)
+{
+    char last[32], prof[400] = "";
     const char *filter = NULL;
-    struct stat sd, sa;
     struct compile_job *j;
     pthread_t th;
-    size_t dex = 0;
-    int d;
-    FILE *f;
-    snprintf(apk, sizeof apk, "%s/app/apk/base.apk", datadir);
-    snprintf(state, sizeof state, "%s/app/apk/oat/.state", datadir);
-    if (stat(apk, &sa)) return;
-    if (!stat(state, &sd) && sd.st_mtime >= sa.st_mtime && (f = fopen(state, "r"))) {
-        if (!fgets(last, sizeof last, f)) last[0] = 0;
-        fclose(f);
-        last[strcspn(last, "\n")] = 0;
-        if (!strcmp(last, "verify") && app_profile(datadir, prof, sizeof prof)) filter = "speed-profile";   /* step two */
-    } else {
-        if ((d = open(apk, O_RDONLY)) >= 0) {
-            void *z = mmap(NULL, (size_t)sa.st_size, PROT_READ, MAP_PRIVATE, d, 0);
-            close(d);
-            if (z != MAP_FAILED) { dex = aoi_apk_dex_bytes(z, (size_t)sa.st_size); munmap(z, (size_t)sa.st_size); }
-        }
-        filter = dex > 16u << 20 ? "verify" : "speed";
-    }
-    if (!filter) return;
+    size_t dex = apk_dex_bytes(datadir);
+    double r[3];
+    int fd;
+    aoi_android_compile_state(datadir, last, sizeof last);
+    if (!last[0] || !strcmp(last, "failed")) filter = dex > 16u << 20 ? "verify" : "speed";
+    else if (faster && !strcmp(last, "verify") && app_profile(datadir, prof, sizeof prof)) filter = "speed-profile";
+    if (!filter || !dex) return 1;                                  /* compiled already */
 #ifdef __APPLE__
-    {   /* dex2oat's peak (WhatsApp verify 409 MB, Molly speed-profile 313 MB) next to the app's */
+    if (running && !running->warm) {  /* dex2oat's peak (WhatsApp verify 409 MB, Molly speed-profile 313 MB) next to the app's */
         size_t avail = os_proc_available_memory(), need = (size_t)(strcmp(filter, "speed") ? 1100 : 900) << 20;
         if (avail < need) {
-            say(log, ctx, "dex2oat: %zu MB free now: the app starts uncompiled, a later launch compiles it", avail >> 20);
-            return;
+            say(log, ctx, "dex2oat: %zu MB free next to the running app: not now", avail >> 20);
+            return -2;
         }
     }
 #endif
     pthread_mutex_lock(&compile_lock);
-    if (compiling) { pthread_mutex_unlock(&compile_lock); return; }   /* (another app's, or this one's from before) */
+    if (compiling) { pthread_mutex_unlock(&compile_lock); return -1; }
     compiling = 1;
+    compile_cancelled = 0;
+    rates_read(datadir, r);
+    snprintf(compile_dir, sizeof compile_dir, "%s", datadir);
+    snprintf(compile_filter, sizeof compile_filter, "%s", filter);
+    compile_expect = (double)dex / 1e6 * per_mb[filter_index(filter)] * r[filter_index(filter)];
+    compile_t0 = now_s();
+    compile_rate = 0; compile_last_t = 0; compile_last_steps = 0; compile_steps = 0;
     pthread_mutex_unlock(&compile_lock);
-    if (!(j = calloc(1, sizeof *j))) { compiling = 0; return; }
+    if ((fd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644)) < 0) fd = open("/dev/null", O_WRONLY);
+    if (!(j = calloc(1, sizeof *j))) {
+        close(fd);
+        pthread_mutex_lock(&compile_lock); compiling = 0; pthread_mutex_unlock(&compile_lock);
+        return -1;
+    }
     snprintf(j->root, sizeof j->root, "%s", root);
     snprintf(j->datadir, sizeof j->datadir, "%s", datadir);
     snprintf(j->filter, sizeof j->filter, "%s", filter);
     if (!strcmp(filter, "speed-profile")) snprintf(j->prof, sizeof j->prof, "%s", prof);
-    j->fd = dup(fd);
+    j->fd = fd;
     j->log = log; j->ctx = ctx;
     compile_log = log; compile_ctx = ctx;
-    if (!strcmp(filter, "speed-profile"))
-        say(log, ctx, "dex2oat: the app's hot code is compiled in the background, with its profile");
-    else if (!strcmp(filter, "verify"))
-        say(log, ctx, "dex2oat: a big app (%zu MB of code): verified in the background, its hot code later", dex >> 20);
-    else
-        say(log, ctx, "dex2oat: the app's code is compiled in the background; it starts uncompiled now");
+    say(log, ctx, "dex2oat: %s, %zu MB of code (%s)", strrchr(datadir, '/') ? strrchr(datadir, '/') + 1 : datadir,
+        dex >> 20, filter);
     if (pthread_create(&th, NULL, compile_thread, j)) {
         close(j->fd); free(j);
         pthread_mutex_lock(&compile_lock); compiling = 0; pthread_mutex_unlock(&compile_lock);
-        return;
+        return -1;
     }
     pthread_detach(th);
+    return 0;
 }
+
+/* What a launch sets up in the app's /data first: its display (aoi.DisplayManager
+ * reads it), Chromium's flags, the APK's native libraries. The log: the last run's
+ * stays as .1 (a crash's stack). The new log's fd, or -1. */
+static int app_setup(const char *datadir, const char *logpath, const char *display, aoi_log_fn log, void *ctx)
+{
+    char path[1100];
+    int fd;
+    FILE *f;
+    snprintf(path, sizeof path, "%s.1", logpath);
+    rename(logpath, path);
+    if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
+    snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);
+    if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }
+    snprintf(path, sizeof path, "%s/local/chrome-command-line", datadir);   /* Chromium's flags (a rooted device's) */
+    if (access(path, F_OK) && (f = fopen(path, "w"))) {          /* its renderer in the app's process: no */
+        fprintf(f, "_ --single-process\n");                        /* child processes here */
+        fclose(f);
+    }
+    install_libs(datadir, log, ctx);
+    return fd;
+}
+
+static const char *const app_argv[] = { "/system/bin/app_process64", "/system/bin", "aoi.Main",
+                                        "/data/app/apk/base.apk", NULL };
 
 int aoi_android_app(const char *root, const char *datadir, const char *logpath, const char *display,
                     aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx)
 {
-    static const char *const argv[] = { "/system/bin/app_process64", "/system/bin", "aoi.Main",
-                                        "/data/app/apk/base.apk", NULL };
     int fd, rc;
-    char snap[1100], path[1100];
-    FILE *f;
-    snprintf(path, sizeof path, "%s.1", logpath);         /* the last run's log stays (a crash's stack) */
-    rename(logpath, path);
-    if ((fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) { say(log, ctx, "app: cannot write %s", logpath); return -1; }
-    snprintf(path, sizeof path, "%s/local/tmp/aoi.display", datadir);   /* aoi.DisplayManager reads it */
-    if (display && (f = fopen(path, "w"))) { fprintf(f, "%s\n", display); fclose(f); }
+    char snap[1100];
+    if ((fd = app_setup(datadir, logpath, display, log, ctx)) < 0) return -1;
     snprintf(snap, sizeof snap, "%s.snap", datadir);
-    snprintf(path, sizeof path, "%s/local/chrome-command-line", datadir);   /* Chromium's flags (a rooted device's) */
-    if (access(path, F_OK) && (f = fopen(path, "w"))) {          /* its renderer in the app's process: no */
-        fprintf(f, "_ --single-process\n");                         /* child processes here */
-        fclose(f);
-    }
-    install_libs(datadir, log, ctx);
-    compile_apk(root, datadir, fd, log, ctx);
-    rc = run_guest(root, datadir, fd, argv, 4, frame, home, frame_ctx, "app", snap, log, ctx);
+    rc = run_guest(root, datadir, fd, app_argv, 4, frame, home, frame_ctx, "app", snap, log, ctx, 0);
     close(fd);
     return rc;
+}
+
+/* ---------- the warm process: Android up before its app is chosen ----------
+ * aoi.Main (AOI_WARM) starts the runtime and the services that do not depend on the
+ * app, is saved once (warmdir.snap: the next warm start resumes it in a second), and
+ * waits in open("/dev/aoi_warm"). aoi_android_go hands it an app; on the guest's
+ * thread (warm_take) the process becomes the app's: its /data (p->data: what it opened
+ * so far is the same in every /data, the build's), log, frames and snapshot. */
+
+static void drop_frame(void *ctx, const unsigned char *rgbx, unsigned w, unsigned h) { (void)ctx; (void)rgbx; (void)w; (void)h; }
+
+static int warm_take(struct aoi_proc *p)
+{
+    char key[256], snap[1000];
+    int fd;
+    pthread_mutex_lock(&warm_lock);
+    if (!warm_go.pending) { pthread_mutex_unlock(&warm_lock); return 0; }
+    warm_go.pending = 0;
+    warm_go.done = 1;
+    warm_p = NULL;
+    pthread_mutex_unlock(&warm_lock);
+    if ((fd = app_setup(warm_go.datadir, warm_go.logpath, warm_go.display, warm_go.log, warm_go.ctx)) >= 0) {
+        if (p->log) { fflush(p->log); dup2(fd, fileno(p->log)); }
+        dup2(fd, p->fd[1].host);            /* stdout and stderr (the same host fd): the app's log now */
+        close(fd);
+    }
+    snprintf(p->data, sizeof p->data, "%s", warm_go.datadir);
+    p->frame = warm_go.frame;
+    p->home = warm_go.home;
+    p->frame_ctx = warm_go.frame_ctx;
+    snprintf(snap, sizeof snap, "%s.snap", warm_go.datadir);
+    unlink(snap);                           /* (the iOS app found none it could resume) */
+    snap_key(warm_go.datadir, key, sizeof key);
+    snap_key_write(snap, key);
+    snprintf(p->snap_path, sizeof p->snap_path, "%s", snap);
+    snprintf(snap_path, sizeof snap_path, "%s", snap);
+    p->warm = NULL;
+    say(warm_go.log, warm_go.ctx, "app: on the Android that was already up");
+    return 1;
+}
+
+int aoi_android_warm(const char *root, const char *warmdir, const char *display, aoi_log_fn log, void *ctx)
+{
+    char logpath[1100], snap[1100];
+    int fd, rc;
+    snprintf(logpath, sizeof logpath, "%s.log", warmdir);
+    if ((fd = app_setup(warmdir, logpath, display, log, ctx)) < 0) return -2;
+    snprintf(snap, sizeof snap, "%s.snap", warmdir);
+    pthread_mutex_lock(&warm_lock);
+    if (warm_stopping) {                    /* stopped before it began */
+        warm_stopping = 0;
+        pthread_mutex_unlock(&warm_lock);
+        close(fd);
+        return -2;
+    }
+    memset(&warm_go, 0, sizeof warm_go);
+    snprintf(warm_go.display, sizeof warm_go.display, "%s", display ? display : "");
+    pthread_mutex_unlock(&warm_lock);
+    rc = run_guest(root, warmdir, fd, app_argv, 4, drop_frame, NULL, NULL, "android", snap, log, ctx, 1);
+    close(fd);
+    pthread_mutex_lock(&warm_lock);
+    warm_stopping = 0;
+    pthread_mutex_unlock(&warm_lock);
+    return warm_go.done ? rc : -2;
+}
+
+void aoi_android_warm_stop(void)
+{
+    pthread_mutex_lock(&warm_lock);
+    if (warm_p) warm_p->stop_request = 1;
+    else if (!warm_go.done) warm_stopping = 1;
+    pthread_mutex_unlock(&warm_lock);
+}
+
+int aoi_android_go(const char *root, const char *datadir, const char *logpath, const char *display,
+                   aoi_frame_fn frame, void (*home)(void *), void *frame_ctx, aoi_log_fn log, void *ctx)
+{
+    int ok;
+    pthread_mutex_lock(&warm_lock);
+    ok = warm_p && !warm_go.pending && !warm_go.done && !strcmp(display ? display : "", warm_go.display);
+    if (ok) {
+        snprintf(warm_go.root, sizeof warm_go.root, "%s", root);
+        snprintf(warm_go.datadir, sizeof warm_go.datadir, "%s", datadir);
+        snprintf(warm_go.logpath, sizeof warm_go.logpath, "%s", logpath);
+        warm_go.frame = frame; warm_go.home = home; warm_go.frame_ctx = frame_ctx;
+        warm_go.log = log; warm_go.ctx = ctx;
+        warm_go.pending = 1;
+    }
+    pthread_mutex_unlock(&warm_lock);
+    return ok ? 0 : -1;
 }

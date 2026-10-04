@@ -1,4 +1,4 @@
-# Status and handoff (2026-10-03)
+# Status and handoff (2026-10-04)
 
 ## What runs today
 
@@ -661,6 +661,39 @@ Host testing: `make build/iostest-gpu` (Mesa's GLES as the phone's GPU: HWUI and
 WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromite and
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
+
+**Compiled once, with its progress; Android up before the tap (app 0.61).** From the
+0.60 phone log and what it asked for ("one build, visible; the 7 s simulator at once"):
+- **dex2oat runs once per APK, when asked:** at install (the card shows "Derleniyor %42 ·
+  ~3 dk kaldı", a bar, İptal), or from the card's "Derle"; a launch never starts one any
+  more (0.54-0.60 did, unseen: a cut-short run started over at every launch). One at a
+  time, the rest queued. Progress: instructions run against what the filter takes per MB
+  of dex (speed 3.2 G, verify 0.21 G, speed-profile 0.37 G, measured 0.53-0.60), corrected
+  by each finished run on the device (Documents/apps/.dex2oat-rates); the time left from
+  the recent rate. Big apps (verify) get their hot code compiled only from the menu
+  ("Hızlandır"). A tap on an uncompiled app asks: compile first, or open it slow. The
+  compiled code can be removed ("Derlemeyi sil"). While it runs the phone does not lock
+  (a locked phone suspends us); in the background it goes on for the time iOS gives.
+  ios/androidtest.h: aoi_android_compile/_cancel/_info/_state/_remove/_estimate;
+  tools/iostest.c AOI_APP_COMPILE=1 compiles first and prints the progress. Host:
+  NewPipe 699 s, estimate 7 % short at first (learned: 1.07).
+- **The warm process:** LiquidAPK starts Android at once (aoi_android_warm: aoi.Main with
+  AOI_WARM, /data = Documents/warm, the bundle's without an APK): the runtime, the
+  services that do not depend on the app, the package parser's first run (parsing the
+  WebView APK: 4 s otherwise), then it saves itself once (warm.snap: 0.5 s to resume)
+  and waits in open("/dev/aoi_warm"). A tap on an app without a snapshot hands it over
+  (aoi_android_go): on the guest's thread the process takes the app's /data (p->data),
+  log (dup2 onto its stdout/stderr and liblog fds), frames and snapshot path, and goes
+  on to parse the APK. Host, NewPipe compiled: 37.9 s cold to idle, 30 s from the tap
+  with the warm process (package parsed 0.75 s after it); glapp 24 s -> 11.6 s. Apps with
+  a snapshot still resume from it (the warm process is ended for them). The app's
+  snapshot taken this way resumes like any other. tools/iostest.c AOI_APP_WARM="dir N".
+- **WhatsApp's crash loop:** it died 0.1 s after each resume. Its snapshot had been taken
+  just before a crash ("NetworkCallback was not registered"): a snapshot is now dropped
+  when the app dies by itself within 30 s of resuming it or 60 s of taking it. The crash
+  itself: aoi.ConnectivityService answers requestNetwork/listenForNetwork with a
+  NetworkRequest (ConnectivityManager files the callback under it) and onAvailable through
+  the caller's Messenger; tests/run_android.sh checks it ("callback true 2").
 
 **Permission requests, links, GL out-buffers at a mapping's end (app 0.60).** From
 the 0.59 phone log:

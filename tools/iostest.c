@@ -116,6 +116,18 @@ static void *compile_let_go(void *arg)
     return NULL;
 }
 
+struct warm_arg { const char *dir, *png, *log; int secs; };
+
+static void *warm_go_after(void *arg)
+{
+    struct warm_arg *w = arg;
+    sleep((unsigned)w->secs);
+    printf("warm: go %d\n", aoi_android_go(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), w->log,
+                                           getenv("AOI_APP_DISPLAY"), frame, home, (void *)w->png, out, NULL));
+    fflush(stdout);
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     FILE *f;
@@ -139,9 +151,42 @@ int main(int argc, char **argv)
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
         const char *log = getenv("AOI_APP_LOG") ? getenv("AOI_APP_LOG") : "/tmp/aoi-app.log";
-        int rc = aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), log,
-                                 getenv("AOI_APP_DISPLAY"), frame, home, (void *)png, out, NULL) == 0 ? 0 : 1;
-        while (aoi_android_compiling()) sleep(1);  /* a background dex2oat finishes (the phone's keeps running) */
+        int rc;
+        if (getenv("AOI_APP_COMPILE")) {            /* the card's "Derle" first: its progress, then the app */
+            char dlog[1100];
+            struct aoi_compile_info ci;
+            snprintf(dlog, sizeof dlog, "%s.dex2oat", log);
+            rc = aoi_android_compile(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), dlog,
+                                     !strcmp(getenv("AOI_APP_COMPILE"), "faster"), out, NULL);
+            printf("compile: %d\n", rc);
+            while (aoi_android_compiling()) {
+                sleep(5);
+                aoi_android_compile_info(&ci);
+                if (ci.active) printf("compile: %s %.0f%% after %.0f s, %.0f s to go%s\n", ci.filter, ci.progress * 100,
+                                      ci.elapsed, ci.eta, ci.held ? " (held)" : "");
+                fflush(stdout);
+            }
+            {
+                char st[32];
+                aoi_android_compile_state(getenv("AOI_APP_DATA"), st, sizeof st);
+                printf("compile: state \"%s\"\n", st);
+            }
+        }
+        if (getenv("AOI_APP_WARM")) {              /* "dir N": Android up in dir first, the app N s later */
+            static char wdir[1024];
+            static struct warm_arg wa;
+            pthread_t t;
+            int secs = 0;
+            sscanf(getenv("AOI_APP_WARM"), "%1023s %d", wdir, &secs);
+            wa.dir = wdir; wa.secs = secs; wa.png = png; wa.log = log;
+            pthread_create(&t, NULL, warm_go_after, &wa);
+            rc = aoi_android_warm(getenv("AOI_ANDROID_ROOT"), wdir, getenv("AOI_APP_DISPLAY"), out, NULL);
+            printf("warm: %d\n", rc);
+            return rc < 0 && rc != -2 ? 1 : 0;
+        }
+        rc = aoi_android_app(getenv("AOI_ANDROID_ROOT"), getenv("AOI_APP_DATA"), log,
+                             getenv("AOI_APP_DISPLAY"), frame, home, (void *)png, out, NULL) == 0 ? 0 : 1;
+        while (aoi_android_compiling()) sleep(1);  /* one started meanwhile finishes */
         return rc;
     }
     aoi_vm_probe(out, NULL);

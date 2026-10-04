@@ -9,7 +9,7 @@ for Windows programs.
 It is a normal sideloaded app (SideStore / AltStore / Sideloadly): no JIT, no debugger,
 no jailbreak.
 
-## What runs today (app 0.60)
+## What runs today (app 0.61)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):
@@ -61,11 +61,15 @@ How long compiling takes, on the host (the phone is in the same range: WhatsApp'
 | Element (68 MB) | verify | 229 s | |
 | WhatsApp (86 MB) | verify | 249 s on the phone | 409 MB |
 
-Apps with up to 16 MB of dex are compiled fully (`speed`) once. Bigger ones are first
-verified, then their hot code is compiled from the app's profile (`speed-profile`) at a
-later launch: `speed` would take 40-50 minutes and over 900 MB. The compile runs on a
-low-priority thread, pauses while the phone is hot or in Low Power Mode, and steps back
-when memory is short.
+An app is compiled once, right after it is added: its card shows how far it is and how
+long it still takes, with a cancel button (and "Derle" for one that is not compiled).
+Apps with up to 16 MB of dex are compiled fully (`speed`). Bigger ones are verified;
+their hot code can then be compiled from the app's profile (`speed-profile`, "Hızlandır"
+in the card's menu): `speed` would take 40-50 minutes and over 900 MB. The compile runs
+on a low-priority thread and pauses while the phone is hot or in Low Power Mode.
+
+When LiquidAPK opens, Android itself starts at once in the background and waits; a tap
+on an app then only loads the app (about 8 s less: NewPipe 38 s -> 30 s on the host).
 
 ## Install
 

@@ -18,7 +18,24 @@ import java.io.File;
 public final class Main {
     public static void main(String[] args) throws Exception {
         String apk = args[0];
+        /* what every app needs, before it is known: the services that do not depend on
+         * it. Started before its app (AOI_WARM: the iOS app's warm process), the process
+         * is saved here once and waits; the host then makes it the app's (its /data). */
         ServiceManager.addService("permissionmgr", new PermissionManager());   /* PackageParser asks it */
+        ServiceManager.addService("user", new UserManager());
+        ServiceManager.addService("display", new DisplayManager());
+        ServiceManager.addService("window", new WindowManager());
+        ServiceManager.addService("input_method", new InputMethodManager());
+        ServiceManager.addService("content", new ContentService());
+        ServiceManager.addService("clipboard", new Clipboard());
+        ServiceManager.addService("input", new InputService());
+        ServiceManager.addService("mount", new StorageService());
+        ServiceManager.addService("power", new PowerService());
+        ServiceManager.addService("connectivity", new ConnectivityService());
+        ServiceManager.addService("audio", new AudioService());
+        ServiceManager.addService(WebViewUpdate.NAME, new WebViewUpdate());
+        ServiceManager.addService(MediaPlayerService.NAME, new MediaPlayerService());
+        if (System.getenv("AOI_WARM") != null) warm();
         PackageParser.Package pkg = new PackageParser().parsePackage(new File(apk), 0);
         ApplicationInfo ai = pkg.applicationInfo;
         String data = "/data/data/" + pkg.packageName;
@@ -47,19 +64,6 @@ public final class Main {
         ServiceManager.addService("package", new PackageManager(app));
         ServiceManager.addService("activity", new ActivityManager(app));
         ServiceManager.addService("activity_task", new ActivityTaskManager(app));
-        ServiceManager.addService("user", new UserManager());
-        ServiceManager.addService("display", new DisplayManager());
-        ServiceManager.addService("window", new WindowManager());
-        ServiceManager.addService("input_method", new InputMethodManager());
-        ServiceManager.addService("content", new ContentService());
-        ServiceManager.addService("clipboard", new Clipboard());
-        ServiceManager.addService("input", new InputService());
-        ServiceManager.addService("mount", new StorageService());
-        ServiceManager.addService("power", new PowerService());
-        ServiceManager.addService("connectivity", new ConnectivityService());
-        ServiceManager.addService("audio", new AudioService());
-        ServiceManager.addService(WebViewUpdate.NAME, new WebViewUpdate());
-        ServiceManager.addService(MediaPlayerService.NAME, new MediaPlayerService());
         ServiceManager.addService(Keystore.NAME, new Keystore("/data/misc/keystore/aoi"));
         Keystore.installProvider();                                /* AndroidKeyStore (the zygote's job) */
         Services.standIns();                                       /* the rest: default answers */
@@ -71,5 +75,27 @@ public final class Main {
             hw.setBoolean(null, false);
         }
         ActivityThread.main(new String[0]);
+    }
+
+    /** The warm process: classes every app start uses, then saved (the host's snapshot
+     *  of it, once per build), then waiting until the host hands it an app. */
+    private static void warm() {
+        String[] classes = { "android.content.pm.PackageParser", "android.content.pm.PackageParser$Package",
+            "android.content.res.AssetManager", "android.content.res.Resources", "android.app.ActivityThread",
+            "android.app.LoadedApk", "android.app.ContextImpl", "android.graphics.Typeface",
+            "android.view.ViewRootImpl", "android.view.ThreadedRenderer", "android.view.Choreographer",
+            "android.widget.TextView", "android.app.Activity" };
+        for (String c : classes) {
+            try { Class.forName(c, true, null); } catch (Throwable t) { /* (not in this build) */ }
+        }
+        try {                                                      /* the package parser's own first run (4 s) */
+            File w = new File("/system/product/app/webview/webview.apk");
+            if (w.exists()) new PackageParser().parsePackage(w, 0);
+        } catch (Throwable t) { /* only the warm-up */ }
+        System.out.println("aoi: android is up, waiting for its app");
+        for (String dev : new String[] { "/dev/aoi_snapshot", "/dev/aoi_warm" }) {
+            try { new java.io.FileInputStream(dev).close(); } catch (java.io.IOException e) { /* always ENOENT */ }
+        }
+        System.out.println("aoi: the app is here");
     }
 }

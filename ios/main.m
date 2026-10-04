@@ -6,7 +6,9 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <math.h>
 #include <sys/sysctl.h>
+#include <unistd.h>
 
 #include "../core/apk.h"
 #include "gmptest.h"
@@ -71,6 +73,9 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 @interface AoiApp : NSObject
 @property(nonatomic, copy) NSString *pkg, *label;
 - (NSString *)dir;                                   /* its /data */
+- (NSString *)compileLog;                            /* dex2oat's output */
+- (NSString *)compileState;
+- (BOOL)compiled;
 @end
 
 @implementation AoiApp
@@ -145,25 +150,50 @@ static UIImage *app_avatar(NSString *label, NSString *key, CGFloat size) {
 }
 
 /* What each launch refreshes from this build: aoi.dex, the classpath, ART's cache dir. */
-- (void)prepare {
++ (void)prepareData:(NSString *)dir {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *bundled = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot/data"];
     for (NSString *f in @[ @"local/tmp/aoi.dex", @"system/environ/classpath" ]) {
-        NSString *dst = [self.dir stringByAppendingPathComponent:f];
+        NSString *dst = [dir stringByAppendingPathComponent:f];
         [fm createDirectoryAtPath:dst.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [fm removeItemAtPath:dst error:nil];
         [fm copyItemAtPath:[bundled stringByAppendingPathComponent:f] toPath:dst error:nil];
     }
-    [fm createDirectoryAtPath:[self.dir stringByAppendingPathComponent:@"dalvik-cache/arm64"]
+    [fm createDirectoryAtPath:[dir stringByAppendingPathComponent:@"dalvik-cache/arm64"]
   withIntermediateDirectories:YES attributes:nil error:nil];
+}
+- (void)prepare { [AoiApp prepareData:self.dir]; }
+
+/* The warm process's /data (aoi_android_warm): the bundle's, no APK. */
++ (NSString *)warmDir {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *dir = [docs stringByAppendingPathComponent:@"warm"];
+    NSString *bundled = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot/data"];
+    if (![fm fileExistsAtPath:dir] && ![fm copyItemAtPath:bundled toPath:dir error:nil]) return nil;
+    [self prepareData:dir];
+    return dir;
 }
 
 - (void)remove {
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *p in @[ self.dir, self.infoPath, [self.dir stringByAppendingString:@".snap"],
                            [self.dir stringByAppendingString:@".snap.key"], [self.dir stringByAppendingString:@".log"],
-                           [self.dir stringByAppendingString:@".log.1"] ])
+                           [self.dir stringByAppendingString:@".log.1"], self.compileLog ])
         [fm removeItemAtPath:p error:nil];
+}
+
+- (NSString *)compileLog { return [self.dir stringByAppendingString:@".dex2oat.log"]; }
+
+/* What dex2oat left for this APK: "speed", "verify", "speed-profile", "failed", or "". */
+- (NSString *)compileState {
+    char st[32];
+    aoi_android_compile_state(self.dir.UTF8String, st, sizeof st);
+    return @(st);
+}
+- (BOOL)compiled {
+    NSString *st = self.compileState;
+    return st.length && ![st isEqualToString:@"failed"];
 }
 
 - (void)forgetSnapshot {
@@ -422,8 +452,30 @@ static __weak AoiScreen *current_screen;                /* the one showing an ap
 @property(nonatomic, copy) NSString *runningPkg;      /* the app whose process is alive (on appQueue) */
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, AoiApp *> *tiles;   /* tile tag -> app */
 @property(nonatomic, weak) DevVC *dev;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *subs;          /* package -> its card's line */
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UIProgressView *> *bars;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UIButton *> *acts;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *queue;     /* apps waiting for dex2oat: {pkg, faster} */
+@property(nonatomic, strong) NSTimer *ticker;
+@property(nonatomic) BOOL warmRunning;                /* Android up without an app (aoi_android_warm), on appQueue */
+@property(nonatomic, copy) NSString *warmDisplay;
+@property(nonatomic, strong) AoiApp *warmApp;         /* the app it became (aoi_android_go) */
+@property(nonatomic, strong) ScreenVC *warmTarget;
+@property(nonatomic) void *warmCtx;
 - (void)openPackage:(NSString *)pkg;
 - (void)append:(NSString *)line;
+- (void)compileEnded:(NSString *)dir state:(NSString *)state;
+- (void)tick;
+- (NSString *)root;
+- (NSString *)display;
+- (void)startWarm;
+- (void)appEnded:(AoiApp *)a target:(ScreenVC *)target log:(NSString *)logPath;
+- (void)maybeOpen:(AoiApp *)a;
+- (void)openApp:(AoiApp *)a;
+- (void)compile:(AoiApp *)a faster:(BOOL)faster;
+- (void)cancelCompile:(AoiApp *)a;
+- (void)tell:(NSString *)title what:(NSString *)msg;
+- (BOOL)queued:(AoiApp *)a;
 @end
 
 static Launcher *launcher;
@@ -435,6 +487,10 @@ static Launcher *launcher;
     launcher = self;
     self.log = [NSMutableString string];
     self.tiles = [NSMutableDictionary dictionary];
+    self.subs = [NSMutableDictionary dictionary];
+    self.bars = [NSMutableDictionary dictionary];
+    self.acts = [NSMutableDictionary dictionary];
+    self.queue = [NSMutableArray array];
     self.work = dispatch_queue_create("aoi.work", DISPATCH_QUEUE_SERIAL);
     self.appQueue = dispatch_queue_create("aoi.app", DISPATCH_QUEUE_SERIAL);
     self.view.backgroundColor = UIColor.blackColor;
@@ -518,6 +574,57 @@ static Launcher *launcher;
 
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self startWarm];
+}
+
+/* The app's display: the safe area, in points at 2x (aoi.DisplayManager). */
+- (NSString *)display {
+    UIEdgeInsets in = self.view.window.safeAreaInsets;
+    CGSize s = self.view.window.bounds.size;
+    long w = lround((s.width - in.left - in.right) * 2), h = lround((s.height - in.top - in.bottom) * 2);
+    return [NSString stringWithFormat:@"%ld %ld 320", w & ~1L, h & ~1L];
+}
+
+/* Android, started before an app is chosen, while none runs: a tap then only loads the
+ * app (7 s less). Its first start is saved, later ones resume in about a second. */
+- (void)startWarm {
+    if (self.warmRunning || self.runningPkg || !self.view.window) return;
+    NSString *dir = [AoiApp warmDir], *display = self.display;
+    if (!dir || ![NSFileManager.defaultManager fileExistsAtPath:[self.root stringByAppendingPathComponent:@"system/bin/app_process64"]])
+        return;
+    self.warmRunning = YES;
+    self.warmDisplay = display;
+    self.warmApp = nil;
+    NSString *root = self.root;
+    dispatch_async(self.appQueue, ^{
+        int rc = aoi_android_warm(root.UTF8String, dir.UTF8String, display.UTF8String, log_cb, (__bridge void *)self);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.warmRunning = NO;
+            if (rc != -2 && self.warmApp) {              /* it was an app: that app ended */
+                AoiApp *a = self.warmApp;
+                ScreenVC *target = self.warmTarget;
+                CFRelease(self.warmCtx);
+                self.warmApp = nil; self.warmTarget = nil; self.warmCtx = NULL;
+                [self appEnded:a target:target log:[a.dir stringByAppendingString:@".log"]];
+            }
+        });
+    });
+}
+
+/* An app's process ended (by itself, or for another app). */
+- (void)appEnded:(AoiApp *)a target:(ScreenVC *)target log:(NSString *)logPath {
+    if (self.screenVC == target) {                   /* it ended by itself, not for another app */
+        self.runningPkg = nil;
+        self.screenVC = nil;
+        [self append:[NSString stringWithFormat:@"%@ kapandı; log: %@", a.label, logPath]];
+        if (self.presentedViewController == target) [self dismissViewControllerAnimated:YES completion:nil];
+    }
+    [self reload];
+    if (!self.runningPkg) [self startWarm];
+}
+
 /* A glass capsule button. */
 - (UIView *)pill:(NSString *)text symbol:(NSString *)sym action:(SEL)a {
     UIVisualEffectView *v = glass_view(27, YES);
@@ -557,19 +664,31 @@ static Launcher *launcher;
         name.font = [UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
         name.textColor = UIColor.whiteColor;
         UILabel *pkg = [UILabel new];
-        pkg.text = [a.pkg isEqualToString:self.runningPkg] ? @"Çalışıyor" : a.pkg;
         pkg.font = [UIFont systemFontOfSize:13];
         pkg.textColor = [UIColor colorWithWhite:1 alpha:0.65];
-        UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[ name, pkg ]];
+        pkg.numberOfLines = 2;
+        UIProgressView *bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
+        bar.progressTintColor = [UIColor colorWithRed:0.35 green:0.85 blue:0.6 alpha:1];
+        bar.trackTintColor = [UIColor colorWithWhite:1 alpha:0.15];
+        bar.hidden = YES;
+        UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[ name, pkg, bar ]];
         texts.axis = UILayoutConstraintAxisVertical;
-        texts.spacing = 2;
+        texts.spacing = 4;
         UIImageView *chev = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
         chev.tintColor = [UIColor colorWithWhite:1 alpha:0.5];
         [chev setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ icon, texts, chev ]];
+        UIButton *act = [UIButton buttonWithType:UIButtonTypeSystem];      /* Derle / İptal */
+        act.tintColor = UIColor.whiteColor;
+        act.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        act.tag = card.tag;
+        act.hidden = YES;
+        [act setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [act setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [act addTarget:self action:@selector(tapAction:) forControlEvents:UIControlEventTouchUpInside];
+        self.subs[a.pkg] = pkg; self.bars[a.pkg] = bar; self.acts[a.pkg] = act;
+        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ icon, texts, act, chev ]];
         row.spacing = 14; row.alignment = UIStackViewAlignmentCenter;
         row.translatesAutoresizingMaskIntoConstraints = NO;
-        row.userInteractionEnabled = NO;
         [card.contentView addSubview:row];
         [NSLayoutConstraint activateConstraints:@[
             [row.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
@@ -588,11 +707,154 @@ static Launcher *launcher;
                                                                     userInfo:@{ @"app" : a.pkg }]];
     }
     UIApplication.sharedApplication.shortcutItems = items;     /* hold the app icon: these apps */
+    [self tick];
+}
+
+/* ---------- compiling (dex2oat, once per APK): the cards show it ---------- */
+
+static NSString *duration_text(double s) {
+    if (s == -2) return @"az";
+    if (s < 0) return @"süre hesaplanıyor";
+    if (s < 90) return [NSString stringWithFormat:@"~%.0f sn", fmax(5, round(s / 5) * 5)];
+    if (s < 3600) return [NSString stringWithFormat:@"~%.0f dk", ceil(s / 60)];
+    return [NSString stringWithFormat:@"~%.0f sa %.0f dk", floor(s / 3600), fmod(ceil(s / 60), 60)];
+}
+
+- (NSString *)root { return [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aroot"]; }
+
+- (BOOL)queued:(AoiApp *)a {
+    for (NSDictionary *q in self.queue) if ([q[@"pkg"] isEqualToString:a.pkg]) return YES;
+    return NO;
+}
+
+/* Every card's line, button and bar; once a second while dex2oat runs. */
+- (void)tick {
+    struct aoi_compile_info ci;
+    aoi_android_compile_info(&ci);
+    for (AoiApp *a in self.tiles.allValues) {
+        UILabel *sub = self.subs[a.pkg];
+        UIProgressView *bar = self.bars[a.pkg];
+        UIButton *act = self.acts[a.pkg];
+        BOOL mine = ci.active && !strcmp(ci.datadir, a.dir.UTF8String);
+        NSString *st = a.compileState, *text, *btn = nil, *sym = nil;
+        if (mine) {
+            text = ci.held ? [NSString stringWithFormat:@"Derleme %%%.0f · duraklatıldı (telefon sıcak ya da Düşük Güç Modu)", ci.progress * 100]
+                           : [NSString stringWithFormat:@"Derleniyor %%%.0f · %@ kaldı", ci.progress * 100, duration_text(ci.eta)];
+            btn = @"İptal"; sym = @"xmark.circle.fill";
+        } else if ([self queued:a]) {
+            text = @"Derleme sırada";
+            btn = @"İptal"; sym = @"xmark.circle.fill";
+        } else if ([st isEqualToString:@"speed"] || [st isEqualToString:@"speed-profile"]) {
+            text = @"Derlendi ✓";
+        } else if ([st isEqualToString:@"verify"]) {
+            text = @"Derlendi (temel) ✓ · basılı tutup “Hızlandır”";
+        } else if ([st isEqualToString:@"failed"]) {
+            text = @"Derlenemedi · derlenmeden çalışır";
+            btn = @"Tekrar"; sym = @"arrow.clockwise";
+        } else {
+            text = [NSString stringWithFormat:@"Derlenmedi · derleme %@", duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
+            btn = @"Derle"; sym = @"hammer.fill";
+        }
+        if ([a.pkg isEqualToString:self.runningPkg]) text = [@"Çalışıyor · " stringByAppendingString:text];
+        sub.text = text;
+        bar.hidden = !mine;
+        if (mine) bar.progress = (float)ci.progress;
+        act.hidden = btn == nil;
+        if (btn) {
+            [act setTitle:[@" " stringByAppendingString:btn] forState:UIControlStateNormal];
+            [act setImage:[UIImage systemImageNamed:sym] forState:UIControlStateNormal];
+        }
+    }
+    if (ci.active && !self.ticker)
+        self.ticker = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) { [self tick]; }];
+    if (!ci.active && !self.queue.count) { [self.ticker invalidate]; self.ticker = nil; }
+    UIApplication.sharedApplication.idleTimerDisabled = ci.active;   /* a locked phone suspends us, and dex2oat */
+}
+
+- (void)tapAction:(UIButton *)b {
+    AoiApp *a = self.tiles[@(b.tag)];
+    struct aoi_compile_info ci;
+    if (!a) return;
+    aoi_android_compile_info(&ci);
+    if (ci.active && !strcmp(ci.datadir, a.dir.UTF8String)) [self cancelCompile:a];
+    else if ([self queued:a]) [self cancelCompile:a];
+    else [self compile:a faster:NO];
+}
+
+/* Starts it, or queues it behind the one that runs. */
+- (void)compile:(AoiApp *)a faster:(BOOL)faster {
+    if ([self queued:a]) return;
+    int rc = aoi_android_compile(self.root.UTF8String, a.dir.UTF8String, a.compileLog.UTF8String, faster,
+                                 log_cb, (__bridge void *)self);
+    if (rc == -1) [self.queue addObject:@{ @"pkg" : a.pkg, @"faster" : @(faster) }];
+    else if (rc == 1 && faster) [self tell:@"Hızlandırılamıyor"
+                                       what:@"Uygulamanın sık kullandığı kod henüz bilinmiyor: önce onu bir süre kullanın."];
+    else if (rc == -2) [self tell:@"Şimdi derlenemiyor"
+                             what:@"Açık uygulamanın yanında bellek yetmiyor. Uygulamayı kapatıp (iki parmakla dokunun) tekrar deneyin."];
+    if (rc == 0) [self append:[NSString stringWithFormat:@"%@ derleniyor (tahmini %@).", a.label,
+                               duration_text(aoi_android_compile_estimate(a.dir.UTF8String, faster))]];
+    [self tick];
+}
+
+- (void)cancelCompile:(AoiApp *)a {
+    struct aoi_compile_info ci;
+    for (NSDictionary *q in [self.queue copy]) if ([q[@"pkg"] isEqualToString:a.pkg]) [self.queue removeObject:q];
+    aoi_android_compile_info(&ci);
+    if (ci.active && !strcmp(ci.datadir, a.dir.UTF8String)) aoi_android_compile_cancel();
+    [self tick];
+}
+
+/* dex2oat ended (compile_done_cb): the next in the queue. */
+- (void)compileEnded:(NSString *)dir state:(NSString *)state {
+    AoiApp *a = nil;
+    for (AoiApp *x in [AoiApp all]) if ([x.dir isEqualToString:dir]) a = x;
+    if (a) [self append:[NSString stringWithFormat:@"%@: %@", a.label,
+                         [state isEqualToString:@"failed"] ? @"derlenemedi" : state.length ? @"derlendi; sonraki açılış hızlı" : @"derleme durdu"]];
+    while (self.queue.count) {
+        NSDictionary *q = self.queue.firstObject;
+        [self.queue removeObjectAtIndex:0];
+        AoiApp *n = [AoiApp withPackage:q[@"pkg"]];
+        if (n) { [self compile:n faster:[q[@"faster"] boolValue]]; break; }
+    }
+    [self tick];
+}
+
+- (void)tell:(NSString *)title what:(NSString *)msg {
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [al addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleCancel handler:nil]];
+    [(self.presentedViewController ?: self) presentViewController:al animated:YES completion:nil];
+}
+
+/* A tap on an app that is not compiled: compile it first, or open it as it is. */
+- (void)maybeOpen:(AoiApp *)a {
+    struct aoi_compile_info ci;
+    aoi_android_compile_info(&ci);
+    BOOL mine = ci.active && !strcmp(ci.datadir, a.dir.UTF8String);
+    BOOL snap = [NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]];
+    if ([a.pkg isEqualToString:self.runningPkg] || snap || (a.compiled && !mine) || [a.compileState isEqualToString:@"failed"]) {
+        [self openApp:a];
+        return;
+    }
+    NSString *msg = mine
+        ? [NSString stringWithFormat:@"Derleniyor: %%%.0f, %@ kaldı. Bitince hızlı açılır; şimdi açarsanız derlenmeden (yavaş) çalışır.",
+                                     ci.progress * 100, duration_text(ci.eta)]
+        : [NSString stringWithFormat:@"Derlenmeden de açılır ama çok daha yavaş çalışır. Derleme bir kez yapılır, %@ sürer; "
+                                     @"bu sırada LiquidAPK açık kalmalı.", duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))];
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:mine ? [NSString stringWithFormat:@"%@ derleniyor", a.label]
+                                                                             : [NSString stringWithFormat:@"%@ henüz derlenmedi", a.label]
+                                                                message:msg preferredStyle:UIAlertControllerStyleAlert];
+    if (!mine)
+        [al addAction:[UIAlertAction actionWithTitle:@"Derle" style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *x) { [self compile:a faster:NO]; }]];
+    [al addAction:[UIAlertAction actionWithTitle:@"Yine de aç" style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction *x) { [self openApp:a]; }]];
+    [al addAction:[UIAlertAction actionWithTitle:mine ? @"Bekle" : @"Vazgeç" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:al animated:YES completion:nil];
 }
 
 - (void)tapTile:(UITapGestureRecognizer *)g {
     AoiApp *a = self.tiles[@(g.view.tag)];
-    if (a) [self openApp:a];
+    if (a) [self maybeOpen:a];
 }
 
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i
@@ -608,7 +870,32 @@ static Launcher *launcher;
         UIAction *del = [UIAction actionWithTitle:@"Kaldır" image:[UIImage systemImageNamed:@"trash"]
                                        identifier:nil handler:^(UIAction *x) { [self confirmRemove:a]; }];
         del.attributes = UIMenuElementAttributesDestructive;
-        return [UIMenu menuWithTitle:a.label children:@[ home, fresh, del ]];
+        NSMutableArray *items = [NSMutableArray arrayWithObjects:home, fresh, nil];
+        struct aoi_compile_info ci;
+        aoi_android_compile_info(&ci);
+        NSString *st = a.compileState;
+        if ((ci.active && !strcmp(ci.datadir, a.dir.UTF8String)) || [self queued:a])
+            [items addObject:[UIAction actionWithTitle:@"Derlemeyi iptal et" image:[UIImage systemImageNamed:@"xmark.circle"]
+                                            identifier:nil handler:^(UIAction *x) { [self cancelCompile:a]; }]];
+        else if (!a.compiled)
+            [items addObject:[UIAction actionWithTitle:@"Derle" image:[UIImage systemImageNamed:@"hammer"]
+                                            identifier:nil handler:^(UIAction *x) { [self compile:a faster:NO]; }]];
+        else {
+            if ([st isEqualToString:@"verify"])
+                [items addObject:[UIAction actionWithTitle:@"Hızlandır (sık kullanılan kodu derle)" image:[UIImage systemImageNamed:@"bolt"]
+                                                identifier:nil handler:^(UIAction *x) { [self compile:a faster:YES]; }]];
+            UIAction *rm = [UIAction actionWithTitle:@"Derlemeyi sil" image:[UIImage systemImageNamed:@"hammer.circle"]
+                                          identifier:nil handler:^(UIAction *x) {
+                if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
+                dispatch_async(self.appQueue, ^{                 /* after its process has ended */
+                    aoi_android_compile_remove(a.dir.UTF8String);
+                    dispatch_async(dispatch_get_main_queue(), ^{ [self tick]; });
+                });
+            }];
+            [items addObject:rm];
+        }
+        [items addObject:del];
+        return [UIMenu menuWithTitle:a.label children:items];
     }];
 }
 
@@ -648,7 +935,14 @@ static Launcher *launcher;
                                                          preferredStyle:UIAlertControllerStyleAlert];
     [al addAction:[UIAlertAction actionWithTitle:@"Kaldır" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
         if ([a.pkg isEqualToString:self.runningPkg]) aoi_android_stop();
-        dispatch_async(self.appQueue, ^{                 /* after its process has ended */
+        [self cancelCompile:a];
+        dispatch_async(self.appQueue, ^{                 /* after its process has ended, and dex2oat's */
+            while (aoi_android_compiling()) {
+                struct aoi_compile_info ci;
+                aoi_android_compile_info(&ci);
+                if (!ci.active || strcmp(ci.datadir, a.dir.UTF8String)) break;
+                usleep(100000);
+            }
             dispatch_async(dispatch_get_main_queue(), ^{ [a remove]; [self reload]; });
         });
     }]];
@@ -682,12 +976,20 @@ static Launcher *launcher;
         self.screenVC = nil;
     }
     [self reload];
-    [self openApp:a];
+    if (!a.compiled) {                                   /* once, now: the card shows how far it is */
+        [self compile:a faster:NO];
+        [self tell:[NSString stringWithFormat:@"%@ yüklendi", a.label]
+              what:[NSString stringWithFormat:@"Şimdi bir kez derleniyor (%@); ilerlemesi kartında. Bitince hızlı açılır. "
+                                               @"Bu sırada LiquidAPK açık kalmalı; isterseniz derlenmeden de açabilirsiniz.",
+                                               duration_text(aoi_android_compile_estimate(a.dir.UTF8String, 0))]];
+    } else {
+        [self openApp:a];
+    }
 }
 
 - (void)openPackage:(NSString *)pkg {
     AoiApp *a = [AoiApp withPackage:pkg];
-    if (a) [self openApp:a];
+    if (a) [self maybeOpen:a];
     else [self append:[NSString stringWithFormat:@"Yüklü değil: %@", pkg]];
 }
 
@@ -711,11 +1013,7 @@ static Launcher *launcher;
     if (self.presentedViewController != self.screenVC) [self presentViewController:self.screenVC animated:YES completion:nil];
     if (same) return;
 
-    /* the display: the safe area, in points at 2x (aoi.DisplayManager) */
-    UIEdgeInsets in = self.view.window.safeAreaInsets;
-    CGSize s = self.view.window.bounds.size;
-    long w = lround((s.width - in.left - in.right) * 2), h = lround((s.height - in.top - in.bottom) * 2);
-    NSString *display = [NSString stringWithFormat:@"%ld %ld 320", w & ~1L, h & ~1L];
+    NSString *display = self.display;
     NSString *logPath = [a.dir stringByAppendingString:@".log"];
     NSString *prev = self.runningPkg;
     if (prev) {                                          /* one process at a time: save that one, end it */
@@ -724,24 +1022,25 @@ static Launcher *launcher;
     }
     self.runningPkg = a.pkg;
     [self.screenVC status:[NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]]
-         ? @"Kayıttan açılıyor…" : @"İlk açılış: uygulama derlenmeden başlıyor (biraz yavaş);\nkodu arka planda derleniyor, sonraki açılışlar hızlı."];
+         ? @"Kayıttan açılıyor…" : a.compiled ? @"Açılıyor…" : @"Derlenmeden açılıyor (yavaş)…"];
     [a prepare];
     [self append:[NSString stringWithFormat:@"%@ açılıyor (ekran %@)", a.label, display]];
     ScreenVC *target = self.screenVC;
     void *ctx = (__bridge_retained void *)target;        /* the process's frames go to it while it runs */
+    BOOL snap = [NSFileManager.defaultManager fileExistsAtPath:[a.dir stringByAppendingString:@".snap"]];
+    if (!prev && !snap && self.warmRunning && !self.warmApp
+        && aoi_android_go(root.UTF8String, a.dir.UTF8String, logPath.UTF8String, display.UTF8String, frame_cb, home_cb,
+                          ctx, log_cb, (__bridge void *)self) == 0) {
+        self.warmApp = a; self.warmTarget = target; self.warmCtx = ctx;   /* Android is up already: only the app loads */
+        [self reload];
+        return;
+    }
+    if (self.warmRunning && !self.warmApp) aoi_android_warm_stop();    /* (its snapshot is faster, or it does not fit) */
     dispatch_async(self.appQueue, ^{
         aoi_android_app(root.UTF8String, a.dir.UTF8String, logPath.UTF8String, display.UTF8String, frame_cb, home_cb,
                         ctx, log_cb, (__bridge void *)self);
         CFRelease(ctx);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.screenVC == target) {               /* it ended by itself, not for another app */
-                self.runningPkg = nil;
-                self.screenVC = nil;
-                [self append:[NSString stringWithFormat:@"%@ kapandı; log: %@", a.label, logPath]];
-                if (self.presentedViewController == target) [self dismissViewControllerAnimated:YES completion:nil];
-            }
-            [self reload];
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ [self appEnded:a target:target log:logPath]; });
     });
     [self reload];
 }
@@ -948,6 +1247,12 @@ static void clipboard_cb(int op, const char *path) {
     }
 }
 
+/* dex2oat ended (on its thread): the cards, and the next one in the queue. */
+static void compile_done_cb(const char *datadir, const char *state) {
+    NSString *d = @(datadir), *st = @(state);
+    dispatch_async(dispatch_get_main_queue(), ^{ [launcher compileEnded:d state:st]; });
+}
+
 /* The app's text field wants the keyboard, or no longer (aoi.InputMethodManager). */
 static void keyboard_cb(int show) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -985,6 +1290,7 @@ static void compile_hold_update(void)
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     aoi_android_set_clipboard(clipboard_cb);
     aoi_android_set_keyboard(keyboard_cb);
+    aoi_android_set_compile_done(compile_done_cb);
     for (NSNotificationName n in @[ NSProcessInfoThermalStateDidChangeNotification,
                                     NSProcessInfoPowerStateDidChangeNotification ])
         [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:nil
@@ -1021,7 +1327,8 @@ static void compile_hold_update(void)
 }
 
 /* Going to the background (iOS may end us there): the running app is saved as it is,
- * so the next launch resumes it with what was typed since its first snapshot. */
+ * so the next launch resumes it with what was typed since its first snapshot. A dex2oat
+ * that runs goes on for the time iOS gives, then waits (suspended) for our return. */
 - (void)applicationDidEnterBackground:(UIApplication *)app {
     __block UIBackgroundTaskIdentifier task = [app beginBackgroundTaskWithExpirationHandler:^{
         [app endBackgroundTask:task];
@@ -1029,6 +1336,7 @@ static void compile_hold_update(void)
     }];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         aoi_android_snapshot(25);
+        while (aoi_android_compiling() && task != UIBackgroundTaskInvalid) usleep(500000);   /* dex2oat: what time iOS gives */
         dispatch_async(dispatch_get_main_queue(), ^{
             if (task != UIBackgroundTaskInvalid) [app endBackgroundTask:task];
             task = UIBackgroundTaskInvalid;

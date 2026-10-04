@@ -116,6 +116,10 @@ struct aoi_proc {
      * "/dev/aoi_ime/1" to show it and "/dev/aoi_ime/0" to hide it; what is typed
      * comes back through aoi_proc_key. */
     void (*ime)(void *ctx, int show);
+    /* if set: Android started before its app is chosen (the iOS app's warm process):
+     * aoi.Main waits in open("/dev/aoi_warm") until this returns 1, on the guest's
+     * thread, having made the process the app's (its /data, log, frames). */
+    int (*warm)(struct aoi_proc *p);
     /* The guest's OpenGL ES (core/gpu.h): AOI_SYS_GL goes here (gpu/host.c), or is
      * ENOSYS when the host has no GPU for it. */
     uint64_t (*gpu)(void *ctx, struct aoi_proc *p, uint64_t op, uint64_t args);

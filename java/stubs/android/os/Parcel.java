@@ -9,6 +9,7 @@ public final class Parcel {
     public int dataPosition() { return 0; }
     public String readString() { return null; }
     public int readInt() { return 0; }
+    public IBinder readStrongBinder() { return null; }
     public void writeInt(int v) {}
     public void writeIntArray(int[] v) {}
 }
