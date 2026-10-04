@@ -20,7 +20,14 @@ struct aoi_parcel {
     int nobj;
     int32_t status;                 /* != 0: no data, the transaction failed with this (TF_STATUS_CODE) */
     uint64_t hold[2];               /* a local object the driver now references (BR_INCREFS/ACQUIRE) */
+    /* HIDL (hwbinder): buffers that travel with the data (binder_buffer_object): the
+     * driver copies each next to the reply and points its object at the copy, and a
+     * child's parent at it (aoi_pbuffer). */
+    struct { uint8_t d[512]; uint32_t len, obj, obj_index, parent_obj, parent_off; int has_parent; } buf[12];
+    int nbuf;
 };
+
+#define AOI_BINDER_TYPE_PTR    0x70742a85u      /* 'p','t','*': a buffer (HIDL) */
 
 static inline void aoi_p32(struct aoi_parcel *pc, uint32_t v)
 {
@@ -55,6 +62,43 @@ static inline void aoi_pfd(struct aoi_parcel *pc, int fd)
 {
     if (pc->nobj < 16) pc->obj[pc->nobj++] = pc->n;
     aoi_p32(pc, AOI_BINDER_TYPE_FD); aoi_p32(pc, 0x17f); aoi_p64(pc, (uint32_t)fd); aoi_p64(pc, 0);
+}
+
+/* A HIDL buffer (binder_buffer_object) of len bytes; parent: the index (as returned)
+ * of the buffer holding the pointer to this one at parent_off, or -1. Its index. */
+static inline int aoi_pbuffer(struct aoi_parcel *pc, const void *d, uint32_t len, int parent, uint32_t parent_off)
+{
+    int k = pc->nbuf;
+    if (k >= 12 || len > sizeof pc->buf[0].d || pc->nobj >= 16) return -1;
+    memcpy(pc->buf[k].d, d, len);
+    pc->buf[k].len = len;
+    pc->buf[k].has_parent = parent >= 0;
+    pc->buf[k].parent_obj = parent >= 0 ? (uint32_t)parent : 0;
+    pc->buf[k].parent_off = parent_off;
+    pc->buf[k].obj = pc->n;
+    pc->obj[pc->nobj++] = pc->n;
+    aoi_p32(pc, AOI_BINDER_TYPE_PTR); aoi_p32(pc, parent >= 0 ? 1 : 0);      /* BINDER_BUFFER_FLAG_HAS_PARENT */
+    aoi_p64(pc, 0); aoi_p64(pc, len);                  /* buffer: set by the driver */
+    aoi_p64(pc, parent >= 0 ? (uint64_t)pc->buf[parent].obj_index : 0);
+    aoi_p64(pc, parent_off);
+    pc->buf[k].obj_index = (uint32_t)(pc->nobj - 1);
+    pc->nbuf++;
+    return k;
+}
+
+/* HIDL hidl_vec<hidl_string> (a vec, its array, each string's bytes). */
+static inline void aoi_phidl_strings(struct aoi_parcel *pc, const char *const *s, uint32_t n)
+{
+    uint8_t vec[16], arr[16 * 8];
+    uint32_t i, len;
+    int v, a;
+    memset(vec, 0, sizeof vec); memset(arr, 0, sizeof arr);
+    if (n > 8) n = 8;
+    memcpy(vec + 8, &n, 4);
+    v = aoi_pbuffer(pc, vec, 16, -1, 0);
+    for (i = 0; i < n; i++) { len = (uint32_t)strlen(s[i]); memcpy(arr + 16 * i + 8, &len, 4); }
+    a = aoi_pbuffer(pc, arr, 16 * n, v, 0);
+    for (i = 0; i < n; i++) aoi_pbuffer(pc, s[i], (uint32_t)strlen(s[i]) + 1, a, 16 * i);
 }
 
 /* Reading a request. */

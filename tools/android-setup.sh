@@ -13,6 +13,8 @@
 #      guest/mapper.c), where libui looks for it (the sphal namespace)
 #   6. /vendor/lib64/egl/libGLES_aoi.so, our OpenGL ES driver (build/libGLES_aoi.so,
 #      guest/gles.c), where libEGL looks for it (ro.hardware.egl=aoi)
+#   7. the software codecs' libraries where the app process finds them
+#      (tools/swcodec-ns.py), and /system/lib64/libaoi_media.so (guest/media.c)
 # Idempotent; prints the aoiproc -e options for dalvikvm on stdout (with
 # ANDROID_NO_USE_FWMARK_CLIENT: there is no netd to tag sockets, core/proc.c).
 set -eu
@@ -29,6 +31,10 @@ PL="$R/system/etc/public.libraries.txt"
 if [ -f "$PL" ] && [ ! -f "$PL.orig" ]; then
     cp "$PL" "$PL.orig"
     awk '/^#/ || NF == 0 { print; next } { print $1, "nopreload" }' "$PL.orig" > "$PL"
+fi
+python3 "$DIR/tools/swcodec-ns.py" "$R" 2>/dev/null               # 7. the software codecs in the app's process
+if [ -f "$DIR/build/libaoi_media.so" ]; then
+    cp "$DIR/build/libaoi_media.so" "$R/system/lib64/libaoi_media.so"
 fi
 if [ -f "$DIR/build/mapper.aoi.so" ]; then
     mkdir -p "$R/vendor/lib64/hw"

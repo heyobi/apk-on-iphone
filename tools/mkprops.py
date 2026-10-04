@@ -130,6 +130,7 @@ def main():
              b"ro.product.cpu.abilist64": b"arm64-v8a", b"ro.product.cpu.abilist32": b"",
              b"ro.zygote": b"zygote64",
              b"servicemanager.ready": b"true",       # set by servicemanager on a device (ours is in core/binder.c)
+             b"hwservicemanager.ready": b"true",     # the same for HIDL's (core/binder.c, on /dev/hwbinder)
              # the Java heap a phone's vendor sets; without these ART caps apps at 16 MB
              # (AndroidRuntime's -Xmx default) and they die of OutOfMemoryError. (Setting
              # heapstartsize/minfree/maxfree/targetutilization too makes the CMC GC run

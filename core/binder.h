@@ -10,9 +10,9 @@
 
 struct aoi_proc;
 
-/* An ioctl on a binder fd: 0 or -errno. *block = 1: the calling thread must wait
+/* An ioctl on a binder fd (hw: /dev/hwbinder, whose handle 0 is hwservicemanager): 0 or -errno. *block = 1: the calling thread must wait
  * and run the same ioctl again (nothing to read yet). */
-uint64_t aoi_binder_ioctl(struct aoi_proc *p, uint64_t cmd, uint64_t arg, int *block);
+uint64_t aoi_binder_ioctl(struct aoi_proc *p, uint64_t cmd, uint64_t arg, int *block, int hw);
 
 /* The guest mmapped its binder fd at [addr, addr+len): replies are written there. */
 void aoi_binder_mapped(struct aoi_proc *p, uint64_t addr, uint64_t len);

@@ -2189,6 +2189,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_faccessat: case NR_faccessat2:
         if ((rc = at_path(p, sx32(a0), a1, 1, g))) { r = err(rc); break; }
+        if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder")) { r = 0; break; }
         to_host(p, g, h);
         r = access(h, (int)a2 & 7) ? herr() : 0;
         if (!r && (a2 & 2) && p->uid && owner(p, g) != p->uid && !stat(h, &st) && S_ISREG(st.st_mode))
@@ -2608,7 +2609,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_BINDER) {
             int block;
-            r = aoi_binder_ioctl(p, a1, a2, &block);
+            r = aoi_binder_ioctl(p, a1, a2, &block, !strcmp(f->path, "/dev/hwbinder"));
             if (block) r = block_and_retry(p, 5000000);             /* a looper waits for work */
             break;
         }

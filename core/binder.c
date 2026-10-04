@@ -71,6 +71,8 @@ struct aoi_binder {
     struct service svc[512];        /* ~210 are aoi.Services stand-ins: 128 silently dropped the last */
     int nsvc;
     struct native nat[NATIVES];     /* handle h is nat[h]; 0 is servicemanager */
+    struct service hsvc[32];        /* HIDL services registered with hwservicemanager ("fqName/instance") */
+    int nhsvc;
     int nnat;
     uint32_t pn;                    /* the process's work: host calls (BR_TRANSACTION + its data) */
     uint8_t pq[64 * 68];            /* waiting for a looper that waits for work */
@@ -147,6 +149,10 @@ static struct service *find(struct aoi_binder *b, const char *name)
 }
 
 /* The reply to `code`; the request's first object (if any) sits at byte offset obj0. */
+/* The software codecs' store (guest/media.c registers it in the app process): declared,
+ * as a device's VINTF manifest does, so the registrant and MediaCodec look for it. */
+#define C2_STORE "android.hardware.media.c2.IComponentStore"
+
 static void servicemanager(struct aoi_proc *p, struct aoi_binder *b, uint32_t code, struct aoi_reader *r,
                            int64_t obj0, struct aoi_parcel *rep)
 {
@@ -185,11 +191,117 @@ static void servicemanager(struct aoi_proc *p, struct aoi_binder *b, uint32_t co
         aoi_p32(rep, (uint32_t)sv->stability);
         break;
     case 3: case 5: case 6: break;                             /* addService, (un)registerForNotifications */
-    case 7: aoi_p32(rep, sv != NULL); break;                   /* isDeclared: the services we have */
-    case 4: case 8: case 10: aoi_p32(rep, 0); break;           /* listServices, getDeclaredInstances, getUpdatableNames: [] */
+    case 7:                                                    /* isDeclared: the services we have, and what the */
+        aoi_p32(rep, sv != NULL || !strcmp(name, C2_STORE "/software"));   /* manifest would declare (the codecs) */
+        break;
+    case 8:                                                    /* getDeclaredInstances(iface) */
+        if (!strcmp(name, C2_STORE)) { aoi_p32(rep, 1); aoi_pstr16(rep, "software"); }
+        else aoi_p32(rep, 0);
+        break;
+    case 4: case 10: aoi_p32(rep, 0); break;                   /* listServices, getUpdatableNames: [] */
     case 9: aoi_p32(rep, 0xffffffffu); break;                  /* updatableViaApex: null string */
     case 11: aoi_p32(rep, 0); break;                           /* getConnectionInfo: null parcelable */
     default: break;
+    }
+}
+
+/* ---------- hwservicemanager (handle 0 on /dev/hwbinder) ----------
+ * HIDL's android.hidl.manager@1.2::IServiceManager. libhidl wants one to exist
+ * (Codec2Client CHECKs it); HIDL services an app process registers itself are handed
+ * back as its own local objects, as servicemanager does. Methods by .hal order:
+ * get 1, add 2, getTransport 3, list 4, listByInterface 5, registerForNotifications 6,
+ * debugDump 7, registerPassthroughClient 8, unregisterForNotifications 9,
+ * registerClientCallback 10, unregisterClientCallback 11, addWithChain 12,
+ * listManifestByInterface 13, tryUnregister 14; and IBase's interfaceChain,
+ * interfaceDescriptor, ping. HIDL strings come as buffers in the caller's memory. */
+
+#define HIDL_PING        0x0f504e47u
+#define HIDL_CHAIN       0x0f43484eu
+#define HIDL_DESCRIPTOR  0x0f445343u
+#define HIDL_HASH_CHAIN  0x0f485348u
+
+/* A hidl_string argument: its buffer object (and the string's own after it). */
+static void hidl_rstring(struct aoi_proc *p, struct aoi_reader *r, char *out, size_t cap)
+{
+    uint64_t at = 0, sp = 0;
+    uint32_t type = aoi_r32(r), size = 0;
+    out[0] = 0;
+    aoi_r32(r); at = aoi_r64(r); aoi_r64(r); aoi_r64(r); aoi_r64(r);    /* flags, buffer, length, parent, offset */
+    if (type != AOI_BINDER_TYPE_PTR) return;
+    if (r->pos + 4 <= r->n && *(const uint32_t *)(r->d + r->pos) == AOI_BINDER_TYPE_PTR) r->pos += 40;   /* its bytes */
+    if (!gread(p, at, &sp, 8) || !gread(p, at + 8, &size, 4)) return;
+    if (size >= cap) size = (uint32_t)cap - 1;
+    if (!gread(p, sp, out, size)) size = 0;
+    out[size] = 0;
+}
+
+static void hwmanager(struct aoi_proc *p, struct aoi_binder *b, uint32_t code, struct aoi_reader *r, struct aoi_parcel *rep)
+{
+    static const char *const chain[] = { "android.hidl.manager@1.2::IServiceManager", "android.hidl.manager@1.1::IServiceManager",
+                                         "android.hidl.manager@1.0::IServiceManager", "android.hidl.base@1.0::IBase" };
+    char fq[128] = "", name[64] = "", key[96];
+    struct service *sv = NULL;
+    int i;
+    rep->status = 0;
+    if (code == HIDL_PING) { aoi_p32(rep, 0); return; }
+    while (r->pos < r->n && r->d[r->pos]) r->pos++;                    /* the interface token: a C string */
+    r->pos = (r->pos + 4) & ~3u;
+    if (code == HIDL_CHAIN) { aoi_p32(rep, 0); aoi_phidl_strings(rep, chain, 4); return; }
+    if (code == HIDL_DESCRIPTOR) {                                     /* a hidl_string: its struct, its bytes */
+        uint8_t s[16] = { 0 };
+        uint32_t len = (uint32_t)strlen(chain[0]);
+        int k;
+        aoi_p32(rep, 0);
+        memcpy(s + 8, &len, 4);
+        k = aoi_pbuffer(rep, s, 16, -1, 0);
+        aoi_pbuffer(rep, chain[0], len + 1, k, 0);
+        return;
+    }
+    if (code == HIDL_HASH_CHAIN) { rep->status = UNKNOWN_TRANSACTION; return; }
+    if (code == 1 || code == 2 || code == 3 || code == 12 || code == 14) {
+        hidl_rstring(p, r, code == 2 ? name : fq, code == 2 ? sizeof name : sizeof fq);
+        if (code != 2) hidl_rstring(p, r, name, sizeof name);
+    }
+    if (code == 2 || code == 12) {                                      /* add(name, service): its fqName from its chain later */
+        if (r->pos + 24 <= r->n && b->nhsvc < (int)(sizeof b->hsvc / sizeof b->hsvc[0])) {
+            const uint8_t *o = r->d + r->pos;
+            sv = &b->hsvc[b->nhsvc++];
+            memset(sv, 0, sizeof *sv);
+            snprintf(sv->name, sizeof sv->name, "*/%s", name);
+            memcpy(&sv->type, o, 4); memcpy(&sv->flags, o + 4, 4);
+            memcpy(&sv->binder, o + 8, 8); memcpy(&sv->cookie, o + 16, 8);
+            if (sv->type == AOI_BINDER_TYPE_BINDER) { rep->hold[0] = sv->binder; rep->hold[1] = sv->cookie; }
+        }
+        if (p->trace) fprintf(p->trace, "[binder] hwservicemanager add \"%s\"\n", name);
+        aoi_p32(rep, 0); aoi_p32(rep, sv != NULL);                     /* bool */
+        return;
+    }
+    snprintf(key, sizeof key, "*/%s", name);
+    for (i = 0; i < b->nhsvc; i++) if (!strcmp(b->hsvc[i].name, key)) sv = &b->hsvc[i];
+    if (!strncmp(fq, "android.hidl.manager@", 21) && !strcmp(name, "default")) {   /* itself: handle 0 */
+        static struct service self;
+        memset(&self, 0, sizeof self);
+        self.type = AOI_BINDER_TYPE_HANDLE;
+        sv = &self;
+    }
+    if (p->trace) fprintf(p->trace, "[binder] hwservicemanager call %u \"%s/%s\"%s\n", code, fq, name, sv ? ": found" : "");
+    aoi_p32(rep, 0);                                                    /* Status ok */
+    switch (code) {
+    case 1:                                                            /* get -> interface (null: none) */
+        rep->obj[rep->nobj++] = rep->n;
+        if (sv) { aoi_p32(rep, sv->type); aoi_p32(rep, sv->flags); aoi_p64(rep, sv->binder); aoi_p64(rep, sv->cookie); }
+        else { aoi_p32(rep, AOI_BINDER_TYPE_BINDER); aoi_p32(rep, 0); aoi_p64(rep, 0); aoi_p64(rep, 0); }
+        break;
+    case 3: aoi_p32(rep, sv ? 1 : 0); break;                           /* getTransport: HWBINDER if registered, else EMPTY */
+    case 4: case 5: case 13: aoi_phidl_strings(rep, NULL, 0); break;   /* list, listByInterface, listManifestByInterface */
+    case 7: {                                                          /* debugDump: an empty vec */
+        uint8_t vec[16] = { 0 };
+        int k = aoi_pbuffer(rep, vec, 16, -1, 0);
+        aoi_pbuffer(rep, vec, 0, k, 0);
+        break;
+    }
+    case 6: case 9: case 10: case 11: case 14: aoi_p32(rep, 0); break; /* bool false */
+    default: break;                                                    /* registerPassthroughClient: void */
     }
 }
 
@@ -206,9 +318,25 @@ static void reply(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, s
         flags = TF_STATUS_CODE;
     }
     dn = (rep->n + 7) & ~7u; on = 8u * (uint32_t)rep->nobj;
-    if (b->next + dn + on + 8 > b->buflen) b->next = 0;
-    at = b->buf + b->next;
-    b->next += dn + on + 8;
+    {
+        uint32_t bn = 0;
+        int k;
+        for (k = 0; k < rep->nbuf; k++) bn += (rep->buf[k].len + 7) & ~7u;
+        if (b->next + dn + on + bn + 8 > b->buflen) b->next = 0;
+        at = b->buf + b->next;
+        b->next += dn + on + bn + 8;
+        if (rep->nbuf) {                                       /* HIDL buffers: after the offsets, objects pointed at them */
+            uint64_t ba[12], pos = at + dn + on;
+            for (k = 0; k < rep->nbuf; k++) {
+                ba[k] = pos;
+                if (!aoi_vm_write(&p->vm, pos, rep->buf[k].d, rep->buf[k].len, 0)) { push32(t, BR_DEAD_REPLY); return; }
+                memcpy(rep->d + rep->buf[k].obj + 8, &ba[k], 8);
+                if (rep->buf[k].has_parent)
+                    aoi_vm_write(&p->vm, ba[rep->buf[k].parent_obj] + rep->buf[k].parent_off, &ba[k], 8, 0);
+                pos += (rep->buf[k].len + 7) & ~7u;
+            }
+        }
+    }
     /* the receive buffer is read-only to the guest; the driver writes it anyway */
     if (!aoi_vm_write(&p->vm, at, rep->d, rep->n, 0) || (on && !aoi_vm_write(&p->vm, at + dn, rep->obj, on, 0))) {
         push32(t, BR_DEAD_REPLY);
@@ -264,7 +392,7 @@ int aoi_binder_send(struct aoi_proc *p, uint64_t ptr, uint64_t cookie, uint32_t 
     return 0;
 }
 
-static void transaction(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, const uint8_t *pay)
+static void transaction(struct aoi_proc *p, struct aoi_binder *b, struct bthread *t, const uint8_t *pay, int hw)
 {
     static _Thread_local uint8_t req[8192];
     static _Thread_local struct aoi_parcel rep;
@@ -279,7 +407,8 @@ static void transaction(struct aoi_proc *p, struct aoi_binder *b, struct bthread
     if (!gread(p, dptr, req, rn)) rn = 0;
     r.d = req; r.n = rn; r.pos = 0;
     memset(&rep, 0, sizeof rep);
-    if (handle == 0) servicemanager(p, b, code, &r, o0 == ~0ULL ? -1 : (int64_t)o0, &rep);
+    if (handle == 0 && hw) hwmanager(p, b, code, &r, &rep);
+    else if (handle == 0) servicemanager(p, b, code, &r, o0 == ~0ULL ? -1 : (int64_t)o0, &rep);
     else if (handle < (uint32_t)b->nnat && b->nat[handle].fn) {
         if (code == PING_TRANSACTION) {}                       /* alive: empty reply */
         else if (code == INTERFACE_TRANSACTION) aoi_pstr16(&rep, b->nat[handle].iface);
@@ -300,7 +429,7 @@ static void transaction(struct aoi_proc *p, struct aoi_binder *b, struct bthread
     reply(p, b, t, &rep);
 }
 
-static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t arg, int *block)
+static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t arg, int *block, int hw)
 {
     uint64_t bwr[6];                    /* write_size, write_consumed, write_buffer, read_size, read_consumed, read_buffer */
     struct bthread *t = bthread(b, p->th[p->cur].tid);
@@ -317,7 +446,7 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
         bwr[1] += 4 + sz;
         if (cmd == BC_ENTER_LOOPER || cmd == BC_REGISTER_LOOPER) t->looper = 1;
         else if (cmd == BC_EXIT_LOOPER) t->looper = 0;
-        else if (cmd == BC_TRANSACTION || cmd == BC_TRANSACTION_SG) transaction(p, b, t, pay);
+        else if (cmd == BC_TRANSACTION || cmd == BC_TRANSACTION_SG) transaction(p, b, t, pay, hw);
         /* BC_REPLY, BC_FREE_BUFFER, reference counts, death notifications: nothing to do */
     }
 
@@ -354,13 +483,13 @@ static uint64_t write_read(struct aoi_proc *p, struct aoi_binder *b, uint64_t ar
     return gwrite(p, arg, bwr, sizeof bwr) ? 0 : (uint64_t)-EFAULT_;
 }
 
-uint64_t aoi_binder_ioctl(struct aoi_proc *p, uint64_t cmd, uint64_t arg, int *block)
+uint64_t aoi_binder_ioctl(struct aoi_proc *p, uint64_t cmd, uint64_t arg, int *block, int hw)
 {
     struct aoi_binder *b = state(p);
     *block = 0;
     if (!b) return (uint64_t)-EINVAL_;
     switch ((uint32_t)cmd) {
-    case BINDER_WRITE_READ: return write_read(p, b, arg, block);
+    case BINDER_WRITE_READ: return write_read(p, b, arg, block, hw);
     case BINDER_VERSION: {
         int32_t v = 8;                                         /* BINDER_CURRENT_PROTOCOL_VERSION, 64-bit */
         return gwrite(p, arg, &v, 4) ? 0 : (uint64_t)-EFAULT_;

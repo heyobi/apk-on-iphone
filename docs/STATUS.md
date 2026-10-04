@@ -662,6 +662,25 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**No more crash on MediaCodec; the software codecs, in progress (app 0.69).**
+- Any app that touched MediaCodecList (ExoPlayer, SoundPool loading a sound, a video)
+  aborted: Codec2Client CHECKs that hwservicemanager runs. /dev/hwbinder now has one
+  (core/binder.c hwmanager: android.hidl.manager@1.2::IServiceManager: get, add,
+  getTransport, list*, listManifestByInterface, IBase's ping/interfaceChain/
+  interfaceDescriptor; HIDL strings read from the caller's buffers, hidl_vec /
+  hidl_string replies as binder_buffer_objects the driver copies next to the reply,
+  aoi_pbuffer), hwservicemanager.ready is set and access("/dev/hwbinder") succeeds.
+  MediaCodecList now lists no codecs and createDecoderByType fails with
+  NAME_NOT_FOUND, which apps handle (aoi.CodecTest).
+- In progress: Android's own software codecs (the swcodec APEX, Codec2) in the app's
+  process. guest/media.c (/system/lib64/libaoi_media.so) calls RegisterCodecServices()
+  from libmedia_codecserviceregistrant.so, as media.swcodec's main() does; the APEX's
+  libraries the system lacks are linked into /system/lib64 and its directory permitted
+  to the default namespace (tools/swcodec-ns.py, run by tools/android-setup.sh);
+  servicemanager declares android.hardware.media.c2.IComponentStore/software (as a
+  device manifest would). On the host the store registers itself ("Software Codec2
+  service created and registered"); MediaCodec finding it is next.
+
 **Sound (app 0.68).** AudioFlinger and AudioPolicy are native services now (core/af.c,
 the way core/sf.c is SurfaceFlinger), so AudioTrack plays:
 - "media.audio_flinger" (IAudioFlingerService) and "media.audio_policy"
