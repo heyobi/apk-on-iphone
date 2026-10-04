@@ -7,7 +7,10 @@ the Linux kernel, binder and Android's system services provided in-process, as W
 for Windows programs.
 
 It is a normal sideloaded app (SideStore / AltStore / Sideloadly): no JIT, no debugger,
-no jailbreak.
+no jailbreak. "No JIT" means the iPhone's CPU never runs code generated at run time: there
+is no writable-executable memory. Android's own ART may still JIT-compile hot Java
+methods inside the guest, but what it produces is AArch64 guest code that the
+interpreter runs like any other.
 
 ## What runs today (app 0.64)
 
@@ -137,3 +140,11 @@ Run an app like the phone does: `tools/app-install.sh ROOT app.apk DIR`, then
 
 No Android or app binaries are committed: the root is built from the pinned AOSP GSI by
 the workflow and by `tools/fetch-android.sh`.
+
+## License and credits
+
+LiquidAPK is free software under the **GNU General Public License v3.0 or later**
+(`LICENSE`). The IPA also carries AOSP 14 (mostly Apache-2.0), ANGLE (BSD-3-Clause) and
+the other components listed, with their sources, licenses and the projects this one
+learned from, in [`NOTICE.md`](NOTICE.md); in the app: Geliştirici › Lisanslar.
+Android is a trademark of Google LLC; this project is not affiliated with Google or Apple.

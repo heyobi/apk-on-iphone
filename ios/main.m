@@ -1230,7 +1230,8 @@ static NSString *duration_text(double s) {
     self.nField.keyboardType = UIKeyboardTypeNumberPad;
     self.nField.borderStyle = UITextBorderStyleRoundedRect;
     UIStackView *row1 = [self row:@[ [self button:@"Logu kopyala" action:@selector(copyLog)],
-                                     [self button:@"Adres alanı" action:@selector(probe)] ]];
+                                     [self button:@"Adres alanı" action:@selector(probe)],
+                                     [self button:@"Lisanslar" action:@selector(licenses)] ]];
     UIStackView *row2 = [self row:@[ [self button:@"GMP n!" action:@selector(gmp)], self.nField,
                                      [self button:@"Android" action:@selector(android)] ]];
     self.logView = [UITextView new];
@@ -1254,6 +1255,26 @@ static NSString *duration_text(double s) {
 }
 
 - (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+/* LiquidAPK's license (GPL-3.0-or-later) and the bundled components' (licenses/; the
+ * Android parts' notices are in aroot/system/etc/NOTICE.xml.gz). */
+- (void)licenses {
+    NSString *dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"licenses"];
+    NSMutableString *t = [NSMutableString string];
+    NSArray *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]
+                         sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *n in @[ @"NOTICE.md", @"LICENSE" ]) {
+        NSString *s = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:n] encoding:NSUTF8StringEncoding error:nil];
+        if (s) [t appendFormat:@"%@\n\n", s];
+    }
+    for (NSString *n in names) {
+        if ([n isEqualToString:@"NOTICE.md"] || [n isEqualToString:@"LICENSE"]) continue;
+        NSString *s = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:n] encoding:NSUTF8StringEncoding error:nil];
+        if (s) [t appendFormat:@"──── %@ ────\n%@\n\n", n, s];
+    }
+    self.logView.text = t.length ? t : @"Lisans dosyaları bu derlemede yok.";
+    [self.logView scrollRangeToVisible:NSMakeRange(0, 0)];
+}
 
 - (UIButton *)button:(NSString *)t action:(SEL)a {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];

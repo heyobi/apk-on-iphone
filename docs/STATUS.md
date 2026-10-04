@@ -662,6 +662,15 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**License, credits, the JIT wording (2026-10-04).** LiquidAPK is GPL-3.0-or-later
+(LICENSE); NOTICE.md lists what the IPA carries (AOSP 14 from the pinned GSI, ANGLE,
+Khronos headers, certifi's roots, dx), the build and test tools, and the prior work this
+project learned from. The IPA's licenses/ gets LICENSE and NOTICE.md, the Android root
+its NOTICE.xml.gz (ios/android-files.txt); Geliştirici › Lisanslar shows them. "No JIT"
+is spelled out (README): nothing runs as host code generated at run time; ART's own JIT
+makes guest code that is interpreted. Outdated text fixed: STATUS's distribution note
+(StikDebug), the roadmap, docs/IOS.md's steps, RESEARCH's App Store and license rows.
+
 **A compiled app always opens fast; the compile goes on in the background (app 0.64).**
 The 0.62 phone log and what it asked for: WhatsApp opened in a second after its compile
 but not always later, not after "Baştan başlat"; the compile stopped when LiquidAPK left
@@ -1417,15 +1426,19 @@ none occur in Qalculate; other apps will tell (isacheck).
 1. **(done)** interpret a real native lib from an APK.
 2. **(done)** NEON/FP + atomics: every instruction word of Qalculate's libraries and of
    the rendering libraries runs, Unicorn-checked.
-3. **(in progress, last part)** Android's own linker64 + bionic, ART, the framework in
-   the app process with native services — done up to a resumed activity; now the
-   UI surface: gralloc buffers, SurfaceFlinger frames, then the frame on the iPhone,
-   touch and the keyboard.
-4. Speed: the WebKit JIT route (docs/RESEARCH.md, "Route"); the interpreter stays the
+3. **(done)** Android's own linker64 + bionic, ART, the framework in the app process
+   with native services; gralloc, SurfaceFlinger, HWUI on the GPU, touch, keyboard,
+   network, WebView, snapshots, dex2oat on the phone.
+4. **(open)** Sound (an AudioFlinger of our own), web content in Chromium browsers,
+   Google Play services stand-ins, notifications, camera.
+5. Speed: the WebKit JIT route (docs/RESEARCH.md, "Route"); the interpreter stays the
    path that runs everywhere.
 
 ## Distribution note
 
-Sideload only (SideStore/AltStore) with JIT via StikDebug. App Store allows only
-WebKit's JIT, so an App Store build must run everything as Wasm in WKWebView —
-which is exactly why the interpreter (backend #1) matters: it is that path's seed.
+Sideloaded (SideStore / AltStore / Sideloadly), no JIT and no debugger: the StikDebug
+route was dropped after 0.3 (docs/RESEARCH.md, "Route"). Everything runs in the
+interpreter, so nothing technical needs JIT; what stands between this and the App Store
+is review policy (running code the app does not ship, guideline 2.5.2; the silent-audio
+background keep-alive, 2.5.4; naming other platforms in metadata) and the GPL. License:
+GPL-3.0-or-later (LICENSE, NOTICE.md).

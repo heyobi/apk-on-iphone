@@ -314,6 +314,7 @@
 /system/bin/xxd
 /system/bin/yes
 /system/bin/zcat
+/system/etc/NOTICE.xml.gz
 /system/etc/fonts.xml
 /system/etc/hosts
 /system/etc/public.libraries.txt

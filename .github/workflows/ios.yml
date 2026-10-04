@@ -117,7 +117,7 @@ jobs:
             -framework Metal -framework IOSurface -framework OpenGLES -framework AVFoundation -lz -lc++
           cp ios/Info.plist "$APP/Info.plist"
           cp ios/icons/*.png "$APP/"
-          mkdir -p "$APP/licenses" && cp angle-ios/licenses/*.txt "$APP/licenses/"
+          mkdir -p "$APP/licenses" && cp angle-ios/licenses/*.txt LICENSE NOTICE.md "$APP/licenses/"
           cp -RP aroot-mini "$APP/aroot"
           find "$APP/aroot" -type f -exec chmod a-x {} +   # ELF data for the interpreter, not code to sign
           du -sh "$APP/aroot"

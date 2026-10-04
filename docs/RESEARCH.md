@@ -19,7 +19,7 @@ everything under "inferred" is judgement. Sources at the end of each section.
 | GLES game → ANGLE → Metal | **green** | ANGLE-Metal: ES 2.0 + 3.0 complete (not 3.1), EGL 1.5, takes a `CALayer` as native window. Shipped by Safari for WebGL. |
 | Compose / HWUI drawing | **yellow** | libhwui has a host (darwin) build without GPU pipelines; or own Canvas/RenderNode on Skia-Metal (Compose Multiplatform iOS precedent). Fidelity is the risk. |
 | Audio, input | **green** | AudioTrack/SoundPool/MediaPlayer → AVAudioEngine/AudioUnit/AVPlayer; UITouch → MotionEvent maps 1:1. |
-| App Store | **red** | Guideline 4.7 allows retro/PC emulators, but nothing with JIT passes review (also on AltStore PAL). Sideload is the target. |
+| App Store | **red** | Guideline 4.7 allows retro/PC emulators, but nothing with JIT passes review (also on AltStore PAL). Sideload is the target. *(2026-10-04: the route taken has no JIT at all, so JIT is no longer the blocker; review policy is: 2.5.2 code not shipped in the app, 2.5.4 background modes, 2.3.10 other platforms in metadata. Still sideload.)* |
 
 ## Two Darwin facts that change the design
 
@@ -68,7 +68,8 @@ everything under "inferred" is judgement. Sources at the end of each section.
 
 ## Licensing
 
-ATL is GPL-3.0+. Fine for sideloading if this project is GPL-3 too. App Store
+ATL is GPL-3.0+. Fine for sideloading if this project is GPL-3 too. *(2026-10-04: no
+ATL code is used; LiquidAPK itself is GPL-3.0-or-later, see LICENSE and NOTICE.md.)* App Store
 distribution of other people's GPL code is contested (App Store terms vs GPL §10, VLC 2011),
 but the App Store is closed to this project anyway (JIT / 4.7).
 
