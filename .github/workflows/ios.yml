@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aroot-mini
-          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'tools/android-setup.sh', 'tools/mkprops.py', 'tools/uncompress-art.py', 'tools/cacerts-extra.pem', 'tools/zipdrop.py', 'ios/android-files.txt') }}
+          key: aroot-${{ hashFiles('tools/fetch-android.sh', 'tools/android-root.sh', 'tools/mini-root.sh', 'tools/android-setup.sh', 'tools/mkprops.py', 'tools/uncompress-art.py', 'tools/cacerts-extra.pem', 'tools/zipdrop.py', 'tools/swcodec-ns.py', 'ios/android-files.txt') }}
 
       - name: Fetch Android root
         if: steps.aroot.outputs.cache-hit != 'true'
@@ -61,6 +61,9 @@ jobs:
           make build/libGLES_aoi.so GUEST_LD="--ld-path=$(brew --prefix lld)/bin/ld.lld"
           mkdir -p aroot-mini/vendor/lib64/egl
           cp build/libGLES_aoi.so aroot-mini/vendor/lib64/egl/libGLES_aoi.so
+          # the software codecs in the app's process (guest/media.c): aoi.Main loads it
+          make build/libaoi_media.so GUEST_LD="--ld-path=$(brew --prefix lld)/bin/ld.lld"
+          cp build/libaoi_media.so aroot-mini/system/lib64/libaoi_media.so
 
       # OpenGL ES on the phone's GPU: ANGLE (BSD-3) on Metal, as static libraries built by
       # Godot's godot-angle-static (MIT), and the Khronos EGL/GLES headers (gpu/host.c).

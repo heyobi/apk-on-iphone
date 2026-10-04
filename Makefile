@@ -17,7 +17,7 @@ build/test_scan: tests/test_scan.c $(CORE) core/*.h | build
 build/fixture.elf: tests/fixture.S | build
 	$(AARCH64) -o $@ $<
 
-test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf build/pipes.elf build/libGLES_aoi.so
+test: build/test_scan build/test_vm build/fixture.elf build/apkscan build/aoirun build/aoiproc build/signals.elf build/pipes.elf build/libGLES_aoi.so build/libaoi_media.so
 	./build/test_vm
 	./build/test_scan build/fixture.elf
 	./build/apkscan build/fixture.elf
@@ -108,14 +108,14 @@ build/mapper.aoi.so: guest/mapper.c core/gralloc.h | build
 
 # The software codecs in the app's process (guest/media.c): /system/lib64/libaoi_media.so,
 # linked against stand-ins for libdl and liblog (guest/stubs.c) for their names.
-build/stub/libdl.so build/stub/liblog.so: guest/stubs.c | build
+build/stub/libdl.so build/stub/liblog.so build/stub/libc.so: guest/stubs.c | build
 	mkdir -p build/stub
 	clang --target=aarch64-linux-android29 -shared -nostdlib -ffreestanding -fPIC $(GUEST_LD) \
 	    -Wl,-soname,$(notdir $@) -o $@ guest/stubs.c
-build/libaoi_media.so: guest/media.c build/stub/libdl.so build/stub/liblog.so | build
+build/libaoi_media.so: guest/media.c build/stub/libdl.so build/stub/liblog.so build/stub/libc.so | build
 	clang --target=aarch64-linux-android29 -shared -nostdlib -ffreestanding -fno-stack-protector -fPIC -O2 \
 	    -fvisibility=hidden $(GUEST_LD) -Wl,--hash-style=both -Wl,-soname,libaoi_media.so -Wall -Wextra \
-	    -o $@ guest/media.c -Lbuild/stub -ldl -llog
+	    -o $@ guest/media.c -Lbuild/stub -ldl -llog -lc
 
 # The guest's OpenGL ES driver (guest/gles.c): /vendor/lib64/egl/libGLES_aoi.so.
 build/libGLES_aoi.so: guest/gles.c guest/gl_gen.h core/gpu.h core/gralloc.h | build

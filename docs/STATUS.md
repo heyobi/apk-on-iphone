@@ -662,7 +662,7 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
-**No more crash on MediaCodec; the software codecs, in progress (app 0.69).**
+**No more crash on MediaCodec; the software codecs (app 0.69, 0.70).**
 - Any app that touched MediaCodecList (ExoPlayer, SoundPool loading a sound, a video)
   aborted: Codec2Client CHECKs that hwservicemanager runs. /dev/hwbinder now has one
   (core/binder.c hwmanager: android.hidl.manager@1.2::IServiceManager: get, add,
@@ -672,7 +672,22 @@ libraries and libmedia_jni's (ios/android-files.txt, the end).
   aoi_pbuffer), hwservicemanager.ready is set and access("/dev/hwbinder") succeeds.
   MediaCodecList now lists no codecs and createDecoderByType fails with
   NAME_NOT_FOUND, which apps handle (aoi.CodecTest).
-- In progress: Android's own software codecs (the swcodec APEX, Codec2) in the app's
+- **(0.70) Android's own software codecs work, in the app's process:** AAC, MP3, Opus,
+  Vorbis, FLAC, AMR, G.711, AVC, HEVC, VP8, VP9, AV1, MPEG-4/H.263 (55 codecs listed).
+  What it took, past the registrant below: media.c2.hal.selection=aidl and
+  ro.vendor.api_level=202404 (libcodec2_vndk honours the selection from that level
+  on: client and store both AIDL; tools/mkprops.py); "media.resource_manager" and
+  "package_native" as native stand-ins that MediaCodec waits for (core/af.c);
+  /dev/dma_heap/system for the linear buffers (an allocation is a memfd; dma-buf
+  sync ioctls succeed; core/proc.c); the registrant on a thread of its own (it does
+  not return); "media.player" answers no codec list, so the list is built in the
+  process. aoi.Main loads libaoi_media.so on a thread at start (NewPipe's hidden start
+  is as quick as before: saved at 40.5 s). tests/run_android.sh "MediaCodec":
+  aoi.CodecTest encodes 0.5 s of 440 Hz with c2.android.aac.encoder (21 frames) and
+  decodes it with c2.android.aac.decoder: 21504 samples, pitch 440 Hz. The IPA gets
+  the APEX's libraries and links (ios/android-files.txt, from a trace of that test)
+  and libaoi_media.so. MediaPlayer (the media.player service) is still to do.
+- Before that: Android's own software codecs (the swcodec APEX, Codec2) in the app's
   process. guest/media.c (/system/lib64/libaoi_media.so) calls RegisterCodecServices()
   from libmedia_codecserviceregistrant.so, as media.swcodec's main() does; the APEX's
   libraries the system lacks are linked into /system/lib64 and its directory permitted

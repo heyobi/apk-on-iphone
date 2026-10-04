@@ -35,6 +35,7 @@ public final class Main {
         ServiceManager.addService("audio", new AudioService());
         ServiceManager.addService(WebViewUpdate.NAME, new WebViewUpdate());
         ServiceManager.addService(MediaPlayerService.NAME, new MediaPlayerService());
+        codecs();
         if (System.getenv("AOI_WARM") != null) warm();
         PackageParser.Package pkg = new PackageParser().parsePackage(new File(apk), 0);
         ApplicationInfo ai = pkg.applicationInfo;
@@ -79,6 +80,21 @@ public final class Main {
 
     /** The warm process: classes every app start uses, then saved (the host's snapshot
      *  of it, once per build), then waiting until the host hands it an app. */
+    /** Android's software codecs (Codec2: AAC, MP3, Opus, Vorbis, FLAC, AVC, VP9...) in
+     *  this process: guest/media.c registers their store, on a thread of its own, so
+     *  MediaCodec finds them (a phone runs them in the media.swcodec process). */
+    static void codecs() {
+        final String lib = "/system/lib64/libaoi_media.so";
+        if (!new File(lib).exists()) return;
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                try { System.load(lib); } catch (Throwable e) { System.out.println("aoi: codecs: " + e); }
+            }
+        }, "aoi-codecs");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void warm() {
         String[] classes = { "android.content.pm.PackageParser", "android.content.pm.PackageParser$Package",
             "android.content.res.AssetManager", "android.content.res.Resources", "android.app.ActivityThread",

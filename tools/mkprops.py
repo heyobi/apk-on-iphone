@@ -146,7 +146,12 @@ def main():
              # AAudio (native games, Chromium) without MMAP: its legacy path is an
              # AudioTrack, which our AudioFlinger (core/af.c) plays; there is no
              # "media.aaudio" service
-             b"aaudio.mmap_policy": b"1", b"aaudio.mmap_exclusive_policy": b"1"}
+             b"aaudio.mmap_policy": b"1", b"aaudio.mmap_exclusive_policy": b"1",
+             # the software codecs' store registers as AIDL in the app process
+             # (guest/media.c): MediaCodec looks for it there too (libcodec2_vndk)
+             b"media.c2.hal.selection": b"aidl",
+             # (which libcodec2_vndk honours from vendor API level 202404 on)
+             b"ro.vendor.api_level": b"202404"}
     for rel in ("system/build.prop", "system/system_ext/etc/build.prop", "system/product/etc/build.prop",
                 "vendor/build.prop", "odm/etc/build.prop"):
         read_props(os.path.join(root, rel), props)

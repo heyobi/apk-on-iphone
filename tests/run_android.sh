@@ -93,6 +93,11 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     # shellcheck disable=SC2086
     check "AudioTrack (core/af.c: AudioFlinger, the mixer's clock)" "audiotrack: min true, state 0, wrote 44100, played true" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.AudioTrackTest
+    # Codecs: Android's own software codecs (Codec2, the swcodec APEX) registered in this
+    # process (guest/media.c): a tone through the AAC encoder and back through the decoder.
+    # shellcheck disable=SC2086
+    check "MediaCodec (software codecs in the process: AAC encode, decode)" "codec: aac 21 frames, decoded 21504 samples, pitch 440 Hz" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.CodecTest /system/lib64/libaoi_media.so
     # The network: aoi.ConnectivityService, DNS through netd's dnsproxyd (answered by the
     # host's resolver) and an HTTP GET on the host's sockets, from a local server.
     if command -v python3 >/dev/null 2>&1; then

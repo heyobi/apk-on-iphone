@@ -2120,6 +2120,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             p->input_pair = aoi_proc_pair(p, fdn, -1, 0);
             r = (uint64_t)fdn;
             break;
+        } else if (!strncmp(g, "/dev/dma_heap/", 14)) {           /* DMA-BUF heaps (the codecs' buffers) */
+            if ((hfd = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+            if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
+            p->fd[fdn].kind = AOI_FD_DMAHEAP;
+            r = (uint64_t)fdn;
+            break;
         } else if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder")) {
             if ((hfd = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
             if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
@@ -2189,7 +2195,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_faccessat: case NR_faccessat2:
         if ((rc = at_path(p, sx32(a0), a1, 1, g))) { r = err(rc); break; }
-        if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder")) { r = 0; break; }
+        if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder") ||
+            !strcmp(g, "/dev/dma_heap/system") || !strcmp(g, "/dev/dma_heap/system-uncached")) { r = 0; break; }
         to_host(p, g, h);
         r = access(h, (int)a2 & 7) ? herr() : 0;
         if (!r && (a2 & 2) && p->uid && owner(p, g) != p->uid && !stat(h, &st) && S_ISREG(st.st_mode))
@@ -2605,6 +2612,23 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             int v = 0;
             if (a1 == 0x5421) { r = get(p, a2, &v, 4) ? (f->nonblock = v != 0, 0) : err(L_EFAULT); break; }
             r = ioctl(f->host, FIONREAD, &v) ? herr() : put(p, a2, &v, 4) ? 0 : err(L_EFAULT);
+            break;
+        }
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_DMAHEAP) {
+            uint8_t ad[24];                                        /* dma_heap_allocation_data {len, fd, fd_flags, heap_flags} */
+            uint64_t len;
+            int n;
+            if (a1 != 0xc0184800) { r = err(L_ENOTTY); break; }    /* DMA_HEAP_IOCTL_ALLOC */
+            if (!get(p, a2, ad, sizeof ad)) { r = err(L_EFAULT); break; }
+            memcpy(&len, ad, 8);
+            if ((n = aoi_proc_memfd(p, "dmabuf", len)) < 0) { r = err(L_ENOMEM); break; }
+            p->fd[n].seals = 0;
+            put32(ad, 8, (uint32_t)n);
+            r = put(p, a2, ad, sizeof ad) ? 0 : err(L_EFAULT);
+            break;
+        }
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_FILE && !strcmp(f->path, "memfd:dmabuf") && ((a1 >> 8) & 0xff) == 'b') {
+            r = 0;                                                 /* DMA_BUF_IOCTL_SYNC, _SET_NAME: nothing to do */
             break;
         }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_BINDER) {

@@ -60,7 +60,7 @@ struct track {
 };
 
 struct aoi_af {
-    uint32_t flinger, policy;
+    uint32_t flinger, policy, resources, packages;
     int32_t next_id;
     struct track t[TRACKS];
     int64_t clock0, played;                     /* output frames made since clock0 */
@@ -472,6 +472,19 @@ static void policy(struct aoi_proc *p, void *self, uint32_t code, struct aoi_rea
     }
 }
 
+/* ---------- IResourceManagerService ----------
+ * "media.resource_manager": MediaCodec registers and reclaims codec resources with
+ * it, and waits for it to exist. One app, no competition: every call succeeds
+ * (void calls, and false/0 for the few that return something). */
+
+static void resources(struct aoi_proc *p, void *self, uint32_t code, struct aoi_reader *req, struct aoi_parcel *rep)
+{
+    (void)p; (void)self;
+    trace("resources", code, req);
+    ok(rep);
+    aoi_p32(rep, 0);
+}
+
 /* ---------- life ---------- */
 
 void aoi_af_init(struct aoi_proc *p)
@@ -484,6 +497,9 @@ void aoi_af_init(struct aoi_proc *p)
     if (out && *out) af->out = fopen(out, "wb");
     af->flinger = aoi_binder_native(p, "media.audio_flinger", "android.media.IAudioFlingerService", flinger, af);
     af->policy = aoi_binder_native(p, "media.audio_policy", "android.media.IAudioPolicyService", policy, af);
+    af->resources = aoi_binder_native(p, "media.resource_manager", "android.media.IResourceManagerService", resources, af);
+    /* the same answers for IPackageManagerNative, which MediaCodec's metrics wait for */
+    af->packages = aoi_binder_native(p, "package_native", "android.content.pm.IPackageManagerNative", resources, af);
 }
 
 void aoi_af_free(struct aoi_proc *p)
@@ -500,7 +516,7 @@ void aoi_af_free(struct aoi_proc *p)
  * DEAD_OBJECT, and AudioTrack makes itself a new one (restoreTrack_l), as after an
  * audioserver restart. */
 
-enum { N_FLINGER = 32, N_POLICY = 33, N_TRACK = 34 };
+enum { N_FLINGER = 32, N_POLICY = 33, N_TRACK = 34, N_RESOURCES = 35 };
 
 int aoi_af_snap(struct aoi_proc *p, FILE *f, int save)
 {
@@ -534,7 +550,7 @@ int aoi_af_native_id(struct aoi_proc *p, void *self, aoi_native_fn fn, int32_t *
     struct aoi_af *af = p->af;
     if (!af) return -1;
     *idx = 0;
-    if (self == af) { *kind = fn == flinger ? N_FLINGER : N_POLICY; return 0; }
+    if (self == af) { *kind = fn == flinger ? N_FLINGER : fn == policy ? N_POLICY : N_RESOURCES; return 0; }
     if ((char *)self >= (char *)af->t && (char *)self < (char *)(af->t + TRACKS)) {
         *kind = N_TRACK; *idx = (int32_t)((struct track *)self - af->t); return 0;
     }
@@ -548,6 +564,7 @@ int aoi_af_native_ref(struct aoi_proc *p, int32_t kind, int32_t idx, aoi_native_
     switch (kind) {
     case N_FLINGER: *fn = flinger; *self = af; *iface = "android.media.IAudioFlingerService"; return 0;
     case N_POLICY: *fn = policy; *self = af; *iface = "android.media.IAudioPolicyService"; return 0;
+    case N_RESOURCES: *fn = resources; *self = af; *iface = "android.media.IResourceManagerService"; return 0;
     case N_TRACK:
         if (idx < 0 || idx >= TRACKS) return -1;
         *fn = track; *self = &af->t[idx]; *iface = "android.media.IAudioTrack"; return 0;
