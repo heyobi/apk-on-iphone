@@ -85,10 +85,6 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
     check "clipboard shared with the host" 'clipboard: after copy, paste gives "kopyalandı 42"' $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.ClipboardTest
     unset AOI_CLIP
-    # Games' sound effects: android.media.SoundPool with libsoundpool.so and aoi.AudioService.
-    # shellcheck disable=SC2086
-    check "SoundPool (libsoundpool, audio service)" "soundpool: built and released" $ENV $SCP \
-        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.SoundPoolTest
     # Sound: an AudioTrack plays a tone through our AudioFlinger (core/af.c), all of it.
     # shellcheck disable=SC2086
     check "AudioTrack (core/af.c: AudioFlinger, the mixer's clock)" "audiotrack: min true, state 0, wrote 44100, played true, timestamp true" $ENV $SCP \
@@ -100,6 +96,11 @@ if command -v javac >/dev/null 2>&1 && sh "$DIR/tools/javadex.sh" "$R/data/local
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.CodecTest /system/lib64/libaoi_media.so
     check "MediaPlayer (its service, NuPlayer, in the process; binder relays)" "mediaplayer: duration 1 s, playing true, position moved true" $ENV $SCP \
         -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.MediaPlayerTest /system/lib64/libaoi_media.so
+    # Games' sound effects: android.media.SoundPool (libsoundpool.so) decodes a WAV with
+    # the codecs and plays it as a static AudioTrack (the app's shared buffer).
+    # shellcheck disable=SC2086
+    check "SoundPool (decoded, a static AudioTrack: the shared buffer)" "soundpool: loaded true, played true" $ENV $SCP \
+        -e CLASSPATH=/data/local/tmp/aoi.dex /system/bin/app_process64 /system/bin aoi.SoundPoolTest /system/lib64/libaoi_media.so
     # The network: aoi.ConnectivityService, DNS through netd's dnsproxyd (answered by the
     # host's resolver) and an HTTP GET on the host's sockets, from a local server.
     if command -v python3 >/dev/null 2>&1; then

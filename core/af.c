@@ -41,9 +41,15 @@
 enum {                                          /* audio_track_cblk_t */
     C_SERVER = 0x00, C_FUTEX = 0x08, C_VOLUME = 0x10, C_TS_SEQ = 0x3c, C_TS = 0x40, C_BUFSIZE = 0xa8, C_FLAGS = 0xb0,
     C_FRONT = 0xb8, C_REAR = 0xbc, C_FLUSH = 0xc0, C_STOP = 0xc4, C_UNDER_FRAMES = 0xc8, C_UNDER_COUNT = 0xcc,
-    C_SIZE = 0xe8
+    C_SIZE = 0xe8,
+    /* a static track's (MODE_STATIC: SoundPool) u.mStatic instead of mFront...: the
+     * client's StaticAudioTrackState queue, the server's position/loop queue */
+    S_ACK = 0xb8, S_SEQ = 0xbc, S_STATE = 0xc0, S_POS_ACK = 0xd8, S_POS_SEQ = 0xdc, S_POS = 0xe0
 };
 #define CBLK_INVALID 0x04
+#define CBLK_LOOP_CYCLE 0x20
+#define CBLK_LOOP_FINAL 0x40
+#define CBLK_BUFFER_END 0x80
 #define CBLK_FUTEX_WAKE 1
 
 enum { F_U8, F_S16, F_S32, F_FLOAT, F_S24 };     /* sample formats we take */
@@ -59,6 +65,13 @@ struct track {
     int32_t flushed;                            /* the last mFlush seen */
     double phase;                               /* resampling position, in track frames */
     int32_t session, port;
+    /* MODE_STATIC: the frames are in the app's shared buffer (a memfd: read through a
+     * host dup of it), played from a position, maybe looped */
+    int is_static, shared_fd;
+    uint64_t shared_off;
+    int32_t st_seq;                             /* the client's state queue, last taken */
+    uint32_t pos, loop_start, loop_end, loop_seq, pos_seq;
+    int32_t loop_count;
 };
 
 struct aoi_af {
@@ -182,6 +195,121 @@ static float sample(const uint8_t *fr, struct track *t, uint32_t c)
     }
 }
 
+/* The timestamp the app's AudioTrack reads (getTimestamp, MediaPlayer's clock): the
+ * frames played now, at the server and the "kernel". */
+static void write_ts(struct aoi_proc *p, uint64_t va)
+{
+    int64_t ts[13];                                    /* ExtendedTimestamp */
+    int32_t seq = c32(p, va, C_TS_SEQ);
+    memset(ts, 0, sizeof ts);
+    ts[1] = ts[3] = (uint32_t)c32(p, va, C_SERVER);    /* mPosition[LOCATION_SERVER, LOCATION_KERNEL] */
+    ts[5 + 1] = ts[5 + 3] = aoi_mono_ns();             /* mTimeNs[...] */
+    s32(p, va, C_TS_SEQ, seq + 1);                     /* SingleStateQueue: odd while written */
+    aoi_vm_write(&p->vm, va + C_TS, ts, sizeof ts, 0);
+    s32(p, va, C_TS_SEQ, seq + 2);
+}
+
+static void wake(struct aoi_proc *p, uint64_t va)      /* (ServerProxy::releaseBuffer) */
+{
+    int32_t old = c32(p, va, C_FUTEX);
+    s32(p, va, C_FUTEX, old | CBLK_FUTEX_WAKE);
+    if (!(old & CBLK_FUTEX_WAKE)) aoi_proc_futex_wake(p, va + C_FUTEX, 1 << 30);
+}
+
+/* A static track: takes the client's new position or loop (StaticAudioTrackServerProxy::
+ * pollPosition), plays from the shared buffer, loops, and reports the position and
+ * CBLK_LOOP_* / CBLK_BUFFER_END as releaseBuffer does. */
+static void mix_static(struct aoi_proc *p, struct track *t, float *mix, uint32_t want)
+{
+    uint64_t va = cblk(p, t);
+    int32_t seq;
+    uint32_t i = 0, total = 0, vol;
+    int32_t flags = 0;
+    float gl, gr;
+    double step;
+    if (!va) return;
+    if (c32(p, va, C_FLAGS) & CBLK_INVALID) { t->dead = 1; return; }
+    seq = c32(p, va, S_SEQ);
+    if (seq != t->st_seq && !(seq & 1)) {
+        uint32_t st[6];                                /* loopStart, loopEnd, loopCount, loopSeq, position, positionSeq */
+        aoi_vm_read(&p->vm, va + S_STATE, st, sizeof st, 0);
+        if (c32(p, va, S_SEQ) == seq) {
+            int loop_first = (int32_t)(st[3] - st[5]) < 0, pass;
+            for (pass = 0; pass < 2; pass++) {
+                if ((pass == 0) == loop_first) {       /* the loop */
+                    if (st[3] != t->loop_seq) {
+                        if ((int32_t)st[2] == 0 || ((int32_t)st[2] >= -1 && st[1] <= t->frames && st[0] < st[1])) {
+                            t->loop_start = st[0]; t->loop_end = st[1]; t->loop_count = (int32_t)st[2];
+                        }
+                        t->loop_seq = st[3];
+                    }
+                } else if (st[5] != t->pos_seq) {      /* the position */
+                    if (st[4] <= t->frames) {
+                        if (t->loop_count && st[4] >= t->loop_end) t->loop_count = 0;
+                        t->pos = st[4];
+                    }
+                    t->pos_seq = st[5];
+                }
+            }
+            t->st_seq = seq;
+            s32(p, va, S_ACK, seq + 1);                /* (Observer::poll, done) */
+            t->phase = 0;
+        }
+    }
+    if (!t->started) return;
+    vol = (uint32_t)c32(p, va, C_VOLUME);
+    gl = minifloat(vol & 0xffff);
+    gr = minifloat(vol >> 16);
+    step = (double)t->rate / OUT_RATE;
+    while (i < want) {
+        uint8_t buf[1024 * 32];
+        uint32_t end = t->loop_count && t->loop_end > t->pos ? t->loop_end : t->frames, n, used, newpos;
+        if (t->pos >= end) break;
+        n = end - t->pos;
+        if (n > sizeof buf / t->frame_size) n = (uint32_t)(sizeof buf / t->frame_size);
+        if (pread(t->shared_fd, buf, (size_t)n * t->frame_size, (off_t)(t->shared_off + (uint64_t)t->pos * t->frame_size))
+            != (ssize_t)((size_t)n * t->frame_size)) { t->dead = 1; return; }
+        for (; i < want; i++) {
+            uint32_t k = (uint32_t)t->phase;
+            const uint8_t *f0, *f1;
+            double fx;
+            if (k >= n) break;
+            fx = t->phase - k;
+            f0 = buf + (size_t)k * t->frame_size;
+            f1 = k + 1 < n ? f0 + t->frame_size : f0;
+            mix[2 * i] += gl * (float)(sample(f0, t, 0) + (sample(f1, t, 0) - sample(f0, t, 0)) * fx);
+            mix[2 * i + 1] += gr * (float)(sample(f0, t, 1) + (sample(f1, t, 1) - sample(f0, t, 1)) * fx);
+            t->phase += step;
+        }
+        used = (uint32_t)t->phase < n ? (uint32_t)t->phase : n;
+        t->phase -= used;
+        newpos = t->pos + used;
+        if (t->loop_count && newpos == t->loop_end) {
+            newpos = t->loop_start;
+            flags |= t->loop_count == -1 || --t->loop_count ? CBLK_LOOP_CYCLE : CBLK_LOOP_FINAL;
+        }
+        if (newpos == t->frames) flags |= CBLK_BUFFER_END;
+        t->pos = newpos;
+        total += used;
+        if (!used) break;
+    }
+    if (!total) {
+        if (t->pos >= t->frames && !t->loop_count) t->started = 0;   /* played out */
+        return;
+    }
+    s32(p, va, C_SERVER, c32(p, va, C_SERVER) + (int32_t)total);
+    {
+        int32_t ps = c32(p, va, S_POS_SEQ);
+        uint32_t pl[2] = { t->pos, (uint32_t)t->loop_count };
+        s32(p, va, S_POS_SEQ, ps + 1);
+        aoi_vm_write(&p->vm, va + S_POS, pl, sizeof pl, 0);
+        s32(p, va, S_POS_SEQ, ps + 2);
+    }
+    if (flags) s32(p, va, C_FLAGS, c32(p, va, C_FLAGS) | flags);
+    write_ts(p, va);
+    wake(p, va);
+}
+
 /* Mixes up to `want` output frames of track t into mix (stereo floats); moves its front. */
 static void mix_track(struct aoi_proc *p, struct track *t, float *mix, uint32_t want)
 {
@@ -246,21 +374,8 @@ static void mix_track(struct aoi_proc *p, struct track *t, float *mix, uint32_t 
     if (!used) return;
     s32(p, va, C_FRONT, front + (int32_t)used);
     s32(p, va, C_SERVER, c32(p, va, C_SERVER) + (int32_t)used);
-    {                                                  /* the timestamp: frames played now (server and "kernel") */
-        int64_t ts[13];
-        int32_t seq = c32(p, va, C_TS_SEQ);
-        memset(ts, 0, sizeof ts);
-        ts[1] = ts[3] = (uint32_t)c32(p, va, C_SERVER); /* LOCATION_SERVER, LOCATION_KERNEL */
-        ts[5 + 1] = ts[5 + 3] = aoi_mono_ns();
-        s32(p, va, C_TS_SEQ, seq + 1);                 /* SingleStateQueue: odd while written */
-        aoi_vm_write(&p->vm, va + C_TS, ts, sizeof ts, 0);
-        s32(p, va, C_TS_SEQ, seq + 2);
-    }
-    {                                                  /* room again: wake a writer (ServerProxy::releaseBuffer) */
-        int32_t old = c32(p, va, C_FUTEX);
-        s32(p, va, C_FUTEX, old | CBLK_FUTEX_WAKE);
-        if (!(old & CBLK_FUTEX_WAKE)) aoi_proc_futex_wake(p, va + C_FUTEX, 1 << 30);
-    }
+    write_ts(p, va);
+    wake(p, va);                                       /* room again: wake a writer */
 }
 
 static int any_started(struct aoi_af *af)
@@ -285,7 +400,7 @@ void aoi_af_tick(struct aoi_proc *p)
     if (n) {
         memset(mix, 0, sizeof(float) * 2 * n);
         for (k = 0; k < TRACKS; k++)
-            if (af->t[k].used && !af->t[k].dead) mix_track(p, &af->t[k], mix, n);
+            if (af->t[k].used && !af->t[k].dead) (af->t[k].is_static ? mix_static : mix_track)(p, &af->t[k], mix, n);
         for (i = 0; i < 2 * n; i++) {
             float v = mix[i] * 32767.0f;
             pcm[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : v);
@@ -322,7 +437,7 @@ static void track(struct aoi_proc *p, void *self, uint32_t code, struct aoi_read
         aoi_p32(rep, 1); aoi_p32(rep, 0);               /* ParcelFileDescriptor: non-null, no comm channel */
         aoi_pfd(rep, t->fd);
         aoi_p64(rep, 0);                               /* offset */
-        aoi_p64(rep, C_SIZE + (uint64_t)t->frames * t->frame_size);
+        aoi_p64(rep, C_SIZE + (t->is_static ? 0 : (uint64_t)t->frames * t->frame_size));
         aoi_p32(rep, 1);                               /* writeable */
         break;
     case 2:                                            /* start() -> int status */
@@ -330,10 +445,13 @@ static void track(struct aoi_proc *p, void *self, uint32_t code, struct aoi_read
         clock_start(p->af);
         ok(rep); aoi_p32(rep, 0);
         break;
-    case 3: t->stopping = 1; ok(rep); break;           /* stop(): plays what was written, to mStop */
+    case 3:                                            /* stop(): plays what was written, to mStop */
+        if (t->is_static) t->started = 0;              /* (static: at once; the app resets the position) */
+        else t->stopping = 1;
+        ok(rep); break;
     case 4: {                                          /* flush() */
         uint64_t va = cblk(p, t);
-        if (va) s32(p, va, C_FRONT, c32(p, va, C_REAR));
+        if (va && !t->is_static) s32(p, va, C_FRONT, c32(p, va, C_REAR));
         t->phase = 0;
         ok(rep);
         break;
@@ -353,7 +471,8 @@ static void create_track(struct aoi_proc *p, struct aoi_af *af, struct aoi_reade
     uint32_t end, cfg, fmt_end, rate, tag, chv, ch, pcm, size;
     int32_t flags, session;
     int64_t frames;
-    int k, fmt;
+    int k, fmt, shared = -1;
+    uint64_t shared_off = 0, shared_size = 0;
     struct track *t;
     if (!(end = parcelable(r, NULL))) { rep->status = -22; return; }   /* BAD_VALUE */
     skip_parcelable(r);                                                  /* attributes */
@@ -364,7 +483,19 @@ static void create_track(struct aoi_proc *p, struct aoi_af *af, struct aoi_reade
     aoi_r32(r); pcm = aoi_r32(r);                                        /* format: type, pcm */
     r->pos = cfg;
     skip_parcelable(r);                                                  /* client */
-    if (aoi_r32(r)) { r->pos -= 4; skip_parcelable(r); }                 /* sharedBuffer: MODE_STATIC */
+    {                                                                    /* @nullable sharedBuffer: MODE_STATIC */
+        uint32_t sb_end = parcelable(r, NULL);
+        if (sb_end) {                                                    /* SharedFileRegion */
+            if (aoi_r32(r)) {                                            /* ParcelFileDescriptor: non-null, */
+                aoi_r32(r); aoi_r32(r); aoi_r32(r);                      /* no comm channel; flat_binder_object */
+                shared = (int)aoi_r32(r);                                /* (type, flags), the fd */
+                aoi_r32(r); aoi_r64(r);
+            }
+            shared_off = aoi_r64(r);
+            shared_size = aoi_r64(r);
+            r->pos = sb_end;
+        }
+    }
     aoi_r32(r); aoi_r32(r);                                              /* notificationsPerBuffer, speed */
     r->pos += 28;                                                        /* the callback binder */
     size = aoi_r32(r);                                                   /* opPackageName (String16) */
@@ -384,7 +515,11 @@ static void create_track(struct aoi_proc *p, struct aoi_af *af, struct aoi_reade
     default: rep->status = -22; return;                                  /* (fixed point, compressed: not here) */
     }
     if (!rate) rate = OUT_RATE;
-    if (frames < 256) frames = (int64_t)rate / 10;                       /* the app left it to us: 100 ms */
+    if (shared >= 0) {                                                   /* static: the buffer's frames */
+        int hfd = aoi_proc_host_fd(p, shared);
+        if (hfd < 0 || shared_size < size * ch || (shared = dup(hfd)) < 0) { rep->status = -22; return; }
+        frames = (int64_t)(shared_size / (size * ch));
+    } else if (frames < 256) frames = (int64_t)rate / 10;                       /* the app left it to us: 100 ms */
     {
         uint32_t f = 256;
         while (f < frames && f < (1u << 20)) f <<= 1;                   /* a power of two: the ring's mask */
@@ -393,9 +528,13 @@ static void create_track(struct aoi_proc *p, struct aoi_af *af, struct aoi_reade
     for (k = 0; k < TRACKS && af->t[k].used && !af->t[k].dead; k++) {}
     if (k == TRACKS)                                                     /* full: any the app has let go of? */
         for (k = 0; k < TRACKS && (!af->t[k].seen || cblk(p, &af->t[k])); k++) {}
-    if (k == TRACKS) { rep->status = -12; return; }                      /* NO_MEMORY */
+    if (k == TRACKS) { if (shared >= 0) close(shared); rep->status = -12; return; }   /* NO_MEMORY */
     t = &af->t[k];
+    if (t->is_static && t->shared_fd >= 0) close(t->shared_fd);
     memset(t, 0, sizeof *t);
+    t->is_static = shared >= 0;
+    t->shared_fd = shared;
+    t->shared_off = shared_off;
     t->used = 1;
     t->channels = ch > 8 ? 8 : ch;
     t->format = (uint32_t)fmt;
@@ -405,7 +544,7 @@ static void create_track(struct aoi_proc *p, struct aoi_af *af, struct aoi_reade
     t->session = session ? session : (af->next_id += 8);
     t->port = (af->next_id += 8);
     snprintf(t->name, sizeof t->name, "memfd:AudioTrack-%d", t->port);
-    if ((t->fd = aoi_proc_memfd(p, t->name + 6, C_SIZE + (uint64_t)t->frames * t->frame_size)) < 0) {
+    if ((t->fd = aoi_proc_memfd(p, t->name + 6, C_SIZE + (t->is_static ? 0 : (uint64_t)t->frames * t->frame_size))) < 0) {
         t->used = 0; rep->status = -12; return;
     }
     {                                                                    /* the server side of the cblk */
@@ -532,7 +671,10 @@ void aoi_af_init(struct aoi_proc *p)
 
 void aoi_af_free(struct aoi_proc *p)
 {
+    int k;
     if (!p->af) return;
+    for (k = 0; k < TRACKS; k++)
+        if (p->af->t[k].is_static && p->af->t[k].shared_fd >= 0) close(p->af->t[k].shared_fd);
     if (p->af->out) fclose(p->af->out);
     free(p->af);
     p->af = NULL;
@@ -565,6 +707,7 @@ int aoi_af_snap(struct aoi_proc *p, FILE *f, int save)
     for (k = 0; k < TRACKS; k++) {
         struct track *t = &af->t[k];
         uint64_t va;
+        t->shared_fd = -1;                             /* (a host fd of the saved process) */
         if (!t->used) continue;
         t->started = 0;
         if (!t->dead && (va = cblk(p, t))) s32(p, va, C_FLAGS, c32(p, va, C_FLAGS) | CBLK_INVALID);

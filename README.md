@@ -12,7 +12,7 @@ is no writable-executable memory. Android's own ART may still JIT-compile hot Ja
 methods inside the guest, but what it produces is AArch64 guest code that the
 interpreter runs like any other.
 
-## What runs today (app 0.71)
+## What runs today (app 0.72)
 
 Tested on an iPhone 16 Pro (iOS 27) and, for every change, on the host
 first (`build/iostest`, the same code path as the phone):
@@ -20,7 +20,7 @@ first (`build/iostest`, the same code path as the phone):
 | App | State |
 |---|---|
 | Qalculate! (Compose, native GMP) | runs, computes, touch and keyboard; exchange rates over TLS (ECB's certificate fix in 0.56, not yet confirmed on the phone) |
-| cube.run (libGDX, OpenGL ES) | runs on the iPhone's GPU (ANGLE on Metal); no sound yet |
+| cube.run (libGDX, OpenGL ES) | runs on the iPhone's GPU (ANGLE on Metal); its SoundPool effects play since 0.72 (host-tested) |
 | WhatsApp | starts, EULA, on to its registration screen |
 | NewPipe | main UI and navigation |
 | Molly (Signal fork), Element (Matrix) | start to their first screens |
@@ -28,7 +28,7 @@ first (`build/iostest`, the same code path as the phone):
 | Kiwi / Cromite (Chromium browsers) | browser UI and New Tab page; web page content not shown yet |
 
 What an app gets: windows drawn by HWUI on the GPU (OpenGL ES through ANGLE on Metal),
-touch, the iOS keyboard, clipboard, back gesture, sound (AudioTrack, MediaPlayer, and
+touch, the iOS keyboard, clipboard, back gesture, sound (AudioTrack, SoundPool, MediaPlayer, and
 MediaCodec with Android's software codecs: AAC, MP3, Opus, Vorbis, H.264, VP9...), network (TCP/UDP, DNS, TLS with
 today's root store), storage, AndroidKeyStore, WebView, home-screen links per app, and a
 snapshot of the running app so the next launch resumes in about a second.

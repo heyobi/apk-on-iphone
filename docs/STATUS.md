@@ -662,6 +662,18 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**SoundPool plays: static AudioTracks (app 0.72).** Games' effects (SoundPool, so
+libGDX's Sound: cube.run) were silent: libsoundpool decodes a sound into a shared
+buffer (MemoryHeapBase, a memfd) and plays it as a MODE_STATIC AudioTrack, which
+core/af.c took for a streaming one. Now CreateTrackRequest's sharedBuffer
+(SharedFileRegion: fd, offset, size) makes a static track: its frames are read from
+a host dup of that memfd; the cblk's u.mStatic is served as
+StaticAudioTrackServerProxy does (the client's StaticAudioTrackState queue at 0xbc:
+position and loop with their sequences; the position/loop queue back at 0xdc;
+mServer; CBLK_LOOP_CYCLE / LOOP_FINAL / BUFFER_END; stop() at once). Loops are
+honoured (loop count -1: forever). tests/run_android.sh "SoundPool": aoi.SoundPoolTest
+loads a 0.5 s WAV (22.05 kHz) and plays it; $AOI_AUDIO_OUT holds 0.5 s of 440 Hz.
+
 **MediaPlayer plays (app 0.71).** Android's own MediaPlayer service (NuPlayer) runs in
 the app's process, with the extractors and the software codecs:
 - guest/media.c starts, on a native thread ("aoi-codecs"), what mediaserver's and
