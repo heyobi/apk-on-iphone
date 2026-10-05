@@ -668,7 +668,18 @@ them into OPENS / CRASH / NO-FRAME, with tools/appcheck.sh's to-do list per app.
 First finding: Element aborted in native SensorManager ("getService(SensorService)
 NULL"); "sensorservice" is now a native stand-in with no sensors (core/af.c), and
 Element opens. tools/iostest.c's AOI_APP_STOP_AFTER now counts from the app's start,
-not from before a compile. Results of the 17-app run: below when it ends.
+not from before a compile.
+Results, 17 open-source APKs from GitHub releases (host, 150 s each, no input):
+10 OPENS (Element, Molly, Cromite, Shattered Pixel Dungeon, Aegis, KeePassDX, Mihon,
+Jellyfin, Seal, Delta Chat), 1 intermittent (NewPipe: once aborted on a 112-byte read
+from a display-event BitTube, "partial events", with three apps at once; alone it opens
+twice in a row), 6 CRASH:
+- Material Files, Bitwarden: Firebase without Google Play services ("Default FirebaseApp
+  is not initialized"; Bitwarden then faults in its own native code).
+- Termux: bindService() of its own service failed.
+- LibreTube: "size must be > 0" in okio while the Application is created.
+- LocalSend (Flutter): WifiManager is null (no "wifi" service), then SIGSEGV.
+- Obtainium (Flutter): ends without a frame after its first-run log.
 
 **Deterministic mode, AOI_SEED (host tool).** AOI_SEED=n makes a run repeatable:
 AT_RANDOM, getrandom and /dev/urandom draw from a splitmix64 generator seeded with n,
