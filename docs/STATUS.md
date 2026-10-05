@@ -662,6 +662,16 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**Deterministic mode, AOI_SEED (host tool).** AOI_SEED=n makes a run repeatable:
+AT_RANDOM, getrandom and /dev/urandom draw from a splitmix64 generator seeded with n,
+and the clocks follow the instruction count (10 ns per guest instruction; the wall
+clock starts in 2023, so TLS certificate dates may fail). When every thread sleeps,
+the virtual clock jumps ahead instead of the host sleeping, so sleep loops end. Two
+runs with the same seed give identical syscall traces (toybox ls; ART hello world;
+OWASP UnCrackable Level 4's obfuscated native constructors, 1.94 B instructions).
+For replay debugging and analysis; unset, nothing changes. One process at a time:
+the generator and clock are global.
+
 **Runtime.exec: child processes (app 0.74).** An app's Runtime.exec / ProcessBuilder
 failed with "error=38, Function not implemented" (fork). Now (core/proc.c):
 - libopenjdk's childproc calls vfork() (clone CLONE_VM|CLONE_VFORK|SIGCHLD). The child

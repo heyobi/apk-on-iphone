@@ -158,6 +158,27 @@ static int all_zero(const uint8_t *b, size_t n)
     return 1;
 }
 
+extern int64_t aoi_mono_offset;
+/* Deterministic mode (experiment): AOI_SEED=n fixes every source of randomness
+ * and derives time from the instruction count (10 ns per guest instruction). */
+static int det_on = -1;
+static uint64_t det_state;
+static const volatile uint64_t *det_steps;
+static int64_t det_skew;                        /* virtual ns added while all threads sleep */
+static int det(void)
+{
+    if (det_on < 0) { const char *e = getenv("AOI_SEED"); det_on = e != NULL; det_state = e ? strtoull(e, NULL, 0) : 0; }
+    return det_on;
+}
+static uint64_t det_next(void)                  /* splitmix64 */
+{
+    uint64_t z = (det_state += 0x9e3779b97f4a7c15ull);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull; z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+static void det_fill(uint8_t *b, size_t n) { size_t i; for (i = 0; i < n; i++) b[i] = (uint8_t)det_next(); }
+static int64_t det_ns(void) { return 1000000000ll + (int64_t)(det_steps ? *det_steps : 0) * 10 + det_skew; }
+
 static int put(struct aoi_proc *p, uint64_t a, const void *src, uint64_t n)
 {
     a &= 0x00ffffffffffffffULL;
@@ -612,8 +633,9 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     execfn = push_str(p, &sp, path);
     platform = push_str(p, &sp, "aarch64");
     {
-        FILE *u = fopen("/dev/urandom", "rb");
-        if (!u || fread(random16, 1, 16, u) != 16) memset(random16, 0x5a, 16);
+        FILE *u = det() ? NULL : fopen("/dev/urandom", "rb");
+        if (det()) det_fill(random16, 16);
+        else if (!u || fread(random16, 1, 16, u) != 16) memset(random16, 0x5a, 16);
         if (u) fclose(u);
     }
     sp -= 16; rnd = sp; put(p, rnd, random16, 16);
@@ -933,6 +955,7 @@ static uint64_t block_and_retry(struct aoi_proc *p, int64_t ns)
 int64_t aoi_mono_ns(void)
 {
     struct timespec ts;
+    if (det()) return det_ns() + aoi_mono_offset;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec + aoi_mono_offset;
 }
@@ -997,7 +1020,8 @@ static int schedule(struct aoi_proc *p)
                 fprintf(p->trace, "\n");
             }
             ts.tv_sec = d / 1000000000; ts.tv_nsec = d % 1000000000;
-            nanosleep(&ts, NULL);
+            if (det()) det_skew += d > 0 ? d : 1; /* deterministic: skip real sleep, advance virtual clock */
+            else nanosleep(&ts, NULL);
         }
     }
     if (next != p->cur) {
@@ -1032,6 +1056,7 @@ static void thread_end(struct aoi_proc *p)
 
 enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
 {
+    det_steps = &p->cpu.steps;
     for (;;) {
         uint64_t end = p->cpu.steps + SLICE;
         enum aoi_stop st;
@@ -3479,6 +3504,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         clockid_t id = (a0 == 0 || a0 == 5 || a0 == 8) ? CLOCK_REALTIME : CLOCK_MONOTONIC;
         if (nr == NR_clock_getres) { ts.tv_sec = 0; ts.tv_nsec = 1; }
         else if (id == CLOCK_MONOTONIC) { int64_t m = aoi_mono_ns(); ts.tv_sec = m / 1000000000; ts.tv_nsec = m % 1000000000; }
+        else if (det()) { int64_t m = det_ns() + 1700000000000000000ll; ts.tv_sec = m / 1000000000; ts.tv_nsec = m % 1000000000; }
         else clock_gettime(id, &ts);
         t[0] = ts.tv_sec; t[1] = ts.tv_nsec;
         r = !a1 || put(p, a1, t, 16) ? 0 : err(L_EFAULT);
@@ -3488,6 +3514,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         struct timeval tv;
         int64_t t[2];
         gettimeofday(&tv, NULL);
+        if (det()) { int64_t m = det_ns() + 1700000000000000000ll; tv.tv_sec = m / 1000000000; tv.tv_usec = m % 1000000000 / 1000; }
         t[0] = tv.tv_sec; t[1] = tv.tv_usec;
         r = !a0 || put(p, a0, t, 16) ? 0 : err(L_EFAULT);
         break;
@@ -3588,7 +3615,20 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         }
         break;
     case NR_getrandom: {
-        int u = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        int u;
+        if (det()) {
+            uint8_t b[4096];
+            uint64_t done = 0, n;
+            while (done < a1) {
+                n = a1 - done < sizeof b ? a1 - done : sizeof b;
+                det_fill(b, n);
+                if (!put(p, a0 + done, b, n)) break;
+                done += n;
+            }
+            r = done ? done : err(L_EFAULT);
+            break;
+        }
+        u = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
         int64_t k = u < 0 ? -L_EIO : xfer(p, u, a0, a1, 1, -1);
         if (u >= 0) close(u);
         r = (uint64_t)k;
