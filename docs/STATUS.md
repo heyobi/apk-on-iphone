@@ -662,6 +662,14 @@ WebView's GPU thread), AOI_APP_TRACE=file (every syscall of the app run). Cromit
 Molly still reach the screens they did. The phone root gains the WebView, its
 libraries and libmedia_jni's (ios/android-files.txt, the end).
 
+**Compatibility run; a sensor service (2026-10-05).** tools/compat.sh ROOT OUT APK...
+installs, compiles and launches each APK through build/iostest-gpu for $RUN s and sorts
+them into OPENS / CRASH / NO-FRAME, with tools/appcheck.sh's to-do list per app.
+First finding: Element aborted in native SensorManager ("getService(SensorService)
+NULL"); "sensorservice" is now a native stand-in with no sensors (core/af.c), and
+Element opens. tools/iostest.c's AOI_APP_STOP_AFTER now counts from the app's start,
+not from before a compile. Results of the 17-app run: below when it ends.
+
 **Deterministic mode, AOI_SEED (host tool).** AOI_SEED=n makes a run repeatable:
 AT_RANDOM, getrandom and /dev/urandom draw from a splitmix64 generator seeded with n,
 and the clocks follow the instruction count (10 ns per guest instruction; the wall

@@ -152,10 +152,6 @@ int main(int argc, char **argv)
         aoi_android_compile_hold(1);
         pthread_create(&t, NULL, compile_let_go, getenv("AOI_COMPILE_HOLD"));
     }
-    if (getenv("AOI_APP_STOP_AFTER")) {             /* stop the app after N s (a hang: its threads) */
-        pthread_t t;
-        pthread_create(&t, NULL, stop_after, getenv("AOI_APP_STOP_AFTER"));
-    }
     if (getenv("AOI_ANDROID_ROOT") && getenv("AOI_APP_DATA")) {   /* the app's "Uygulama" button */
         const char *png = getenv("AOI_APP_FRAME") ? getenv("AOI_APP_FRAME") : "/tmp/aoi-frame.ppm";
         const char *log = getenv("AOI_APP_LOG") ? getenv("AOI_APP_LOG") : "/tmp/aoi-app.log";
@@ -179,6 +175,10 @@ int main(int argc, char **argv)
                 aoi_android_compile_state(getenv("AOI_APP_DATA"), st, sizeof st);
                 printf("compile: state \"%s\"\n", st);
             }
+        }
+        if (getenv("AOI_APP_STOP_AFTER")) {         /* stop the app N s after it starts (after a */
+            pthread_t t;                            /* compile): a hang shows its threads */
+            pthread_create(&t, NULL, stop_after, getenv("AOI_APP_STOP_AFTER"));
         }
         if (getenv("AOI_APP_HIDDEN")) {            /* out of sight until saved (after a compile); */
             if (getenv("AOI_APP_SHOW_AFTER")) {     /* shown after N s (a tap meanwhile) */

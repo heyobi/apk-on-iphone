@@ -664,6 +664,10 @@ void aoi_af_init(struct aoi_proc *p)
     aoi_binder_native(p, "media.extractor", "android.media.IMediaExtractorService", resources, af);
     aoi_binder_native(p, "media.codec", "android.hardware.IOMX", resources, af);
     aoi_binder_native(p, "media.metrics", "android.media.IMediaMetricsService", resources, af);   /* (waited for) */
+    /* ISensorServer: no sensors. Native SensorManager aborts without the service
+     * ("getService(SensorService) NULL"); with it an app finds no sensors. Its calls
+     * answer a 0 (getSensorList: none; isDataInjectionEnabled: false). */
+    aoi_binder_native(p, "sensorservice", "android.gui.SensorServer", resources, af);
     /* IPermissionController: native services check permissions with it (MediaCodec's
      * resource manager, AudioFlinger's clients): one app, its permissions granted */
     aoi_binder_native(p, "permission", "android.os.IPermissionController", permissions, af);
