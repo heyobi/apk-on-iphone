@@ -13,6 +13,12 @@
 #include "tty.h"
 
 #include <dirent.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>                     /* os_proc_available_memory: /proc/meminfo */
+#endif
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -54,6 +60,14 @@ static int lx_newpid(void);                     /* Linux mode: processes (see lx
 static int lx_take(struct aoi_proc *p);
 static void lx_unregister(struct aoi_proc *p);
 static void lx_register(struct aoi_proc *p);
+static void lx_stop(struct aoi_proc *p, int sig);
+static void lx_cont(struct aoi_proc *p);
+static int lx_stopped_wait(struct aoi_proc *p);
+static char lx_procdir[AOI_PATH];               /* Linux mode: the host tree behind /proc */
+static int64_t lx_boot_ns;                       /* Linux mode: when the first process started */
+static void lx_proc_refresh(void);
+static int lx_proc_file(struct aoi_proc *p, const char *g, FILE *t);
+static int lx_proc_link(struct aoi_proc *p, const char *g, char *out, size_t n);
 
 /* A vfork()ed child running in its parent until its execve (see vfork_start). */
 struct aoi_vfork {
@@ -345,6 +359,10 @@ static int at_path(struct aoi_proc *p, int64_t dirfd, uint64_t upath, int follow
 /* The host path for a resolved guest path (devices pass through). */
 static void to_host(struct aoi_proc *p, const char *g, char *out)
 {
+    if (p->linux_mode && !strncmp(g, "/proc", 5) && (!g[5] || g[5] == '/')) {   /* Linux mode: the live /proc tree */
+        lx_proc_refresh();
+        if (lx_procdir[0] && join(out, AOI_PATH, lx_procdir, g + 5)) return;
+    }
     if (is_passthrough(g)) join(out, AOI_PATH, "", g);
     else host_path(p, g, out);
 }
@@ -1082,6 +1100,7 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
         enum aoi_stop st;
         if (max_steps && end > max_steps) end = max_steps;
         if (p->xsig && !lx_take(p)) { shm_sync(p, 0, ~0ULL >> 1, 1); return AOI_STOP_EXIT; }   /* from another process */
+        if (p->stopped && !lx_stopped_wait(p)) { shm_sync(p, 0, ~0ULL >> 1, 1); return AOI_STOP_EXIT; }   /* Ctrl-Z */
         if (!sig_pending(p)) return p->cpu.stop;
         if (p->stop_request) return AOI_RUN;
         while (p->pause_request && !p->stop_request) {             /* (a background compile: the phone is hot) */
@@ -1298,6 +1317,19 @@ static int proc_file(struct aoi_proc *p, const char *g)
     const char *f;
     FILE *t;
     int fd;
+    if (p->linux_mode) {                                           /* every process's, the machine's */
+        int k;
+        if (!(t = tmpfile())) return -1;
+        if ((k = lx_proc_file(p, g, t)) != 0) {
+            if (k < 0) { fclose(t); return -1; }
+            fflush(t);
+            fd = dup(fileno(t));
+            fclose(t);
+            if (fd >= 0) lseek(fd, 0, SEEK_SET);
+            return fd;
+        }
+        fclose(t);
+    }
     if (!strncmp(g, "/proc/self/", 11)) f = g + 11;
     else if (!strncmp(g, "/proc/thread-self/", 18)) f = g + 18;
     else if (!strncmp(g, "/proc/1000/", 11)) f = g + 11;
@@ -1481,7 +1513,7 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         if (*ev_count(p, f)) r |= EP_IN;
         if (*ev_count(p, f) < 0xfffffffffffffffeULL) r |= EP_OUT;
         break;
-    case AOI_FD_FILE: case AOI_FD_PIPE: case AOI_FD_INET: case AOI_FD_DNS: {
+    case AOI_FD_FILE: case AOI_FD_PIPE: case AOI_FD_INET: case AOI_FD_DNS: case AOI_FD_ULISTEN: {
         struct pollfd pf;
         pf.fd = f->host; pf.events = (short)((want & EP_IN ? POLLIN : 0) | (want & EP_OUT ? POLLOUT : 0)); pf.revents = 0;
         if (poll(&pf, 1, 0) > 0) {
@@ -1493,10 +1525,14 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         break;
     }
     case AOI_FD_LOGD: r |= EP_OUT; break;
-    case AOI_FD_TTY:
-        if (aoi_console && aoi_tty_readable(aoi_console)) r |= EP_IN;
+    case AOI_FD_TTY: case AOI_FD_PTM: {
+        int m = 0;
+        struct aoi_tty *t = aoi_tty_of_host(f->host, &m);
+        if (!t) t = aoi_console;
+        if (t && (m ? aoi_tty_master_readable(t) : aoi_tty_readable(t))) r |= EP_IN;
         r |= EP_OUT;
         break;
+    }
     default: break;                                                /* sockets, binder, epoll, uffd: never */
     }
     return r & (want | EP_ERR | EP_HUP);
@@ -1632,19 +1668,40 @@ static mode_t lx_mode(struct aoi_proc *p, int fd, const char *h, mode_t m)
 
 /* ---------- the terminal (Linux mode, core/tty.c) ---------- */
 
+/* /dev/tty, /dev/console, /dev/tty0, /dev/pts/N, /dev/ptmx */
 static int is_tty_path(const char *g)
 {
-    return !strcmp(g, "/dev/tty") || !strcmp(g, "/dev/console") || !strcmp(g, "/dev/pts/0") || !strcmp(g, "/dev/tty0");
+    return !strcmp(g, "/dev/tty") || !strcmp(g, "/dev/console") || !strcmp(g, "/dev/tty0") || !strcmp(g, "/dev/ptmx") ||
+           (!strncmp(g, "/dev/pts/", 9) && g[9] >= '0' && g[9] <= '9');
 }
 
-/* A terminal looks like /dev/pts/0: a character device, major 136. */
-static void tty_stat(uint8_t *sbuf)
+/* The terminal behind a tty path for this process (NULL: none), *master for /dev/ptmx. */
+static struct aoi_tty *tty_of_path(struct aoi_proc *p, const char *g)
 {
-    uint32_t mode = 020620;
-    uint64_t rdev = 136 << 8, size = 0;
+    if (!strncmp(g, "/dev/pts/", 9)) return aoi_tty_get_index(atoi(g + 9));
+    if (!strcmp(g, "/dev/tty")) return p->ctty > 0 ? aoi_tty_get_index(p->ctty - 1) : aoi_console;
+    return aoi_console;
+}
+
+/* A terminal looks like /dev/pts/N (major 136), the multiplexer like /dev/ptmx (5, 2). */
+static void tty_stat(uint8_t *sbuf, int index, int ptmx)
+{
+    uint32_t mode = ptmx ? 020666 : 020620;
+    uint64_t rdev = ptmx ? (5 << 8 | 2) : (uint64_t)(136 << 8 | (index & 0xff)), size = 0;
     memcpy(sbuf + 16, &mode, 4);
     memcpy(sbuf + 32, &rdev, 8);
     memcpy(sbuf + 48, &size, 8);
+}
+
+/* stat of a tty fd or path: 1 if it was one (sbuf patched). */
+static int tty_stat_fd(struct aoi_proc_fd *f, uint8_t *sbuf)
+{
+    int m = 0;
+    struct aoi_tty *t;
+    if (!f || (f->kind != AOI_FD_TTY && f->kind != AOI_FD_PTM)) return 0;
+    t = aoi_tty_of_host(f->host, &m);
+    tty_stat(sbuf, t ? aoi_tty_index(t) : 0, f->kind == AOI_FD_PTM);
+    return 1;
 }
 
 /* struct stat (Linux arm64, 128 bytes) -> struct statx (256 bytes, STATX_BASIC_STATS). */
@@ -1672,28 +1729,40 @@ static void statx_from_stat(const uint8_t *s, uint8_t *x)
     v = (uint32_t)((dev & 0xff) | ((dev >> 12) & 0xfff00)); memcpy(x + 140, &v, 4);
 }
 
+static struct aoi_tty *fd_tty(struct aoi_proc_fd *f, int *master)
+{
+    struct aoi_tty *t = aoi_tty_of_host(f->host, master);
+    return t ? t : (master && (*master = 0), aoi_console);
+}
+
 static uint64_t tty_read(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t n)
 {
     static _Thread_local char b[16384];
+    int m = 0;
+    struct aoi_tty *t = fd_tty(f, &m);
     long k;
-    if (!aoi_console) return 0;
-    if (!n) return 0;
-    k = aoi_tty_read(aoi_console, b, n < sizeof b ? n : sizeof b);
+    if (!t || !n) return 0;
+    k = m ? aoi_tty_master_read(t, b, n < sizeof b ? n : sizeof b) : aoi_tty_read(t, b, n < sizeof b ? n : sizeof b);
     if (k < 0) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 5000000);
     return put(p, buf, b, (uint64_t)k) ? (uint64_t)k : err(L_EFAULT);
 }
 
-static uint64_t tty_write(struct aoi_proc *p, uint64_t buf, uint64_t n)
+static uint64_t tty_write(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t n)
 {
     static _Thread_local char b[16384];
     uint64_t done = 0;
+    int m = 0;
+    struct aoi_tty *t = fd_tty(f, &m);
     while (done < n) {
-        uint64_t k = n - done < sizeof b ? n - done : sizeof b;
+        uint64_t k = n - done < sizeof b ? n - done : sizeof b, w;
         if (!get(p, buf + done, b, k)) return done ? done : err(L_EFAULT);
-        if (aoi_console) aoi_tty_write(aoi_console, b, (size_t)k);
-        else if (write(1, b, (size_t)k) < 0) break;
-        done += k;
+        if (!t) { if (write(1, b, (size_t)k) < 0) break; w = k; }
+        else if (m) { aoi_tty_input(t, b, (size_t)k); w = k; }    /* the master side types into the terminal */
+        else w = aoi_tty_write(t, b, (size_t)k);
+        done += w;
+        if (w < k) break;                                          /* a guest master's buffer is full */
     }
+    if (!done && n) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 2000000);
     return done;
 }
 
@@ -1702,47 +1771,89 @@ static uint64_t tty_ioctl(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t re
     uint8_t tio[44];
     uint16_t ws[4];
     int32_t v;
-    if (!aoi_console) return err(L_ENOTTY);
+    int m = 0;
+    struct aoi_tty *t = fd_tty(f, &m);
+    if (!t) return err(L_ENOTTY);
     switch (req) {
-    case 0x5401: aoi_tty_get(aoi_console, tio); return put(p, arg, tio, 36) ? 0 : err(L_EFAULT);   /* TCGETS */
-    case 0x802c542a: aoi_tty_get(aoi_console, tio); return put(p, arg, tio, 44) ? 0 : err(L_EFAULT);   /* TCGETS2 */
+    case 0x5401: aoi_tty_get(t, tio); return put(p, arg, tio, 36) ? 0 : err(L_EFAULT);   /* TCGETS */
+    case 0x802c542a: aoi_tty_get(t, tio); return put(p, arg, tio, 44) ? 0 : err(L_EFAULT);   /* TCGETS2 */
     case 0x5402: case 0x5403: case 0x5404:                         /* TCSETS, TCSETSW, TCSETSF */
         if (!get(p, arg, tio, 36)) return err(L_EFAULT);
-        aoi_tty_set(aoi_console, tio, 36, req == 0x5404);
+        aoi_tty_set(t, tio, 36, req == 0x5404);
         return 0;
     case 0x402c542b: case 0x402c542c: case 0x402c542d:             /* TCSETS2, TCSETSW2, TCSETSF2 */
         if (!get(p, arg, tio, 44)) return err(L_EFAULT);
-        aoi_tty_set(aoi_console, tio, 44, req == 0x402c542d);
+        aoi_tty_set(t, tio, 44, req == 0x402c542d);
         return 0;
-    case 0x5413: aoi_tty_winsize(aoi_console, ws); return put(p, arg, ws, 8) ? 0 : err(L_EFAULT);   /* TIOCGWINSZ */
-    case 0x5414:                                                   /* TIOCSWINSZ */
+    case 0x5413: aoi_tty_winsize(t, ws); return put(p, arg, ws, 8) ? 0 : err(L_EFAULT);   /* TIOCGWINSZ */
+    case 0x5414: {                                                 /* TIOCSWINSZ: a change sends SIGWINCH */
+        uint16_t old[4];
         if (!get(p, arg, ws, 8)) return err(L_EFAULT);
-        aoi_tty_set_winsize(aoi_console, ws);
+        aoi_tty_winsize(t, old);
+        if (old[0] != ws[0] || old[1] != ws[1]) aoi_tty_resize(t, ws[1], ws[0]);
+        aoi_tty_set_winsize(t, ws);
         return 0;
-    case 0x540f: v = aoi_tty_pgrp ? aoi_tty_pgrp : p->pgid; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPGRP */
+    }
+    case 0x540f: v = aoi_tty_fg(t) ? aoi_tty_fg(t) : p->pgid; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPGRP */
     case 0x5410:                                                   /* TIOCSPGRP */
         if (!get(p, arg, &v, 4)) return err(L_EFAULT);
-        aoi_tty_pgrp = v;
-        if (p->trace) fprintf(p->trace, "[tty] foreground group %d\n", v);
+        aoi_tty_set_fg(t, v);
+        if (p->trace) fprintf(p->trace, "[tty] pts/%d foreground group %d\n", aoi_tty_index(t), v);
         return 0;
     case 0x5429: v = p->sid; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGSID */
-    case 0x540e: case 0x5422: case 0x540a: case 0x5409: case 0x5425: return 0;   /* TIOCSCTTY, TIOCNOTTY, TCXONC, TCSBRK(P) */
-    case 0x540b: if (arg != 1) aoi_tty_flush(aoi_console); return 0;   /* TCFLSH: input (or both) */
-    case 0x541b: v = (int32_t)aoi_tty_pending(aoi_console); return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* FIONREAD */
+    case 0x540e: p->ctty = aoi_tty_index(t) + 1; if (!aoi_tty_fg(t)) aoi_tty_set_fg(t, p->pgid); return 0;   /* TIOCSCTTY */
+    case 0x5422: p->ctty = 0; return 0;                            /* TIOCNOTTY */
+    case 0x540a: case 0x5409: case 0x5425: return 0;               /* TCXONC, TCSBRK(P) */
+    case 0x540b: if (arg != 1) aoi_tty_flush(t); return 0;         /* TCFLSH: input (or both) */
+    case 0x541b: v = (int32_t)aoi_tty_pending(t); return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* FIONREAD */
     case 0x5411: v = 0; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCOUTQ */
     case 0x5421: if (!get(p, arg, &v, 4)) return err(L_EFAULT); f->nonblock = v != 0; return 0;   /* FIONBIO */
-    case 0x80045430: v = 0; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPTN */
+    case 0x80045430: v = aoi_tty_index(t); return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPTN */
+    case 0x40045431: return 0;                                     /* TIOCSPTLCK: unlocked */
+    case 0x5441: {                                                 /* TIOCGPTPEER: the slave's fd */
+        int h, n;
+        if (!m) return err(L_EINVAL);
+        if ((h = aoi_tty_host_fd(t, 0)) < 0) return herr();
+        if ((n = fd_new(p, h, "/dev/pts/0", 0)) < 0) { close(h); return err(L_EMFILE); }
+        snprintf(p->fd[n].path, AOI_PATH, "/dev/pts/%d", aoi_tty_index(t));
+        p->fd[n].kind = AOI_FD_TTY;
+        p->fd[n].nonblock = (arg & 04000) != 0;
+        p->fd[n].cloexec = (arg & 02000000) != 0;
+        return (uint64_t)n;
+    }
     default:
         if (p->trace) fprintf(p->trace, "[tty] ioctl %#llx not implemented\n", (unsigned long long)req);
         return err(L_EINVAL);
     }
 }
 
-void aoi_proc_attach_tty(struct aoi_proc *p)
+/* open() of a terminal path: the guest fd, or an error. */
+static uint64_t tty_open(struct aoi_proc *p, const char *g, uint64_t flags)
+{
+    struct aoi_tty *t;
+    int master = !strcmp(g, "/dev/ptmx"), h, n;
+    t = master ? aoi_tty_new_pty() : tty_of_path(p, g);
+    if (!t) return err(master ? L_ENOSPC : 6);                     /* ENXIO */
+    if ((h = aoi_tty_host_fd(t, master)) < 0) return herr();
+    if ((n = fd_new(p, h, master ? "/dev/ptmx" : "/dev/pts/0", 0)) < 0) { close(h); return err(L_EMFILE); }
+    if (!master) snprintf(p->fd[n].path, AOI_PATH, "/dev/pts/%d", aoi_tty_index(t));
+    p->fd[n].kind = master ? AOI_FD_PTM : AOI_FD_TTY;
+    p->fd[n].nonblock = (flags & 04000) != 0;
+    p->fd[n].cloexec = (flags & 02000000) != 0;
+    if (!master && !(flags & 0400) && !p->ctty && t != aoi_console && p->sid == p->pid) {   /* a session leader's */
+        p->ctty = aoi_tty_index(t) + 1;                            /* first terminal (not O_NOCTTY) */
+        if (!aoi_tty_fg(t)) aoi_tty_set_fg(t, p->pgid);
+    }
+    return (uint64_t)n;
+}
+
+void aoi_proc_attach_tty(struct aoi_proc *p) { aoi_proc_attach_tty_to(p, aoi_console); }
+
+void aoi_proc_attach_tty_to(struct aoi_proc *p, struct aoi_tty *tt)
 {
     int i;
     for (i = 0; i < 3; i++) {
-        int h = open("/dev/null", O_RDWR | O_CLOEXEC);
+        int h = tt ? aoi_tty_host_fd(tt, 0) : open("/dev/null", O_RDWR | O_CLOEXEC);
         if (h < 0) continue;
         if (p->fd[i].used && p->fd[i].host > 2) close(p->fd[i].host);
         p->fd[i].used = 1;
@@ -1750,8 +1861,9 @@ void aoi_proc_attach_tty(struct aoi_proc *p)
         p->fd[i].kind = AOI_FD_TTY;
         p->fd[i].nonblock = 0;
         p->fd[i].cloexec = 0;
-        snprintf(p->fd[i].path, AOI_PATH, "/dev/pts/0");
+        snprintf(p->fd[i].path, AOI_PATH, "/dev/pts/%d", tt ? aoi_tty_index(tt) : 0);
     }
+    if (tt) { p->ctty = aoi_tty_index(tt) + 1; aoi_tty_set_fg(tt, p->pgid); }
 }
 
 static uint64_t sys_ppoll(struct aoi_proc *p, uint64_t fds, uint64_t nfds, uint64_t tsp)
@@ -2391,6 +2503,7 @@ static void note_cloexec(struct aoi_proc *p, uint64_t nr, uint64_t a0, uint64_t 
 struct aoi_child {
     int pid;
     volatile int done, status;                  /* wait4's status: code << 8, or the signal */
+    volatile int stop_sig, stop_new, cont_new;  /* job control: stopped by, not yet reported (WUNTRACED/WCONTINUED) */
     volatile int orphan;                        /* the parent went first: the thread frees this */
     struct aoi_proc *proc;
 };
@@ -2623,6 +2736,8 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
     if (!(ch = child_new(p))) { aoi_proc_free(np); free(np); return err(L_ENOMEM); }
     ch->pid = p->vf->pid;
     ch->proc = np;
+    np->me_child = ch;
+    np->start_ns = now_ns();
     if (np->linux_mode) lx_register(np);
     if (spawn_thread(ch)) {
         aoi_proc_free(np); free(np);
@@ -2732,13 +2847,58 @@ static int lx_take(struct aoi_proc *p)
             p->term_sig = 9; p->cpu.exit_code = 128 + 9; p->cpu.stop = AOI_STOP_EXIT;
             return 0;
         }
-        if (p->sigact[sig][0] == 0 && sig >= 19 && sig <= 22) continue;   /* stop signals: no job control yet */
+        if (sig == 19 || (sig >= 20 && sig <= 22 && p->sigact[sig][0] == 0)) {   /* SIGSTOP, or TSTP/TTIN/TTOU unhandled */
+            lx_stop(p, sig);
+            continue;
+        }
+        if (sig == 18) {                                           /* SIGCONT: on again; then its handler, if any */
+            if (p->stopped) lx_cont(p);
+            if (p->sigact[18][0] <= 1) continue;
+        }
         i = p->cur;
         if (p->th[i].state == AOI_T_FREE || (p->th[i].sigmask & SIGBIT(sig)))
             for (k = 0; k < AOI_PROC_THREADS; k++)
                 if (p->th[k].state != AOI_T_FREE && !(p->th[k].sigmask & SIGBIT(sig))) { i = k; break; }
         if (p->trace) fprintf(p->trace, "[sig] %d from another process to %d\n", sig, p->th[i].tid);
         if (!thread_signal(p, i, sig)) return 0;
+    }
+    return 1;
+}
+
+/* Job control: the process stops (its parent sees it with WUNTRACED, gets SIGCHLD). */
+static void lx_stop(struct aoi_proc *p, int sig)
+{
+    struct aoi_child *ch = p->me_child;
+    if (p->stopped) return;
+    p->stopped = sig;
+    if (p->trace) fprintf(p->trace, "[proc] %d stopped by signal %d\n", p->pid, sig);
+    if (ch) { ch->stop_sig = sig; ch->cont_new = 0; __atomic_store_n(&ch->stop_new, 1, __ATOMIC_SEQ_CST); }
+    if (p->ppid) lx_post_pid(p->ppid, 17);
+}
+
+static void lx_cont(struct aoi_proc *p)
+{
+    struct aoi_child *ch = p->me_child;
+    p->stopped = 0;
+    if (p->trace) fprintf(p->trace, "[proc] %d continued\n", p->pid);
+    if (ch) { ch->stop_new = 0; __atomic_store_n(&ch->cont_new, 1, __ATOMIC_SEQ_CST); }
+    if (p->ppid) lx_post_pid(p->ppid, 17);
+}
+
+/* While stopped: only SIGKILL and SIGCONT are taken; the rest wait in xsig, as Linux
+ * keeps them pending. 0 if killed. */
+static int lx_stopped_wait(struct aoi_proc *p)
+{
+    while (p->stopped && !p->stop_request) {
+        struct timespec ts = { 0, 10000000 };
+        uint64_t keep = SIGBIT(9) | SIGBIT(18), x = __atomic_fetch_and(&p->xsig, ~keep, __ATOMIC_SEQ_CST) & keep;
+        if (x & SIGBIT(9)) { p->term_sig = 9; p->cpu.exit_code = 128 + 9; p->cpu.stop = AOI_STOP_EXIT; return 0; }
+        if (x & SIGBIT(18)) {
+            lx_cont(p);
+            if (p->sigact[18][0] > 1) __atomic_or_fetch(&p->xsig, SIGBIT(18), __ATOMIC_SEQ_CST);   /* (its handler) */
+            break;
+        }
+        nanosleep(&ts, NULL);
     }
     return 1;
 }
@@ -2808,12 +2968,303 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd)
     p->pid = p->pgid = p->sid = GUEST_PID;
     p->ppid = 1;
     p->th[0].tid = GUEST_PID;
+    p->start_ns = now_ns();
+    if (!lx_boot_ns) lx_boot_ns = p->start_ns;
     if (cwd && !resolve(p, "/", cwd, 1, g)) {
         host_path(p, g, h);
         if (h[0] && !stat(h, &st) && S_ISDIR(st.st_mode)) snprintf(p->cwd, sizeof p->cwd, "%s", g);
     }
     lx_register(p);
     if (!aoi_tty_pgrp) aoi_tty_pgrp = p->pgid;
+}
+
+/* ---------- Linux mode: /proc for every process (ps, top, htop, free, uptime) ----------
+ * The directory tree lives in a host temp directory (a dir per live pid, plus self, the
+ * global files, sys/...) refreshed when the guest looks at /proc; what a file contains is
+ * made when it is opened (lx_proc_file). The machine figures are the phone's. */
+
+static int64_t lx_boot_ns;
+static char lx_procdir[AOI_PATH];
+static pthread_mutex_t lx_proc_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void lx_mem(uint64_t *total, uint64_t *avail)
+{
+    long pages = sysconf(_SC_PHYS_PAGES), ps = sysconf(_SC_PAGESIZE);
+    *total = pages > 0 && ps > 0 ? (uint64_t)pages * (uint64_t)ps : 4ULL << 30;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    *avail = (uint64_t)os_proc_available_memory();
+#elif defined(_SC_AVPHYS_PAGES)
+    { long av = sysconf(_SC_AVPHYS_PAGES); *avail = av > 0 && ps > 0 ? (uint64_t)av * (uint64_t)ps : *total / 2; }
+#else
+    *avail = *total / 2;
+#endif
+    if (*avail > *total) *avail = *total;
+}
+
+static void touchf(const char *dir, const char *name)
+{
+    char path[AOI_PATH];
+    int fd;
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    if ((fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0444)) >= 0) close(fd);
+}
+
+static void rmtree(const char *dir)
+{
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    char path[AOI_PATH];
+    if (!d) return;
+    while ((e = readdir(d))) {
+        struct stat st;
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        if (!lstat(path, &st) && S_ISDIR(st.st_mode)) rmtree(path); else unlink(path);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+static const char *const lx_pid_files[] = { "stat", "status", "cmdline", "comm", "environ", "statm", "maps",
+                                            "io", "limits", "oom_score_adj", "cgroup", "mountinfo", NULL };
+
+static void lx_piddir(const char *base, const char *name)
+{
+    char d[AOI_PATH], sub[AOI_PATH];
+    int i;
+    snprintf(d, sizeof d, "%s/%s", base, name);
+    if (mkdir(d, 0555) && errno != EEXIST) return;
+    for (i = 0; lx_pid_files[i]; i++) touchf(d, lx_pid_files[i]);
+    snprintf(sub, sizeof sub, "%s/task", d); mkdir(sub, 0555);
+    snprintf(sub, sizeof sub, "%s/fd", d); mkdir(sub, 0555);
+}
+
+/* Brings the host tree up to date with the live processes (at most every 0.3 s). */
+static void lx_proc_refresh(void)
+{
+    static int64_t last;
+    int64_t now = now_ns();
+    char sub[AOI_PATH];
+    int pids[LX_PROCS], n = 0, i;
+    DIR *d;
+    struct dirent *e;
+    pthread_mutex_lock(&lx_proc_mu);
+    if (!lx_procdir[0]) {
+        static const char *const top[] = { "meminfo", "cpuinfo", "uptime", "loadavg", "stat", "version", "mounts",
+                                           "filesystems", "cmdline", "swaps", "devices", "partitions", NULL };
+        const char *tmp = getenv("TMPDIR");
+        snprintf(lx_procdir, sizeof lx_procdir, "%s/aoiproc-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+        if (!mkdtemp(lx_procdir)) { lx_procdir[0] = 0; pthread_mutex_unlock(&lx_proc_mu); return; }
+        for (i = 0; top[i]; i++) touchf(lx_procdir, top[i]);
+        lx_piddir(lx_procdir, "self");
+        lx_piddir(lx_procdir, "thread-self");
+        snprintf(sub, sizeof sub, "%s/sys", lx_procdir); mkdir(sub, 0555);
+        snprintf(sub, sizeof sub, "%s/sys/kernel", lx_procdir); mkdir(sub, 0555);
+        snprintf(sub, sizeof sub, "%s/sys/kernel/random", lx_procdir); mkdir(sub, 0555);
+        snprintf(sub, sizeof sub, "%s/sys/fs", lx_procdir); mkdir(sub, 0555);
+        snprintf(sub, sizeof sub, "%s/sys/kernel", lx_procdir);
+        touchf(sub, "pid_max"); touchf(sub, "osrelease"); touchf(sub, "ostype"); touchf(sub, "hostname");
+        touchf(sub, "randomize_va_space"); touchf(sub, "ngroups_max"); touchf(sub, "cap_last_cap");
+        snprintf(sub, sizeof sub, "%s/sys/kernel/random", lx_procdir); touchf(sub, "boot_id"); touchf(sub, "uuid");
+        snprintf(sub, sizeof sub, "%s/sys/fs", lx_procdir); touchf(sub, "nr_open"); touchf(sub, "file-max");
+        last = 0;
+    }
+    if (now - last < 300000000) { pthread_mutex_unlock(&lx_proc_mu); return; }
+    last = now;
+    pthread_mutex_lock(&lx_mu);
+    for (i = 0; i < LX_PROCS; i++) if (lx_procs[i]) pids[n++] = lx_procs[i]->pid;
+    pthread_mutex_unlock(&lx_mu);
+    for (i = 0; i < n; i++) { char nm[16]; snprintf(nm, sizeof nm, "%d", pids[i]); lx_piddir(lx_procdir, nm); }
+    if ((d = opendir(lx_procdir))) {                               /* the dead go */
+        while ((e = readdir(d))) {
+            int pid = atoi(e->d_name), k;
+            if (pid <= 0) continue;
+            for (k = 0; k < n && pids[k] != pid; k++) {}
+            if (k == n) { snprintf(sub, sizeof sub, "%s/%s", lx_procdir, e->d_name); rmtree(sub); }
+        }
+        closedir(d);
+    }
+    pthread_mutex_unlock(&lx_proc_mu);
+}
+
+/* What /proc/<pid>/... shows of a process, copied under the registry's lock. */
+struct lx_pinfo {
+    int pid, ppid, pgid, sid, tty, nthreads, fg;
+    char state, comm[16], cmdline[AOI_PATH], exe[AOI_PATH], cwd[AOI_PATH];
+    size_t cmdline_len;
+    uint64_t steps, rss, vsize;
+    int64_t start_ns;
+    uint32_t cred[6];
+};
+
+static void lx_pinfo_of(struct aoi_proc *q, struct lx_pinfo *o)
+{
+    int i, busy = 0;
+    const char *b = strrchr(q->exe, '/');
+    memset(o, 0, sizeof *o);
+    o->pid = PID(q); o->ppid = q->ppid ? q->ppid : 1; o->pgid = q->pgid; o->sid = q->sid;
+    for (i = 0; i < AOI_PROC_THREADS; i++)
+        if (q->th[i].state != AOI_T_FREE) { o->nthreads++; if (q->th[i].state == AOI_T_RUN) busy = 1; }
+    o->state = q->stopped ? 'T' : busy ? 'R' : 'S';
+    snprintf(o->comm, sizeof o->comm, "%.15s", q->th[0].comm[0] ? q->th[0].comm : b ? b + 1 : q->exe);
+    memcpy(o->cmdline, q->cmdline, q->cmdline_len);
+    o->cmdline_len = q->cmdline_len;
+    snprintf(o->exe, sizeof o->exe, "%s", q->exe);
+    snprintf(o->cwd, sizeof o->cwd, "%s", q->cwd);
+    o->steps = q->cpu.steps;
+    o->rss = q->vm.nchunks * AOI_VM_CHUNK;
+    o->vsize = o->rss;
+    o->start_ns = q->start_ns ? q->start_ns : lx_boot_ns;
+    memcpy(o->cred, q->cred, sizeof o->cred);
+    o->tty = q->ctty > 0 ? (136 << 8) | (q->ctty - 1) : (aoi_console ? 136 << 8 | aoi_tty_index(aoi_console) : 0);
+    o->fg = aoi_console ? aoi_tty_fg(aoi_console) : 0;
+}
+
+/* The process a /proc path names: pid (self -> this one), and the file part after it. */
+static int lx_proc_target(struct aoi_proc *p, const char *g, struct lx_pinfo *o, const char **file)
+{
+    const char *s = g + 6, *slash;
+    int pid;
+    if (!strncmp(s, "self", 4) && (s[4] == '/' || !s[4])) { pid = PID(p); s += 4; }
+    else if (!strncmp(s, "thread-self", 11) && (s[11] == '/' || !s[11])) { pid = PID(p); s += 11; }
+    else if (*s >= '0' && *s <= '9') { pid = atoi(s); while (*s >= '0' && *s <= '9') s++; }
+    else return 0;
+    slash = s;
+    if (!strncmp(slash, "/task/", 6)) {                            /* /proc/<pid>/task/<tid>/x: the process's */
+        slash += 6;
+        while (*slash >= '0' && *slash <= '9') slash++;
+    }
+    *file = *slash == '/' ? slash + 1 : slash;
+    if (pid == PID(p)) { lx_pinfo_of(p, o); return 1; }
+    {
+        struct aoi_proc *q;
+        int ok = 0;
+        pthread_mutex_lock(&lx_mu);
+        if ((q = lx_find(pid))) { lx_pinfo_of(q, o); ok = 1; }
+        pthread_mutex_unlock(&lx_mu);
+        return ok ? 1 : -1;
+    }
+}
+
+static uint64_t lx_total_steps(void)
+{
+    uint64_t s = 0;
+    int i;
+    pthread_mutex_lock(&lx_mu);
+    for (i = 0; i < LX_PROCS; i++) if (lx_procs[i]) s += lx_procs[i]->cpu.steps;
+    pthread_mutex_unlock(&lx_mu);
+    return s;
+}
+
+#define LX_TICKS_PER_S 100
+#define LX_STEPS_PER_TICK 1000000ULL                               /* ~100 M guest instructions/s */
+
+/* Writes /proc file g into t: 1 if it is one of ours, 0 if not (ENOENT), -1 no such pid. */
+static int lx_proc_file(struct aoi_proc *p, const char *g, FILE *t)
+{
+    struct lx_pinfo o;
+    const char *f;
+    int64_t now = now_ns(), up = now - lx_boot_ns;
+    uint64_t total, avail;
+    int k = lx_proc_target(p, g, &o, &f);
+    if (k < 0) return -1;
+    if (k > 0) {
+        uint64_t ut = o.steps / LX_STEPS_PER_TICK, start = (uint64_t)((o.start_ns - lx_boot_ns) / (1000000000 / LX_TICKS_PER_S));
+        if (!strcmp(f, "stat")) {
+            fprintf(t, "%d (%s) %c %d %d %d %d %d 4194560 0 0 0 0 %llu 0 0 0 20 0 %d 0 %llu %llu %llu "
+                       "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+                    o.pid, o.comm, o.state, o.ppid, o.pgid, o.sid, o.tty, o.fg, (unsigned long long)ut, o.nthreads,
+                    (unsigned long long)start, (unsigned long long)o.vsize, (unsigned long long)(o.rss / 4096));
+        } else if (!strcmp(f, "status")) {
+            fprintf(t, "Name:\t%s\nUmask:\t0022\nState:\t%c (%s)\nTgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n"
+                       "Uid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\nFDSize:\t256\nGroups:\t%u\nVmPeak:\t%llu kB\nVmSize:\t%llu kB\n"
+                       "VmRSS:\t%llu kB\nThreads:\t%d\nSigQ:\t0/0\nSigPnd:\t0000000000000000\nCapEff:\t000001ffffffffff\n",
+                    o.comm, o.state, o.state == 'T' ? "stopped" : o.state == 'R' ? "running" : "sleeping", o.pid, o.pid, o.ppid,
+                    o.cred[0], o.cred[1], o.cred[2], o.cred[1], o.cred[3], o.cred[4], o.cred[5], o.cred[4], o.cred[4],
+                    (unsigned long long)(o.vsize >> 10), (unsigned long long)(o.vsize >> 10),
+                    (unsigned long long)(o.rss >> 10), o.nthreads);
+        } else if (!strcmp(f, "cmdline")) fwrite(o.cmdline, 1, o.cmdline_len, t);
+        else if (!strcmp(f, "comm")) fprintf(t, "%s\n", o.comm);
+        else if (!strcmp(f, "statm")) fprintf(t, "%llu %llu 0 0 0 0 0\n", (unsigned long long)(o.vsize / 4096), (unsigned long long)(o.rss / 4096));
+        else if (!strcmp(f, "environ") || !strcmp(f, "mountinfo")) {}
+        else if (!strcmp(f, "io")) fprintf(t, "rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\n");
+        else if (!strcmp(f, "oom_score_adj")) fprintf(t, "0\n");
+        else if (!strcmp(f, "cgroup")) fprintf(t, "0::/\n");
+        else if (!strcmp(f, "limits")) fprintf(t, "Limit                     Soft Limit           Hard Limit           Units\n"
+                                                  "Max open files            256                  256                  files\n");
+        else return 0;                                             /* maps etc.: the per-process code below */
+        return 1;
+    }
+    lx_mem(&total, &avail);
+    if (!strcmp(g, "/proc/meminfo")) {
+        fprintf(t, "MemTotal:       %8llu kB\nMemFree:        %8llu kB\nMemAvailable:   %8llu kB\nBuffers:               0 kB\n"
+                   "Cached:                0 kB\nSwapCached:            0 kB\nActive:                0 kB\nInactive:              0 kB\n"
+                   "SwapTotal:             0 kB\nSwapFree:              0 kB\nShmem:                 0 kB\nSReclaimable:          0 kB\n",
+                (unsigned long long)(total >> 10), (unsigned long long)(avail >> 10), (unsigned long long)(avail >> 10));
+    } else if (!strcmp(g, "/proc/uptime")) {
+        double u = (double)up / 1e9, busy = (double)lx_total_steps() / (LX_STEPS_PER_TICK * LX_TICKS_PER_S);
+        fprintf(t, "%.2f %.2f\n", u, u > busy ? u - busy : 0.0);
+    } else if (!strcmp(g, "/proc/loadavg")) {
+        int n = 0, i;
+        pthread_mutex_lock(&lx_mu);
+        for (i = 0; i < LX_PROCS; i++) n += lx_procs[i] != NULL;
+        pthread_mutex_unlock(&lx_mu);
+        fprintf(t, "0.00 0.00 0.00 1/%d %d\n", n, lx_pid_next - 1);
+    } else if (!strcmp(g, "/proc/stat")) {
+        uint64_t ticks = (uint64_t)(up / (1000000000 / LX_TICKS_PER_S)), user = lx_total_steps() / LX_STEPS_PER_TICK;
+        uint64_t idle = ticks > user ? ticks - user : 0;
+        fprintf(t, "cpu  %llu 0 0 %llu 0 0 0 0 0 0\ncpu0 %llu 0 0 %llu 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime %lld\n"
+                   "processes %d\nprocs_running 1\nprocs_blocked 0\n",
+                (unsigned long long)user, (unsigned long long)idle, (unsigned long long)user, (unsigned long long)idle,
+                (long long)(time(NULL) - up / 1000000000), lx_pid_next - 20000);
+    } else if (!strcmp(g, "/proc/version")) {
+        fprintf(t, "Linux version 6.1.0-aoi (LxTerm: an interpreter on iOS) #1 SMP\n");
+    } else if (!strcmp(g, "/proc/mounts")) {
+        fprintf(t, "rootfs / ext4 rw,relatime 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\n"
+                   "devpts /dev/pts devpts rw,nosuid,noexec 0 0\ntmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n");
+    } else if (!strcmp(g, "/proc/filesystems")) {
+        fprintf(t, "\text4\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevpts\n");
+    } else if (!strcmp(g, "/proc/cmdline")) {
+        fprintf(t, "console=pts/0\n");
+    } else if (!strcmp(g, "/proc/swaps")) {
+        fprintf(t, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n");
+    } else if (!strcmp(g, "/proc/devices") || !strcmp(g, "/proc/partitions")) {
+    } else if (!strcmp(g, "/proc/sys/kernel/pid_max")) fprintf(t, "4194304\n");
+    else if (!strcmp(g, "/proc/sys/kernel/osrelease")) fprintf(t, "6.1.0-aoi\n");
+    else if (!strcmp(g, "/proc/sys/kernel/ostype")) fprintf(t, "Linux\n");
+    else if (!strcmp(g, "/proc/sys/kernel/hostname")) fprintf(t, "localhost\n");
+    else if (!strcmp(g, "/proc/sys/kernel/ngroups_max")) fprintf(t, "65536\n");
+    else if (!strcmp(g, "/proc/sys/kernel/cap_last_cap")) fprintf(t, "40\n");
+    else if (!strcmp(g, "/proc/sys/fs/nr_open") || !strcmp(g, "/proc/sys/fs/file-max")) fprintf(t, "1048576\n");
+    else if (!strcmp(g, "/proc/sys/kernel/random/uuid")) {
+        unsigned char u[16];
+        int i;
+        FILE *r = fopen("/dev/urandom", "rb");
+        if (!r || fread(u, 1, 16, r) != 16) memset(u, 0x42, 16);
+        if (r) fclose(r);
+        u[6] = (u[6] & 0x0f) | 0x40; u[8] = (u[8] & 0x3f) | 0x80;
+        for (i = 0; i < 16; i++) fprintf(t, "%02x%s", u[i], i == 3 || i == 5 || i == 7 || i == 9 ? "-" : "");
+        fprintf(t, "\n");
+    } else return 0;
+    return 1;
+}
+
+/* readlink of /proc/<pid>/exe, cwd (and the caller's fd/N): 1 and target, or 0. */
+static int lx_proc_link(struct aoi_proc *p, const char *g, char *out, size_t n)
+{
+    struct lx_pinfo o;
+    const char *f;
+    if (lx_proc_target(p, g, &o, &f) <= 0) return 0;
+    if (!strcmp(f, "exe")) { snprintf(out, n, "%s", o.exe); return 1; }
+    if (!strcmp(f, "cwd")) { snprintf(out, n, "%s", o.cwd); return 1; }
+    if (!strcmp(f, "root")) { snprintf(out, n, "/"); return 1; }
+    if (!strncmp(f, "fd/", 3) && o.pid == PID(p)) {
+        struct aoi_proc_fd *fd = fd_get(p, strtoull(f + 3, NULL, 10));
+        if (!fd) return 0;
+        snprintf(out, n, "%s", fd->path);
+        return 1;
+    }
+    return 0;
 }
 
 void aoi_proc_linux_resume(struct aoi_proc *p)
@@ -2912,6 +3363,8 @@ static uint64_t lx_fork(struct aoi_proc *p, struct aoi_cpu *c, uint64_t flags, u
     if (!(ch = child_new(p))) goto fail;
     ch->pid = pid;
     ch->proc = np;
+    np->me_child = ch;
+    np->start_ns = now_ns();
     lx_register(np);
     if (p->trace) fprintf(p->trace, "[proc] fork: child %d (%llu MiB of chunks)\n", pid,
                           (unsigned long long)(np->vm.nchunks * (AOI_VM_CHUNK >> 20)));
@@ -2999,6 +3452,179 @@ static void children_free(struct aoi_proc *p)
     p->child = NULL; p->nchild = 0;
 }
 
+/* ---------- Linux mode: AF_UNIX sockets with a name (tmux, ssh-agent, daemons) ----------
+ * Kept in-process, by name, not as host sockets (an iOS container path does not fit
+ * sun_path): a listener is an entry with a queue; connect() makes a host socket pair,
+ * queues one end for accept() and keeps the other. The listener's guest fds are dups of
+ * one end of a private host pair (the entry keeps the other): a byte written there wakes
+ * poll/epoll on the listener, and a hang-up there means every listener fd is closed. */
+
+#define LX_UNIX 64
+static struct { int used, type, keep, q[32], nq; char key[AOI_PATH]; } lx_unix[LX_UNIX];
+static pthread_mutex_t lx_unix_mu = PTHREAD_MUTEX_INITIALIZER;
+
+/* The entry's key for a sockaddr_un: "@name" (abstract) or the resolved guest path. */
+static int lx_unix_key(struct aoi_proc *p, uint64_t sa, uint64_t len, char *key)
+{
+    uint8_t b[110];
+    char path[110];
+    if (len < 3 || len > sizeof b) return L_EINVAL;
+    memset(b, 0, sizeof b);
+    if (!get(p, sa, b, len)) return L_EFAULT;
+    if (b[0] != 1 || b[1] != 0) return L_EAFNOSUPPORT;
+    if (!b[2]) { snprintf(key, AOI_PATH, "@%.*s", (int)(len - 3), (char *)b + 3); return 0; }
+    memcpy(path, b + 2, sizeof path - 2); path[sizeof path - 3] = 0;
+    return resolve(p, p->cwd, path, 0, key);
+}
+
+static int lx_unix_find(const char *key)                         /* (lx_unix_mu held) */
+{
+    int i;
+    for (i = 0; i < LX_UNIX; i++) if (lx_unix[i].used && !strcmp(lx_unix[i].key, key)) return i;
+    return -1;
+}
+
+static void lx_unix_drop(int i)                                   /* (lx_unix_mu held) */
+{
+    int k;
+    for (k = 0; k < lx_unix[i].nq; k++) close(lx_unix[i].q[k]);
+    close(lx_unix[i].keep);
+    memset(&lx_unix[i], 0, sizeof lx_unix[i]);
+}
+
+static int lx_unix_alive(int i)                                   /* (lx_unix_mu held) */
+{
+    struct pollfd pf;
+    pf.fd = lx_unix[i].keep; pf.events = POLLOUT; pf.revents = 0;
+    return !(poll(&pf, 1, 0) > 0 && (pf.revents & (POLLHUP | POLLERR)));
+}
+
+static int lx_unix_pair(int type, int c[2])
+{
+    int k;
+    if (type == 1 ? socketpair(AF_UNIX, SOCK_STREAM, 0, c) : aoi_host_msgpair(c)) return -1;
+    for (k = 0; k < 2; k++) { fcntl(c[k], F_SETFL, O_NONBLOCK); fcntl(c[k], F_SETFD, FD_CLOEXEC); }
+    return 0;
+}
+
+static uint64_t lx_unix_connect(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t sa, uint64_t len)
+{
+    char key[AOI_PATH], h[AOI_PATH];
+    int i, c[2], rc;
+    struct stat st;
+    if ((rc = lx_unix_key(p, sa, len, key))) return err(rc);
+    pthread_mutex_lock(&lx_unix_mu);
+    i = lx_unix_find(key);
+    if (i >= 0 && !lx_unix_alive(i)) { lx_unix_drop(i); i = -1; }
+    if (i < 0) {
+        pthread_mutex_unlock(&lx_unix_mu);
+        if (key[0] == '/') { to_host(p, key, h); if (stat(h, &st)) return err(L_ENOENT); }
+        return err(L_ECONNREFUSED);
+    }
+    if (lx_unix[i].nq == 32) { pthread_mutex_unlock(&lx_unix_mu); return err(L_EAGAIN); }
+    if (lx_unix_pair(lx_unix[i].type, c)) { pthread_mutex_unlock(&lx_unix_mu); return herr(); }
+    lx_unix[i].q[lx_unix[i].nq++] = c[1];
+    if (write(lx_unix[i].keep, "c", 1) < 0) {}                    /* wake the listener */
+    pthread_mutex_unlock(&lx_unix_mu);
+    if (f->host > 2) close(f->host);
+    f->host = c[0];
+    f->kind = AOI_FD_PIPE;
+    f->ptype = 1; f->pair = 0;
+    snprintf(f->path, AOI_PATH, "socket:[unix %s]", key);
+    if (p->trace) fprintf(p->trace, "[unix] connected to %s\n", key);
+    return 0;
+}
+
+static void put_unix_name(struct aoi_proc *p, uint64_t sa, uint64_t lenp, const char *key)
+{
+    uint8_t b[110];
+    uint32_t l, have;
+    memset(b, 0, sizeof b);
+    b[0] = 1;
+    if (key && *key) {
+        if (key[0] == '@') snprintf((char *)b + 3, sizeof b - 3, "%s", key + 1);
+        else snprintf((char *)b + 2, sizeof b - 2, "%s", key);
+        l = (uint32_t)(2 + strlen(key) + (key[0] != '@'));
+    } else l = 2;
+    if (!sa || !lenp || !get(p, lenp, &have, 4)) return;
+    put(p, sa, b, have < l ? have : l);
+    put(p, lenp, &l, 4);
+}
+
+/* bind, listen, accept(4), getsockname, getpeername on a Linux-mode AF_UNIX socket. */
+static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3)
+{
+    char key[AOI_PATH], h[AOI_PATH];
+    const char *bound = !strncmp(f->path, "socket:[unix ", 13) ? f->path + 13 : "";
+    int rc, i;
+    if (nr == NR_bind) {
+        int fd;
+        if (f->kind != AOI_FD_SOCKET) return err(L_EINVAL);
+        if ((rc = lx_unix_key(p, a1, a2, key))) return err(rc);
+        if (key[0] == '/') {                                       /* the name in the file system, as Linux */
+            to_host(p, key, h);
+            if ((fd = open(h, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0) return errno == EEXIST ? err(98) : herr();
+            close(fd);
+        }
+        snprintf(f->path, AOI_PATH, "socket:[unix %s", key);
+        strncat(f->path, "]", AOI_PATH - strlen(f->path) - 1);
+        return 0;
+    }
+    if (nr == NR_listen) {
+        int sp[2];
+        size_t bl = strlen(bound);
+        if (f->kind == AOI_FD_ULISTEN) return 0;
+        if (f->kind != AOI_FD_SOCKET || !bl) return err(L_EINVAL);
+        snprintf(key, sizeof key, "%.*s", (int)(bl - 1), bound);   /* (without the "]") */
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sp)) return herr();
+        fcntl(sp[0], F_SETFL, O_NONBLOCK); fcntl(sp[0], F_SETFD, FD_CLOEXEC); fcntl(sp[1], F_SETFD, FD_CLOEXEC);
+        fcntl(sp[1], F_SETFL, O_NONBLOCK);
+        pthread_mutex_lock(&lx_unix_mu);
+        if ((i = lx_unix_find(key)) >= 0) lx_unix_drop(i);        /* a stale one under the same name */
+        for (i = 0; i < LX_UNIX && lx_unix[i].used; i++) {}
+        if (i == LX_UNIX) { pthread_mutex_unlock(&lx_unix_mu); close(sp[0]); close(sp[1]); return err(L_ENOMEM); }
+        lx_unix[i].used = 1; lx_unix[i].type = f->ptype ? f->ptype : 1; lx_unix[i].keep = sp[1]; lx_unix[i].nq = 0;
+        snprintf(lx_unix[i].key, AOI_PATH, "%s", key);
+        pthread_mutex_unlock(&lx_unix_mu);
+        if (f->host > 2) close(f->host);
+        f->host = sp[0];
+        f->kind = AOI_FD_ULISTEN;
+        if (p->trace) fprintf(p->trace, "[unix] listening on %s\n", key);
+        return 0;
+    }
+    if (nr == NR_accept || nr == NR_accept4) {
+        int c = -1, n, type = 1;
+        char byte;
+        size_t bl = strlen(bound);
+        if (f->kind != AOI_FD_ULISTEN) return err(L_EINVAL);
+        snprintf(key, sizeof key, "%.*s", (int)(bl ? bl - 1 : 0), bound);
+        pthread_mutex_lock(&lx_unix_mu);
+        if ((i = lx_unix_find(key)) >= 0 && lx_unix[i].nq) {
+            c = lx_unix[i].q[0];
+            type = lx_unix[i].type;
+            memmove(lx_unix[i].q, lx_unix[i].q + 1, sizeof lx_unix[i].q[0] * (size_t)--lx_unix[i].nq);
+        }
+        pthread_mutex_unlock(&lx_unix_mu);
+        if (c < 0) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 5000000);
+        if (read(f->host, &byte, 1) < 0) {}                       /* (its wake-up byte) */
+        if ((n = fd_new(p, c, "socket:[unix]", 0)) < 0) { close(c); return err(L_EMFILE); }
+        p->fd[n].kind = AOI_FD_PIPE;
+        p->fd[n].ptype = type;
+        p->fd[n].nonblock = nr == NR_accept4 && (a3 & 04000);
+        p->fd[n].cloexec = nr == NR_accept4 && (a3 & 02000000);
+        put_unix_name(p, a1, a2, NULL);
+        return (uint64_t)n;
+    }
+    if (nr == NR_getsockname) {
+        size_t bl = strlen(bound);
+        snprintf(key, sizeof key, "%.*s", (int)(bl ? bl - 1 : 0), bound);
+        put_unix_name(p, a1, a2, key);
+        return 0;
+    }
+    if (nr == NR_getpeername) { put_unix_name(p, a1, a2, NULL); return 0; }
+    return err(L_ENOSYS);
+}
+
 uint64_t aoi_proc_syscall(struct aoi_cpu *c)
 {
     struct aoi_proc *p = c->host_ctx;
@@ -3013,7 +3639,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     switch (nr) {
     case NR_read: case NR_pread64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        if (f->kind == AOI_FD_TTY) { r = tty_read(p, f, a1, a2); break; }
+        if (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) { r = tty_read(p, f, a1, a2); break; }
         if (f->kind == AOI_FD_TIMERFD) {                           /* expirations since the last read */
             uint64_t v;
             if (a2 < 8) { r = err(L_EINVAL); break; }
@@ -3065,7 +3691,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         if (f->kind == AOI_FD_DNS) { r = dns_write(p, f, a1, a2); break; }
-        if (f->kind == AOI_FD_TTY) { r = tty_write(p, a1, a2); break; }
+        if (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) { r = tty_write(p, f, a1, a2); break; }
         if (f->host <= 2) fflush(stdout);
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
         if (r == err(L_EAGAIN) && (f->kind == AOI_FD_PIPE || f->kind == AOI_FD_INET) && !f->nonblock)
@@ -3091,14 +3717,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = total;
             break;
         }
-        if (f->kind == AOI_FD_TTY) {                               /* the terminal: one buffer at a time */
+        if (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) {      /* the terminal: one buffer at a time */
             r = 0;
             for (i = 0; i < a2; i++) {
                 uint8_t e[16];
                 uint64_t k;
                 if (!get(p, a1 + i * 16, e, 16)) { r = err(L_EFAULT); break; }
                 if (!u64(e + 8)) continue;
-                k = nr == NR_readv ? tty_read(p, f, u64(e), u64(e + 8)) : tty_write(p, u64(e), u64(e + 8));
+                k = nr == NR_readv ? tty_read(p, f, u64(e), u64(e + 8)) : tty_write(p, f, u64(e), u64(e + 8));
                 if (IS_ERR(k) || (p->cpu.stop == AOI_STOP_RESTART)) { if (!total) r = k; break; }
                 total += k;
                 r = total;
@@ -3132,14 +3758,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
         if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
-        } else if (p->linux_mode && is_tty_path(g)) {              /* the terminal (core/tty.c) */
-            if (!aoi_console) { r = err(6); break; }
-            if ((hfd = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
-            if ((fdn = fd_new(p, hfd, "/dev/pts/0", 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
-            p->fd[fdn].kind = AOI_FD_TTY;
-            p->fd[fdn].nonblock = (a2 & 04000) != 0;
-            p->fd[fdn].cloexec = (a2 & 02000000) != 0;
-            r = (uint64_t)fdn;
+        } else if (p->linux_mode && is_tty_path(g)) {              /* a terminal (core/tty.c) */
+            r = tty_open(p, g, a2);
             break;
         } else if (!strcmp(g, "/dev/aoi_home")) {                  /* aoi: the app left for the launcher */
             if (p->home) p->home(p->frame_ctx);
@@ -3280,7 +3900,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (fstat(f->host, &st)) { r = herr(); break; }
         lx_stat(&st, sbuf, owner(p, f->path));
-        if (f->kind == AOI_FD_TTY) tty_stat(sbuf);
+        tty_stat_fd(f, sbuf);
         r = put(p, a1, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
     case 291: {                                                    /* statx(dirfd, path, flags, mask, buf) */
@@ -3291,16 +3911,17 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
             if (fstat(f->host, &st)) { r = herr(); break; }
             snprintf(g, AOI_PATH, "%s", f->path);
-            tty = f->kind == AOI_FD_TTY;
+            tty = (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) ? 1 : 0;
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0x100), g))) { r = err(rc); break; }
             if (!(a2 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);
-            if (p->linux_mode && aoi_console && is_tty_path(g)) { tty = 1; to_host(p, "/dev/null", h); }
+            if (p->linux_mode && is_tty_path(g)) { tty = 2; to_host(p, "/dev/null", h); }
             else to_host(p, g, h);
             if ((a2 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
         lx_stat(&st, sbuf, owner(p, g));
-        if (tty) tty_stat(sbuf);
+        if (tty == 1) tty_stat_fd(f, sbuf);
+        else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
         statx_from_stat(sbuf, sx);
         r = put(p, a4, sx, sizeof sx) ? 0 : err(L_EFAULT);
         break;
@@ -3312,16 +3933,17 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
             if (fstat(f->host, &st)) { r = herr(); break; }
             snprintf(g, AOI_PATH, "%s", f->path);
-            tty = f->kind == AOI_FD_TTY;
+            tty = (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) ? 1 : 0;
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
             if (!(a3 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);   /* (linker64) */
-            if (p->linux_mode && aoi_console && is_tty_path(g)) { tty = 1; to_host(p, "/dev/null", h); }
+            if (p->linux_mode && is_tty_path(g)) { tty = 2; to_host(p, "/dev/null", h); }
             else to_host(p, g, h);
             if ((a3 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
         lx_stat(&st, sbuf, owner(p, g));
-        if (tty) tty_stat(sbuf);
+        if (tty == 1) tty_stat_fd(f, sbuf);
+        else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
         r = put(p, a2, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
     }
@@ -3338,7 +3960,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         char path[AOI_PATH], target[AOI_PATH];
         ssize_t k;
         if (!gstr(p, a1, path, sizeof path)) { r = err(L_EFAULT); break; }
-        if (!strcmp(path, "/proc/self/exe")) {
+        if (p->linux_mode && !strncmp(path, "/proc/", 6) && lx_proc_link(p, path, target, sizeof target)) {
+            k = (ssize_t)strlen(target);
+        } else if (!strcmp(path, "/proc/self/exe")) {
             k = (ssize_t)strlen(p->exe);
             memcpy(target, p->exe, (size_t)k);
         } else if (!strncmp(path, "/proc/self/fd/", 14)) {
@@ -3604,7 +4228,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = (f = fd_get(p, a0)) && f->kind == AOI_FD_INET ? net_sockopt(p, f, a1, a2, a3, a4, 1) : 0;
         break;
     case NR_getsockopt: {
-        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_INET) { r = net_sockopt(p, f, a1, a2, a3, a4, 0); break; }                                          /* an int option: 0, or the buffer size */
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_INET) { r = net_sockopt(p, f, a1, a2, a3, a4, 0); break; }
+        if (p->linux_mode && f && a1 == 1 && (a2 == 17 || a2 == 3)) {   /* SO_PEERCRED (who: this one), SO_TYPE */
+            uint32_t cr[3] = { (uint32_t)PID(p), p->cred[1], p->cred[4] }, l = a2 == 17 ? 12 : 4;
+            if (a2 == 3) cr[0] = f->ptype == 5 ? 5 : 1;
+            r = (a3 && !put(p, a3, cr, l)) || (a4 && !put(p, a4, &l, 4)) ? err(L_EFAULT) : 0;
+            break;
+        }                                          /* an int option: 0, or the buffer size */
         uint32_t v = (a1 == 1 && (a2 == 7 || a2 == 8)) ? 65536 : 0, l = 4;   /* SO_SNDBUF / SO_RCVBUF */
         if (a3) put(p, a3, &v, 4);
         if (a4) put(p, a4, &l, 4);
@@ -3642,6 +4272,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = shutdown(f->host, (int)a1) && errno != ENOTSOCK ? herr() : 0;
             break;
         }
+        if (p->linux_mode && (f->kind == AOI_FD_SOCKET || f->kind == AOI_FD_ULISTEN || f->kind == AOI_FD_PIPE) &&
+            nr != NR_sendmsg && nr != NR_recvmsg && nr != NR_shutdown) { r = lx_unix_op(p, f, nr, a1, a2, a3); break; }
         if (f->kind != AOI_FD_INET) { r = err(L_ENOSYS); break; }  /* other AF_UNIX: as before */
         memset(&sa, 0, sizeof sa);
         if (nr == NR_bind) r = get_sa(p, a1, a2, &sa, &sl, f->v4) ? err(L_EINVAL) : bind(f->host, (struct sockaddr *)&sa, sl) ? herr() : 0;
@@ -3662,6 +4294,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
         if ((n = fd_new(p, d, "socket:[unix]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
         p->fd[n].kind = AOI_FD_SOCKET;
+        p->fd[n].nonblock = (a1 & 04000) != 0;
+        p->fd[n].ptype = (a1 & 0xf) == 1 ? 1 : 5;                  /* stream, else message boundaries */
         r = (uint64_t)n;
         break;
     }
@@ -3675,6 +4309,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         memcpy(path, sa + 2, sizeof path - 2); path[sizeof path - 3] = 0;
         if (!strcmp(path, "/dev/socket/logdw")) { f->kind = AOI_FD_LOGD; r = 0; }
         else if (!strcmp(path, "/dev/socket/dnsproxyd")) r = dns_open(p, f);
+        else if (p->linux_mode && f->kind == AOI_FD_SOCKET) r = lx_unix_connect(p, f, a1, a2);
         else r = err(L_ECONNREFUSED);                              /* no other daemons yet */
         break;
     }
@@ -3791,7 +4426,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = ioctl(f->host, FIONREAD, &v) ? herr() : put(p, a2, &v, 4) ? 0 : err(L_EFAULT);
             break;
         }
-        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_TTY) { r = tty_ioctl(p, f, a1, a2); break; }
+        if ((f = fd_get(p, a0)) && (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM)) { r = tty_ioctl(p, f, a1, a2); break; }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_DMAHEAP) {
             uint8_t ad[24];                                        /* dma_heap_allocation_data {len, fd, fd_flags, heap_flags} */
             uint64_t len;
@@ -4328,6 +4963,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         uint64_t total = 8ULL << 30;                             /* report an 8 GB phone */
         memset(si, 0, sizeof si);
         memcpy(si + 32, &total, 8); memcpy(si + 40, &total, 8);
+        if (p->linux_mode) {                                       /* Linux mode: the phone, up since the first process */
+            uint64_t avail, upt = (uint64_t)((now_ns() - lx_boot_ns) / 1000000000);
+            lx_mem(&total, &avail);
+            memcpy(si, &upt, 8);
+            memcpy(si + 32, &total, 8); memcpy(si + 40, &avail, 8);
+        }
         si[104] = 1;                                               /* mem_unit */
         r = put(p, a0, si, sizeof si) ? 0 : err(L_EFAULT);
         break;
@@ -4418,6 +5059,34 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         uint64_t opts = nr == 260 ? a2 : a3;
         int i = child_find(p, pid <= 0 ? -1 : pid, 1);
         if (i == -2) { r = err(L_ECHILD); break; }
+        if (i < 0 && (opts & 0xa)) {                               /* WUNTRACED/WSTOPPED, WCONTINUED: a stop or */
+            int k;                                                 /* continue not yet reported */
+            for (k = 0; k < p->nchild; k++) {
+                struct aoi_child *ch = p->child[k];
+                int32_t st, cpid;
+                if (!ch || ch->done || (pid > 0 && ch->pid != pid)) continue;
+                if ((opts & 2) && ch->stop_new) { st = 0x7f | ch->stop_sig << 8; if (!(nr == 95 && (opts & 0x01000000))) ch->stop_new = 0; }
+                else if ((opts & 8) && ch->cont_new) { st = 0xffff; if (!(nr == 95 && (opts & 0x01000000))) ch->cont_new = 0; }
+                else continue;
+                cpid = ch->pid;
+                if (nr == 260) {
+                    if (a1 && !put(p, a1, &st, 4)) { r = err(L_EFAULT); break; }
+                    r = (uint64_t)cpid;
+                } else {
+                    uint8_t si[128];
+                    int32_t v;
+                    memset(si, 0, sizeof si);
+                    v = 17; memcpy(si, &v, 4);
+                    v = st == 0xffff ? 6 : 5; memcpy(si + 8, &v, 4);   /* CLD_CONTINUED / CLD_STOPPED */
+                    memcpy(si + 16, &cpid, 4);
+                    v = st == 0xffff ? 18 : ch->stop_sig; memcpy(si + 24, &v, 4);
+                    if (a2 && !put(p, a2, si, sizeof si)) { r = err(L_EFAULT); break; }
+                    r = 0;
+                }
+                break;
+            }
+            if (k < p->nchild) break;
+        }
         if (i < 0) { r = (opts & 1) ? 0 : block_and_retry(p, 10000000); break; }   /* WNOHANG, else wait */
         {
             struct aoi_child *ch = p->child[i];

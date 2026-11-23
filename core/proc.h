@@ -49,7 +49,9 @@ enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AO
        AOI_FD_DNS,                  /* netd's /dev/socket/dnsproxyd, answered with the host's resolver */
        AOI_FD_TIMERFD,              /* timerfd: expirations counted in `count` */
        AOI_FD_DMAHEAP,              /* /dev/dma_heap/system: allocations are memfds */
-       AOI_FD_TTY };                /* Linux mode: the terminal (core/tty.c, aoi_console) */
+       AOI_FD_TTY,                  /* Linux mode: a terminal's slave side (core/tty.c) */
+       AOI_FD_PTM,                  /* Linux mode: a pty's master side (/dev/ptmx) */
+       AOI_FD_ULISTEN };            /* Linux mode: a listening AF_UNIX socket with a file name */
 
 /* An epoll instance: level-triggered interest entries {fd, events, data}. */
 struct aoi_epoll { int refs, n, cap; struct { int fd; uint32_t events; uint64_t data; } *e; };
@@ -178,6 +180,10 @@ struct aoi_proc {
     int term_sig;                   /* the signal that ended the process (wait status), or 0 */
     int trace_shared;               /* trace is the parent's FILE: not closed here */
     uint32_t cred[6];               /* real, effective, saved uid; the same for gid (0: root) */
+    int ctty;                       /* controlling terminal: /dev/pts/(ctty-1), 0: the console */
+    volatile int stopped;           /* job control: stopped by this signal (SIGTSTP...), 0: running */
+    void *me_child;                 /* its struct aoi_child in the parent (stop/continue reports) */
+    int64_t start_ns;               /* when it started (/proc/<pid>/stat) */
     uint64_t *samples;              /* if set: pc at the end of each time slice (profiling) */
     size_t nsamples, maxsamples;
 };
@@ -203,8 +209,10 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd);
 /* Linux mode: sends sig to every process of group pgid (the terminal's Ctrl-C), from any
  * host thread. Returns how many got it. */
 int aoi_proc_kill_group(int pgid, int sig);
-/* Linux mode: fds 0-2 become the terminal (core/tty.c's aoi_console). */
+/* Linux mode: fds 0-2 become the terminal (core/tty.c's aoi_console, or tty). */
 void aoi_proc_attach_tty(struct aoi_proc *p);
+struct aoi_tty;
+void aoi_proc_attach_tty_to(struct aoi_proc *p, struct aoi_tty *tty);
 /* Linux mode: a process restored from a snapshot (core/snap.c) rejoins the registry. */
 void aoi_proc_linux_resume(struct aoi_proc *p);
 /* Linux mode: the terminal's foreground process group (TIOCSPGRP), or 0. */

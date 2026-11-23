@@ -39,6 +39,12 @@ check "apt --version"    "apt"             30  /usr/bin/apt-get --version
 check "sort | uniq"      "2 b"             30  /bin/bash -c 'printf "a\nb\nb\n" | sort | uniq -c | sed "s/^ *//" | grep b'
 check "date"             "20"              30  /bin/date -u +%Y
 check "perl"             "perl ok"         30  /usr/bin/perl -e 'print "perl ok\n"'
+check "rm -rf / refused"  "dangerous"      30  /bin/sh -c 'rm -rf / 2>&1; true'
+check "/proc/meminfo"     "MemTotal"       30  /bin/cat /proc/meminfo
+out="$(LXRUN_QUIET=1 LXRUN_KEYS='sleep 30\r\w\w\x1a\w\wjobs\r\wfg\r\w\w\x03\wecho jc-done\r\wexit\r' timeout 60 "$L" -i "$R" /bin/bash -i 2>&1)"; rc=$?
+if printf '%s' "$out" | grep -q "Stopped" && printf '%s' "$out" | grep -q "jc-done"; then echo "OK   debian: Ctrl-Z, jobs, fg, Ctrl-C"
+else echo "FAIL debian: Ctrl-Z, jobs, fg, Ctrl-C (rc=$rc)"; fail=1; fi
+printf '%s\n' "$out" | tail -n 10 | sed 's/^/     > /'
 if [ "${2:-}" = net ]; then
     cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
     check "getent hosts"           "deb.debian.org"        60  /usr/bin/getent hosts deb.debian.org
@@ -48,5 +54,10 @@ if [ "${2:-}" = net ]; then
     check "python3"                "499999500000"          120 /usr/bin/python3 -c 'print(sum(range(10**6)))'
     check "apt install git"        "Setting up git"        1800 /usr/bin/apt-get install -y --no-install-recommends git
     check "git"                    "git version"           60  /usr/bin/git --version
+    check "apt install procps tmux ssh" "Setting up"       1800 /usr/bin/apt-get install -y --no-install-recommends procps tmux openssh-client
+    check "ps aux"                 "PID"                   30  /bin/sh -c 'sleep 3 & ps aux'
+    check "tmux session"           "1 windows"             90  /bin/sh -c 'tmux new-session -d "sleep 30"; sleep 2; tmux ls; tmux kill-server'
+    check "ssh to github"          "Permission denied (publickey)" 90 /bin/sh -c 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1; true'
+    check "git clone (https)"      "README"                300 /bin/sh -c 'cd /tmp && git clone -q --depth 1 https://github.com/heyobi/lxterm.git && ls lxterm' 
 fi
 exit $fail

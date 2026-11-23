@@ -3,9 +3,13 @@
 #include "tty.h"
 #include "proc.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* c_iflag */
 #define IGNCR_  0200
@@ -48,13 +52,44 @@ struct aoi_tty {
     int lnext;                          /* the next key is taken literally (Ctrl-V) */
     void (*out)(void *ctx, const char *s, size_t n);
     void *ctx;
+    int index;                          /* N of /dev/pts/N */
+    int ph[2], phm[2];                  /* host objects whose dups are its slave / master guest fds */
+    int fg;                             /* foreground process group (0: none yet) */
+    char *mbuf;                         /* a guest master's side: output waiting for it */
+    size_t mlen;
 };
 
+#define MBUF 65536
+
 struct aoi_tty *aoi_console;
+static struct aoi_tty *ttys[AOI_TTYS];
+static pthread_mutex_t ttys_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static int pair(int sv[2])
+{
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) return -1;
+    fcntl(sv[0], F_SETFD, FD_CLOEXEC); fcntl(sv[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+}
+
+/* A new terminal in the first free slot (or NULL). */
+static struct aoi_tty *tty_alloc(void)
+{
+    struct aoi_tty *t = calloc(1, sizeof *t);
+    int i;
+    if (!t) return NULL;
+    if (pair(t->ph) || pair(t->phm)) { free(t); return NULL; }
+    pthread_mutex_lock(&ttys_mu);
+    for (i = 0; i < AOI_TTYS && ttys[i]; i++) {}
+    if (i < AOI_TTYS) { ttys[i] = t; t->index = i; }
+    pthread_mutex_unlock(&ttys_mu);
+    if (i == AOI_TTYS) { close(t->ph[0]); close(t->ph[1]); close(t->phm[0]); close(t->phm[1]); free(t); return NULL; }
+    return t;
+}
 
 struct aoi_tty *aoi_tty_new(void (*out)(void *ctx, const char *s, size_t n), void *ctx, int cols, int rows)
 {
-    struct aoi_tty *t = calloc(1, sizeof *t);
+    struct aoi_tty *t = tty_alloc();
     static const uint8_t cc[NCC_] = { 3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0 };
     if (!t) return NULL;
     pthread_mutex_init(&t->mu, NULL);
@@ -68,8 +103,98 @@ struct aoi_tty *aoi_tty_new(void (*out)(void *ctx, const char *s, size_t n), voi
     t->ws[1] = (uint16_t)(cols > 0 ? cols : 80);
     t->out = out;
     t->ctx = ctx;
-    aoi_console = t;
+    if (!aoi_console) aoi_console = t;
     return t;
+}
+
+/* A guest master: output goes to its buffer. */
+static void master_out(void *ctx, const char *s, size_t n)
+{
+    struct aoi_tty *t = ctx;
+    pthread_mutex_lock(&t->mu);
+    if (n > MBUF - t->mlen) n = MBUF - t->mlen;
+    memcpy(t->mbuf + t->mlen, s, n);
+    t->mlen += n;
+    pthread_mutex_unlock(&t->mu);
+}
+
+struct aoi_tty *aoi_tty_new_pty(void)
+{
+    char *b = malloc(MBUF);
+    struct aoi_tty *t;
+    if (!b) return NULL;
+    if (!(t = aoi_tty_new(master_out, NULL, 80, 24))) { free(b); return NULL; }
+    t->ctx = t;
+    t->mbuf = b;
+    if (aoi_console == t) aoi_console = NULL;                       /* (never the console) */
+    return t;
+}
+
+int aoi_tty_index(struct aoi_tty *t) { return t->index; }
+
+struct aoi_tty *aoi_tty_get_index(int n)
+{
+    struct aoi_tty *t;
+    if (n < 0 || n >= AOI_TTYS) return NULL;
+    pthread_mutex_lock(&ttys_mu);
+    t = ttys[n];
+    pthread_mutex_unlock(&ttys_mu);
+    return t;
+}
+
+int aoi_tty_host_fd(struct aoi_tty *t, int master)
+{
+    int d = dup(master ? t->phm[0] : t->ph[0]);
+    if (d >= 0) fcntl(d, F_SETFD, FD_CLOEXEC);
+    return d;
+}
+
+struct aoi_tty *aoi_tty_of_host(int hostfd, int *master)
+{
+    struct stat a, b;
+    int i;
+    if (hostfd < 0 || fstat(hostfd, &a)) return NULL;
+    pthread_mutex_lock(&ttys_mu);
+    for (i = 0; i < AOI_TTYS; i++) {
+        struct aoi_tty *t = ttys[i];
+        if (!t) continue;
+        if (!fstat(t->ph[0], &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) { if (master) *master = 0; break; }
+        if (!fstat(t->phm[0], &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) { if (master) *master = 1; break; }
+    }
+    pthread_mutex_unlock(&ttys_mu);
+    return i < AOI_TTYS ? ttys[i] : NULL;
+}
+
+long aoi_tty_master_read(struct aoi_tty *t, void *buf, size_t n)
+{
+    long r = -1;
+    pthread_mutex_lock(&t->mu);
+    if (t->mlen) {
+        size_t k = t->mlen < n ? t->mlen : n;
+        memcpy(buf, t->mbuf, k);
+        memmove(t->mbuf, t->mbuf + k, t->mlen - k);
+        t->mlen -= k;
+        r = (long)k;
+    }
+    pthread_mutex_unlock(&t->mu);
+    return r;
+}
+
+int aoi_tty_master_readable(struct aoi_tty *t)
+{
+    int r;
+    pthread_mutex_lock(&t->mu);
+    r = t->mlen > 0;
+    pthread_mutex_unlock(&t->mu);
+    return r;
+}
+
+int aoi_tty_fg(struct aoi_tty *t) { return t == aoi_console && aoi_tty_pgrp ? aoi_tty_pgrp : t->fg; }
+
+void aoi_tty_set_fg(struct aoi_tty *t, int pgrp)
+{
+    t->fg = pgrp;
+    if (t == aoi_console) aoi_tty_pgrp = pgrp;
 }
 
 /* Output processing (OPOST) into o; returns its length. */
@@ -104,7 +229,19 @@ static void emit(struct aoi_tty *t, const char *s, size_t n, int locked)
     }
 }
 
-void aoi_tty_write(struct aoi_tty *t, const void *buf, size_t n) { emit(t, buf, n, 0); }
+size_t aoi_tty_write(struct aoi_tty *t, const void *buf, size_t n)
+{
+    if (t->mbuf) {                                                 /* a guest master: not past its buffer */
+        size_t room;
+        pthread_mutex_lock(&t->mu);
+        room = MBUF - t->mlen;
+        pthread_mutex_unlock(&t->mu);
+        room = room > 16 ? (room - 16) / 2 : 0;                    /* (NL may become CR NL) */
+        if (n > room) n = room;
+    }
+    if (n) emit(t, buf, n, 0);
+    return n;
+}
 
 /* Echo of one input byte (lock held). Control characters as ^X with ECHOCTL. */
 static void echo_byte(struct aoi_tty *t, unsigned char ch, char *e, size_t *ne)
@@ -166,7 +303,7 @@ void aoi_tty_input(struct aoi_tty *t, const char *s, size_t n)
                 if (t->lflag & ECHO_) { echo_byte(t, ch, e, &ne); if (sig != 20) e[ne++] = '\n'; }
                 pthread_mutex_unlock(&t->mu);
                 if (ne) emit(t, e, ne, 0);
-                if (aoi_tty_pgrp) aoi_proc_kill_group(aoi_tty_pgrp, sig);
+                if (aoi_tty_fg(t)) aoi_proc_kill_group(aoi_tty_fg(t), sig);
                 continue;
             }
         }
@@ -212,7 +349,7 @@ void aoi_tty_resize(struct aoi_tty *t, int cols, int rows)
     pthread_mutex_lock(&t->mu);
     t->ws[0] = (uint16_t)rows; t->ws[1] = (uint16_t)cols;
     pthread_mutex_unlock(&t->mu);
-    if (aoi_tty_pgrp) aoi_proc_kill_group(aoi_tty_pgrp, 28);       /* SIGWINCH */
+    if (aoi_tty_fg(t)) aoi_proc_kill_group(aoi_tty_fg(t), 28);     /* SIGWINCH */
 }
 
 long aoi_tty_read(struct aoi_tty *t, void *buf, size_t n)
