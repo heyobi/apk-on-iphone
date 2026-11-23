@@ -56,6 +56,7 @@ if [ "${2:-}" = net ]; then
     check "apt install git"        "Setting up git"        1800 /usr/bin/apt-get install -y --no-install-recommends git
     check "git"                    "git version"           60  /usr/bin/git --version
     check "apt install procps tmux ssh" "Setting up"       1800 /usr/bin/apt-get install -y --no-install-recommends procps tmux openssh-client ca-certificates
+    check "openssh postinst"      "+"                     60  /bin/sh -c 'sh -x /var/lib/dpkg/info/openssh-client.postinst configure 2>&1 | tail -n 12'
     check "ps aux"                 "PID"                   30  /bin/sh -c 'sleep 3 & ps aux'
     check "tmux session"           "1 windows"             90  /bin/sh -c 'tmux new-session -d "sleep 30"; sleep 2; tmux ls; tmux kill-server'
     check "ssh to github"          "Permission denied (publickey)" 90 /bin/sh -c 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1; true'

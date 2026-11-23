@@ -1785,6 +1785,7 @@ static uint64_t tty_ioctl(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t re
     int m = 0;
     struct aoi_tty *t = fd_tty(f, &m);
     if (!t) return err(L_ENOTTY);
+    req &= 0xffffffffu;                                            /* (an int in musl: sign-extended) */
     switch (req) {
     case 0x5401: aoi_tty_get(t, tio); return put(p, arg, tio, 36) ? 0 : err(L_EFAULT);   /* TCGETS */
     case 0x802c542a: aoi_tty_get(t, tio); return put(p, arg, tio, 44) ? 0 : err(L_EFAULT);   /* TCGETS2 */
