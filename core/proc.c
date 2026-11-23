@@ -2570,6 +2570,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
     if (!(np = calloc(1, sizeof *np))) return err(L_ENOMEM);
     if ((e = aoi_proc_exec(np, p->root, interp[0] ? interp : g, argc, argv, envp))) {
         if (p->log) fprintf(p->log, "I/aoi: exec %s: %s\n", g, e);
+        if (p->trace) fprintf(p->trace, "[proc] %d exec %s failed: %s\n", PID(p), g, e);
         aoi_proc_free(np); free(np);
         return err(L_ENOEXEC);
     }

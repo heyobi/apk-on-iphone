@@ -18,9 +18,10 @@ check() {   # check NAME EXPECTED-SUBSTRING TIMEOUT PROGRAM ARGS...
     else
         echo "FAIL debian: $name (rc=$rc, ${secs}s)"; fail=1
         printf '%s\n' "$out" | tail -n 15 | sed 's/^/     | /'
-        rm -f /tmp/lx-child.trace
-        AOI_CHILD_TRACE=/tmp/lx-child.trace LXRUN_QUIET=1 timeout "$to" "$L" -t "$R" "$@" 2>&1 | grep -v '^\[sched\]' | tail -n 50 | sed 's/^/     t /'
-        [ -f /tmp/lx-child.trace ] && grep -v '^\[sched\]' /tmp/lx-child.trace | grep -E "execve|stopped|not impl|= -|\[sig\]|credentials" | tail -n 60 | sed 's/^/     c /'
+        n=$((${n:-0}+1)); T=${LX_TRACES:-/tmp/lx-traces}; mkdir -p "$T"
+        AOI_CHILD_TRACE=$T/$n-children.trace LXRUN_QUIET=1 timeout "$to" "$L" -t "$R" "$@" > "$T/$n-main.trace" 2>&1
+        echo "$name: $*" > "$T/$n-what.txt"
+        grep -v '^\[sched\]' "$T/$n-main.trace" | grep -E "exec|stopped|not impl|\[sig\]" | tail -n 30 | sed 's/^/     t /'
     fi
     printf '%s\n' "$out" | head -n 12 | sed 's/^/     > /'
 }
@@ -43,6 +44,7 @@ if [ "${2:-}" = net ]; then
     check "getent hosts"           "deb.debian.org"        60  /usr/bin/getent hosts deb.debian.org
     check "apt update"             "Get:"                  900 /usr/bin/apt-get update
     check "apt install python3"    "Setting up python3"    1800 /usr/bin/apt-get install -y --no-install-recommends python3
+    check "python3 files"          "python3.13"            30  /bin/sh -c 'ls -la /usr/bin/python3* /usr/bin/*.dpkg-new 2>&1; od -c -N 8 /usr/bin/python3.13'
     check "python3"                "499999500000"          120 /usr/bin/python3 -c 'print(sum(range(10**6)))'
     check "apt install git"        "Setting up git"        1800 /usr/bin/apt-get install -y --no-install-recommends git
     check "git"                    "git version"           60  /usr/bin/git --version

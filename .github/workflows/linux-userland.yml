@@ -41,6 +41,12 @@ jobs:
         run: sh tests/linux/fetch-debian.sh "$RUNNER_TEMP/debian"
       - name: Debian checks
         run: sh tests/linux/run_debian.sh "$RUNNER_TEMP/debian" net
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: debian-traces
+          path: /tmp/lx-traces
+          retention-days: 5
 
   regress:
     runs-on: ubuntu-24.04
