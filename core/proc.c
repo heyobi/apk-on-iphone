@@ -1551,6 +1551,7 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         struct aoi_tty *t = aoi_tty_of_host(f->host, &m);
         if (!t) t = aoi_console;
         if (t && (m ? aoi_tty_master_readable(t) : aoi_tty_readable(t))) r |= EP_IN;
+        if (t && m && aoi_tty_hungup(t)) r |= EP_IN | EP_HUP;
         r |= EP_OUT;
         break;
     }
@@ -1709,6 +1710,9 @@ static void tty_stat(uint8_t *sbuf, int index, int ptmx)
 {
     uint32_t mode = ptmx ? 020666 : 020620;
     uint64_t rdev = ptmx ? (5 << 8 | 2) : (uint64_t)(136 << 8 | (index & 0xff)), size = 0;
+    uint64_t dev = ptmx ? 6 : 24, ino = ptmx ? 2 : (uint64_t)index + 3;   /* devtmpfs / devpts: stat and fstat agree */
+    memcpy(sbuf + 0, &dev, 8);
+    memcpy(sbuf + 8, &ino, 8);
     memcpy(sbuf + 16, &mode, 4);
     memcpy(sbuf + 32, &rdev, 8);
     memcpy(sbuf + 48, &size, 8);
@@ -1764,6 +1768,7 @@ static uint64_t tty_read(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf
     long k;
     if (!t || !n) return 0;
     k = m ? aoi_tty_master_read(t, b, n < sizeof b ? n : sizeof b) : aoi_tty_read(t, b, n < sizeof b ? n : sizeof b);
+    if (k < 0 && m && aoi_tty_hungup(t)) return err(L_EIO);       /* the slave side is gone */
     if (k < 0) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 5000000);
     return put(p, buf, b, (uint64_t)k) ? (uint64_t)k : err(L_EFAULT);
 }
@@ -2668,7 +2673,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
 {
     static _Thread_local char strs[256 * 1024];
     const char *argv[AOI_ARGS + 2], *envp[AOI_ARGS + 2];
-    char g[AOI_PATH], h[AOI_PATH], head[256], interp[AOI_PATH] = "", iarg[256] = "";
+    char g[AOI_PATH], h[AOI_PATH], head[256], interp[AOI_PATH] = "", iarg[256] = "", given[AOI_PATH];
     size_t used = 0;
     int argc = 0, envc = 0, k, fd;
     struct stat st;
@@ -2696,6 +2701,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
     }
     if (!g[0]) return err(L_ENOENT);
     if (resolve(p, p->cwd, g, 1, h)) return err(L_ENOENT);
+    snprintf(given, sizeof given, "%s", g);                        /* (a script gets the name it was run by) */
     snprintf(g, sizeof g, "%s", h);
     to_host(p, g, h);
     if (!h[0] || stat(h, &st) || !S_ISREG(st.st_mode)) return err(L_ENOENT);
@@ -2717,7 +2723,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         memmove(argv + (iarg[0] ? 2 : 1), argv, sizeof *argv * (size_t)(argc + 1));
         argv[0] = interp;
         if (iarg[0]) argv[1] = iarg;
-        argv[iarg[0] ? 2 : 1] = g;
+        argv[iarg[0] ? 2 : 1] = p->linux_mode ? given : g;         /* as Linux: addgroup -> adduser keeps "addgroup" */
         argc += iarg[0] ? 2 : 1;
     } else if (k < 4 || memcmp(head, "\177ELF", 4)) return err(L_ENOEXEC);
     if (!(np = calloc(1, sizeof *np))) return err(L_ENOMEM);

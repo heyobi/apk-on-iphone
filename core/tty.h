@@ -46,6 +46,8 @@ long aoi_tty_read(struct aoi_tty *t, void *buf, size_t n);
 size_t aoi_tty_write(struct aoi_tty *t, const void *buf, size_t n);
 int aoi_tty_readable(struct aoi_tty *t);
 long aoi_tty_master_read(struct aoi_tty *t, void *buf, size_t n);   /* -1: nothing yet */
+/* Every slave fd was closed (after one was opened): the master reads EIO, as Linux. */
+int aoi_tty_hungup(struct aoi_tty *t);
 int aoi_tty_master_readable(struct aoi_tty *t);
 /* termios as Linux's struct termios2 (44 bytes; struct termios is its first 36). */
 void aoi_tty_get(struct aoi_tty *t, uint8_t tio[44]);

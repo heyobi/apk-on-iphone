@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -54,6 +55,13 @@ struct aoi_tty {
     void *ctx;
     int index;                          /* N of /dev/pts/N */
     int ph[2], phm[2];                  /* host objects whose dups are its slave / master guest fds */
+    /* every open of the slave gets a socket pair of its own: the guest fd (and its dups,
+     * its copies in forked children) are that pair's end 0, the terminal keeps end 1; when
+     * every end 0 is closed, end 1 hangs up: the slave is closed (master reads EIO) */
+    int tok[64];
+    dev_t tokdev[64];
+    ino_t tokino[64];
+    int ntok, opened;
     int fg;                             /* foreground process group (0: none yet) */
     char *mbuf;                         /* a guest master's side: output waiting for it */
     size_t mlen;
@@ -142,11 +150,48 @@ struct aoi_tty *aoi_tty_get_index(int n)
     return t;
 }
 
+/* Closed slave opens go (lock held). */
+static void tok_prune(struct aoi_tty *t)
+{
+    int i;
+    for (i = 0; i < t->ntok; i++) {
+        struct pollfd pf;
+        pf.fd = t->tok[i]; pf.events = POLLOUT; pf.revents = 0;
+        if (poll(&pf, 1, 0) > 0 && (pf.revents & (POLLHUP | POLLERR))) {
+            close(t->tok[i]);
+            t->tok[i] = t->tok[--t->ntok]; t->tokdev[i] = t->tokdev[t->ntok]; t->tokino[i] = t->tokino[t->ntok];
+            i--;
+        }
+    }
+}
+
 int aoi_tty_host_fd(struct aoi_tty *t, int master)
 {
-    int d = dup(master ? t->phm[0] : t->ph[0]);
-    if (d >= 0) fcntl(d, F_SETFD, FD_CLOEXEC);
-    return d;
+    int sv[2];
+    struct stat st;
+    if (master) {
+        int d = dup(t->phm[0]);
+        if (d >= 0) fcntl(d, F_SETFD, FD_CLOEXEC);
+        return d;
+    }
+    pthread_mutex_lock(&t->mu);
+    tok_prune(t);
+    if (t->ntok == 64 || pair(sv) || fstat(sv[0], &st)) { pthread_mutex_unlock(&t->mu); return -1; }
+    t->tok[t->ntok] = sv[1]; t->tokdev[t->ntok] = st.st_dev; t->tokino[t->ntok] = st.st_ino;
+    t->ntok++;
+    t->opened = 1;
+    pthread_mutex_unlock(&t->mu);
+    return sv[0];
+}
+
+int aoi_tty_hungup(struct aoi_tty *t)
+{
+    int r;
+    pthread_mutex_lock(&t->mu);
+    tok_prune(t);
+    r = t->opened && !t->ntok;
+    pthread_mutex_unlock(&t->mu);
+    return r;
 }
 
 struct aoi_tty *aoi_tty_of_host(int hostfd, int *master)
@@ -158,7 +203,9 @@ struct aoi_tty *aoi_tty_of_host(int hostfd, int *master)
     for (i = 0; i < AOI_TTYS; i++) {
         struct aoi_tty *t = ttys[i];
         if (!t) continue;
-        if (!fstat(t->ph[0], &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) { if (master) *master = 0; break; }
+        int k, hit = 0;
+        for (k = 0; k < t->ntok; k++) if (a.st_ino == t->tokino[k] && a.st_dev == t->tokdev[k]) { hit = 1; break; }
+        if (hit) { if (master) *master = 0; break; }
         if (!fstat(t->phm[0], &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) { if (master) *master = 1; break; }
     }
     pthread_mutex_unlock(&ttys_mu);
