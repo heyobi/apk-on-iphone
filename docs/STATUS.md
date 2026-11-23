@@ -46,19 +46,33 @@ What runs (CI, host path, every push):
 | | Alpine 3.24 | Debian 13 |
 |---|---|---|
 | shell, coreutils / busybox, pipes, `$(...)`, scripts | yes | yes (bash) |
-| interactive shell with Ctrl-C (job control) | yes | (same core) |
-| package manager | `apk update`, `apk add python3` (10 s / 24 s) | `apt update` (72 s), `apt install python3` (160 s) and `git` (150 s), maintainer scripts |
+| interactive shell: Ctrl-C, **Ctrl-Z, `jobs`, `fg`** | yes | yes |
+| package manager | `apk update`, `apk add python3` (10 s / 24 s) | `apt update` (72 s), `apt install python3` (160 s), `git`, `procps tmux openssh-client ca-certificates`, maintainer scripts (`adduser`/`addgroup`) |
 | python3 | yes | yes (3.13) |
-| DNS / HTTP(S) | yes (musl) | yes (glibc, via sendmmsg) |
+| `ps`, `top`, `free`, `uptime` (`/proc` for every process) | yes | yes (procps) |
+| **tmux** (ptys from `/dev/ptmx`, named AF_UNIX sockets) | yes | yes |
+| **ssh client** (`ssh -T git@github.com` reaches GitHub's auth) | yes | yes |
+| `git clone` over HTTPS | | yes |
+| `rm -rf /` | | refused by GNU rm, and confined to the app's root anyway |
 
-**On iOS: LxTerm** (`lxios/`, `.github/workflows/lxterm.yml`): a one-screen app, a
-terminal (xterm.js in a WKWebView) with a key row (Esc, Ctrl, Tab, arrows, |, -, /,
-~, ^C, ^D). It bundles both roots as .tar.gz (Alpine 4 MB + python3, Debian ~35 MB +
-python3, both installed by their own package managers running in our interpreter in
-CI) and unpacks them into Application Support on first launch. Built for the
-simulator (run there in CI: screenshots and `Documents/measure-*.txt`) and as an
-unsigned IPA (artifact `LxTerm-ipa`) to sideload. Launch arguments: `-distro alpine|debian`,
-`-demo`, `-measure`, `-resume`.
+Added since the first demo (2026-11-23, later the same day): job control (SIGTSTP/SIGSTOP/
+SIGCONT, `wait4` WUNTRACED/WCONTINUED, stopped processes keep other signals pending),
+`/dev/ptmx` + up to 32 ptys (each slave open counted, so the master reads EIO when the
+slave side is gone), a live `/proc` tree (pids, stat/status/cmdline, meminfo with the
+phone's memory, uptime, loadavg, stat), named AF_UNIX stream sockets kept in-process
+(an iOS container path would not fit `sun_path`), `SO_PEERCRED`, `signalfd`, xattrs
+accepted, `fchmodat2`, `/proc/self/fd/N` as a magic link, scripts run with the name they
+were called by (`addgroup` is a link to `adduser`), blocked signals stay pending.
+
+**The app moved to its own repository: [heyobi/lxterm](https://github.com/heyobi/lxterm)**
+(TestFlight "LxTerm Shell", ASC 6838355342). Since build 8 it is native SwiftUI with
+SwiftTerm (selection, copy/paste, pinch to zoom, the key row), Debian only, several tabs,
+sessions saved when the app goes to the background and resumed (with what they showed)
+after it is closed, settings (text size, themes, reset Debian), English and Turkish, and
+the iPhone Duo fold respected (laptop: the terminal above the fold; book: one shell per
+half). It copies `core/` from this branch (`core/UPSTREAM`). Build 4 (the first, web-view
+version) was tried on an iPhone: Debian, `apt update`/`apt install`, python3 (1.3 s for
+`sum(range(10**6))`, faster than the CI host), backgrounding all worked.
 
 Measurements (2026-11-23). Host: `tests/linux/bench.sh` with `build/lxrun` on the CI's
 arm64 runner (~125 M guest instructions/s). Simulator: LxTerm `-measure` in the iOS
@@ -89,18 +103,15 @@ timed in iSH on the same phone before claiming a ratio.
 
 Not done yet / known gaps:
 
-- **Not tried on a physical iPhone** yet (simulator only); the IPA is built.
-- No ptys for programs that open `/dev/ptmx` (tmux, script, sshd); one terminal per app.
-- Job control stops (SIGTSTP/SIGSTOP, `fg`/`bg`) are ignored; Ctrl-Z does nothing.
-- `/proc` is the Android-era synthetic subset (`/proc/self/...`); no `/proc/<pid>` for
-  other processes (`ps` shows nothing), no `/proc/self/fd` directory, no `/sys`.
+- Graphical programs (no X11/Wayland), systemd and services, Docker, ptrace (gdb,
+  strace), namespaces, kernel modules, mounting: not planned.
+- `sshd` (a server on the phone) is untested; iOS stops the app in the background anyway.
+- util-linux `script` prints its pty but does not exit after its child (tmux works).
 - File ownership is not stored (everything is root's); modes keep owner rw on the host.
 - MAP_SHARED pages are not shared between a forked parent and child.
-- No rseq/clone3 (glibc falls back), no ptrace, no namespaces, no AF_UNIX sockets other
-  than socketpair (no local daemons), no inotify events.
+- No rseq/clone3 (glibc falls back), no inotify events.
 - Speed is the interpreter's: ~125 M guest instructions/s on the CI's arm64 runner,
-  ~80-90 M/s on an iPhone 16 Pro; a Python `for` loop of 1M iterations takes ~10 s on
-  the host.
+  ~80-90 M/s on an iPhone 16 Pro; a Python `for` loop of 1M iterations takes ~10 s.
 
 Licensing (for a later App Store build): all new core code is this project's own
 (nothing copied). Watch-outs: the bundled roots contain GPL-2/GPL-3 programs (busybox,
