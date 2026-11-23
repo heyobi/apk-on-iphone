@@ -1,0 +1,43 @@
+# Linux userland mode: the core runs an ordinary aarch64 Linux root (Alpine, Debian)
+# with build/lxrun, on an arm64 Linux runner (the host test path, as build/iostest is
+# for Android). Also runs `make test` so the Android path is checked not to regress.
+name: Linux userland
+
+on:
+  push:
+    branches: [ linux-userland ]
+    paths: [ "core/**", "tools/lxrun.c", "tests/**", "Makefile", ".github/workflows/linux-userland.yml" ]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-userland-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  alpine:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: Alpine minirootfs (official mirror, SHA-256 checked)
+        run: sh tests/linux/fetch-alpine.sh "$RUNNER_TEMP/alpine"
+      - name: Alpine checks
+        run: sh tests/linux/run_alpine.sh "$RUNNER_TEMP/alpine" net
+
+  regress:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang lld python3-pip > /dev/null
+          pip install --break-system-packages -q unicorn
+      - name: make test
+        run: make test
+      - name: make difftest
+        run: make difftest

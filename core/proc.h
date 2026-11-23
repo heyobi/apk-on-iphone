@@ -78,6 +78,8 @@ struct aoi_thread {
     int restart;                    /* AOI_T_SLEEP before re-running a syscall: wake without touching x0 */
     int64_t poll_deadline;          /* epoll_pwait/ppoll being retried: when it times out (0: not waiting) */
     char comm[16];                  /* prctl PR_SET_NAME (pthread_setname_np); "" until named */
+    uint64_t susp_old;              /* rt_sigsuspend: the mask a handler's frame restores */
+    int susp;                       /* ... and whether the next delivered frame takes it */
 };
 
 /* An eventfd's counter, shared by every fd for it (dup, SCM_RIGHTS), as Linux's is. */
@@ -166,6 +168,14 @@ struct aoi_proc {
     int nchild, next_pid;
     int own_stdio;                  /* fds 0-2 are this process's own host fds (a child's pipes): close them */
     int thread_exit;                /* the running thread called exit (not exit_group) */
+    /* Linux userland mode (aoi_proc_linux): an ordinary Linux root (Alpine, Debian) run as
+     * root, with real fork() and execve(), process ids, groups and signals between processes.
+     * Off for Android, whose code paths stay as they were. */
+    int linux_mode;
+    int pid, ppid, pgid, sid;       /* 0: GUEST_PID / 1 (Android's single process) */
+    volatile uint64_t xsig;         /* signals sent by other processes (bit sig-1), taken between slices */
+    int term_sig;                   /* the signal that ended the process (wait status), or 0 */
+    int trace_shared;               /* trace is the parent's FILE: not closed here */
     uint64_t *samples;              /* if set: pc at the end of each time slice (profiling) */
     size_t nsamples, maxsamples;
 };
@@ -183,6 +193,16 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
 enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps);
 
 void aoi_proc_free(struct aoi_proc *p);
+
+/* Linux userland mode, right after aoi_proc_exec: root (uid 0), starting directory `cwd`,
+ * fork/execve/process groups/signals between processes, /proc for every process. */
+void aoi_proc_linux(struct aoi_proc *p, const char *cwd);
+
+/* Linux mode: sends sig to every process of group pgid (the terminal's Ctrl-C), from any
+ * host thread. Returns how many got it. */
+int aoi_proc_kill_group(int pgid, int sig);
+/* Linux mode: the terminal's foreground process group (TIOCSPGRP), or 0. */
+extern volatile int aoi_tty_pgrp;
 
 /* "path+0xoff" for a guest code address, or "?" (for crash reports). */
 const char *aoi_proc_where(struct aoi_proc *p, uint64_t addr, char *buf, size_t n);

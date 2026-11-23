@@ -55,6 +55,10 @@ extern void (*aoi_vm_chunk_hook)(struct aoi_vm *vm, uint64_t guest, uint8_t *hos
 const char *aoi_vm_init(struct aoi_vm *vm, uint64_t size);
 void aoi_vm_free(struct aoi_vm *vm);
 
+/* fork(): dst (uninitialised) becomes a private copy of src's mappings and bytes;
+ * shared file mappings become private copies. NULL, or what went wrong. */
+const char *aoi_vm_clone(struct aoi_vm *dst, const struct aoi_vm *src);
+
 /* Host memory for chunk ci (guest addresses ci << AOI_VM_CHUNK_SHIFT ...), zeroed if
  * new; a snapshot being restored (core/snap.c). 1, or 0 if the host is out of memory. */
 int aoi_vm_chunk_alloc(struct aoi_vm *vm, uint64_t ci);

@@ -7,6 +7,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>                 /* vm_copy: fork's copy-on-write */
+#endif
 
 #ifndef MAP_ANON
 #define MAP_ANON MAP_ANONYMOUS
@@ -396,4 +399,39 @@ void aoi_vm_zero(struct aoi_vm *vm, uint64_t addr, uint64_t len)
         for (q = p; q < e && q < ce && vm->prot[PG(q)] && !host_shared(vm, q); q += AOI_VM_PAGE) {}
         chunk_clear(vm, p, q - p);
     }
+}
+
+/* fork(): dst becomes a private copy of src. Darwin copies chunks copy-on-write
+ * (vm_copy); elsewhere the host pages that hold a mapped guest page are copied,
+ * all-zero ones skipped (they stay untouched, so they cost no memory). */
+const char *aoi_vm_clone(struct aoi_vm *dst, const struct aoi_vm *src)
+{
+    const char *e;
+    uint64_t ci, nci = CI(src->size), pg, np = PG(src->size);
+    if ((e = aoi_vm_init(dst, src->size))) return e;
+    dst->hint = src->hint;
+    for (pg = 0; pg < np; pg += 4096) {                            /* the page table, skipping empty runs */
+        uint64_t n = np - pg < 4096 ? np - pg : 4096, k;
+        for (k = 0; k < n && !src->prot[pg + k]; k++) {}
+        if (k < n) memcpy(dst->prot + pg, src->prot + pg, n);
+    }
+    for (ci = 0; ci < nci; ci++) {
+        uint8_t *s = src->chunk[ci], *d;
+        uint64_t hp;
+        if (!s) continue;
+        if (!chunk_get(dst, ci)) { aoi_vm_free(dst); return "out of memory copying the address space"; }
+        d = dst->chunk[ci];
+#ifdef __APPLE__
+        if (vm_copy(mach_task_self(), (vm_address_t)s, AOI_VM_CHUNK, (vm_address_t)d) == KERN_SUCCESS) continue;
+#endif
+        for (hp = 0; hp < AOI_VM_CHUNK; hp += HOST_PAGE) {
+            uint64_t g = PG((ci << AOI_VM_CHUNK_SHIFT) + hp), k;
+            const uint64_t *w = (const uint64_t *)(s + hp);
+            for (k = 0; k < HOST_PAGE / AOI_VM_PAGE && !src->prot[g + k]; k++) {}
+            if (k == HOST_PAGE / AOI_VM_PAGE) continue;             /* nothing mapped in this host page */
+            for (k = 0; k < HOST_PAGE / 8 && !w[k]; k++) {}
+            if (k < HOST_PAGE / 8) memcpy(d + hp, s + hp, HOST_PAGE);
+        }
+    }
+    return NULL;
 }

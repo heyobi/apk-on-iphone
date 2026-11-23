@@ -72,6 +72,10 @@ build/iostest: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h | build
 build/iostest-gpu: tools/iostest.c $(CORE) $(IOS_SRC) core/*.h ios/*.h gpu/host.c gpu/gl_gen.h | build
 	$(CC) $(CFLAGS) -o $@ tools/iostest.c $(CORE) $(IOS_SRC) $(AOIPROC_GPU) -lm -lz -lpthread
 
+# Linux userland mode: an ordinary aarch64 Linux root (tests/linux/fetch-alpine.sh).
+build/lxrun: tools/lxrun.c $(CORE) core/*.h | build
+	$(CC) $(CFLAGS) -o $@ tools/lxrun.c $(CORE) -lm -lpthread
+
 build/test_vm: tests/test_vm.c $(CORE) core/*.h | build
 	$(CC) $(CFLAGS) -o $@ tests/test_vm.c $(CORE) -lm
 
