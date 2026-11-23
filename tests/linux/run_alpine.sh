@@ -17,7 +17,10 @@ check() {   # check NAME EXPECTED-SUBSTRING TIMEOUT PROGRAM ARGS...
     else
         echo "FAIL alpine: $name (rc=$rc, ${secs}s)"; fail=1
         printf '%s\n' "$out" | tail -n 15 | sed 's/^/     | /'
-        LXRUN_QUIET=1 timeout "$to" "$L" -t "$R" "$@" 2>&1 | grep -v '^\[sched\]' | tail -n 40 | sed 's/^/     t /'
+        LXRUN_QUIET=1 AOI_CHILD_TRACE=/tmp/lx-a-child.trace timeout "$to" "$L" -t "$R" "$@" > /tmp/lx-a.trace 2>&1
+        grep -v '^\[sched\]' /tmp/lx-a.trace | tail -n 25 | sed 's/^/     t /'
+        cat /tmp/lx-a.trace /tmp/lx-a-child.trace 2>/dev/null | grep -E '= -(22|38|95|1|13)$|not impl|ptmx|/dev/pts|\[tty\]|\[unix\]|stopped' | head -n 30 | sed 's/^/     e /'
+        rm -f /tmp/lx-a-child.trace
     fi
     printf '%s\n' "$out" | head -n 12 | sed 's/^/     > /'
 }

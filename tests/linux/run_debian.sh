@@ -41,6 +41,7 @@ check "date"             "20"              30  /bin/date -u +%Y
 check "perl"             "perl ok"         30  /usr/bin/perl -e 'print "perl ok\n"'
 check "rm -rf / refused"  "dangerous"      30  /bin/sh -c 'rm -rf / 2>&1; true'
 check "/proc/meminfo"     "MemTotal"       30  /bin/cat /proc/meminfo
+check "groupadd"          "lxgroup"        60  /bin/sh -c 'groupadd -r lxgroup; echo rc=$?; getent group lxgroup' 
 out="$(LXRUN_QUIET=1 LXRUN_KEYS='sleep 30\r\w\w\x1a\w\wjobs\r\wfg\r\w\w\x03\wecho jc-done\r\wexit\r' timeout 60 "$L" -i "$R" /bin/bash -i 2>&1)"; rc=$?
 if printf '%s' "$out" | grep -q "Stopped" && printf '%s' "$out" | grep -q "jc-done"; then echo "OK   debian: Ctrl-Z, jobs, fg, Ctrl-C"
 else echo "FAIL debian: Ctrl-Z, jobs, fg, Ctrl-C (rc=$rc)"; fail=1; fi
@@ -54,7 +55,7 @@ if [ "${2:-}" = net ]; then
     check "python3"                "499999500000"          120 /usr/bin/python3 -c 'print(sum(range(10**6)))'
     check "apt install git"        "Setting up git"        1800 /usr/bin/apt-get install -y --no-install-recommends git
     check "git"                    "git version"           60  /usr/bin/git --version
-    check "apt install procps tmux ssh" "Setting up"       1800 /usr/bin/apt-get install -y --no-install-recommends procps tmux openssh-client
+    check "apt install procps tmux ssh" "Setting up"       1800 /usr/bin/apt-get install -y --no-install-recommends procps tmux openssh-client ca-certificates
     check "ps aux"                 "PID"                   30  /bin/sh -c 'sleep 3 & ps aux'
     check "tmux session"           "1 windows"             90  /bin/sh -c 'tmux new-session -d "sleep 30"; sleep 2; tmux ls; tmux kill-server'
     check "ssh to github"          "Permission denied (publickey)" 90 /bin/sh -c 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1; true'

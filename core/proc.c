@@ -318,6 +318,17 @@ static int resolve(struct aoi_proc *p, const char *base, const char *path, int f
             cl += n;
             cur[cl] = 0;
             memmove(work, rest, strlen(rest) + 1);
+            if (p->linux_mode && !strncmp(cur, "/proc/self/fd/", 14) && cur[14] >= '0' && cur[14] <= '9' &&
+                (!last || follow)) {                               /* the magic link: the fd's own path */
+                uint64_t n = strtoull(cur + 14, NULL, 10);
+                if (n < AOI_PROC_FDS && p->fd[n].used && p->fd[n].path[0] == '/') {
+                    char tmp[AOI_PATH * 2];
+                    if (!join(tmp, sizeof tmp, p->fd[n].path, "/") || !join(work, sizeof work, tmp, work)) return L_ENAMETOOLONG;
+                    cl = 0; cur[0] = 0;
+                    if (++links > 40) return L_ELOOP;
+                    continue;
+                }
+            }
             if (last && !follow) break;
             if (!strcmp(cur, "/proc/self/exe") || !strcmp(cur, "/proc/self/fd")) continue;
             host_path(p, cur, hp);
@@ -2965,9 +2976,11 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd)
     struct stat st;
     p->linux_mode = 1;
     p->uid = 0;
-    p->pid = p->pgid = p->sid = GUEST_PID;
+    pthread_mutex_lock(&lx_mu);                                    /* the first is 1000; more sessions their own */
+    p->pid = p->pgid = p->sid = lx_find(GUEST_PID) ? lx_newpid() : GUEST_PID;
+    pthread_mutex_unlock(&lx_mu);
     p->ppid = 1;
-    p->th[0].tid = GUEST_PID;
+    p->th[0].tid = p->pid;
     p->start_ns = now_ns();
     if (!lx_boot_ns) lx_boot_ns = p->start_ns;
     if (cwd && !resolve(p, "/", cwd, 1, g)) {
@@ -3272,8 +3285,52 @@ void aoi_proc_linux_resume(struct aoi_proc *p)
     if (!p->linux_mode) return;
     p->xsig = 0;
     p->trace_shared = 0;
+    p->stopped = 0;
+    p->me_child = NULL;
+    pthread_mutex_lock(&lx_mu);
+    if (lx_find(p->pid)) {                                         /* another session has its pid now: a new one */
+        int old = p->pid, i;
+        p->pid = lx_newpid();
+        if (p->pgid == old) p->pgid = p->pid;
+        if (p->sid == old) p->sid = p->pid;
+        for (i = 0; i < AOI_PROC_THREADS; i++) if (p->th[i].tid == old) p->th[i].tid = p->pid;
+    }
+    pthread_mutex_unlock(&lx_mu);
     lx_register(p);
-    aoi_tty_pgrp = p->pgid;
+    if (!lx_boot_ns) lx_boot_ns = now_ns();
+}
+
+int aoi_proc_children(struct aoi_proc *p)
+{
+    int i, n = 0;
+    for (i = 0; i < p->nchild; i++) if (p->child[i] && !p->child[i]->done) n++;
+    return n;
+}
+
+int aoi_proc_kill_session(int sid, int sig)
+{
+    int i, n = 0;
+    pthread_mutex_lock(&lx_mu);
+    for (i = 0; i < LX_PROCS; i++)
+        if (lx_procs[i] && lx_procs[i]->sid == sid) { lx_post(lx_procs[i], sig); n++; }
+    pthread_mutex_unlock(&lx_mu);
+    return n;
+}
+
+int aoi_proc_name_of_pgrp(int pgrp, char *out, size_t n)
+{
+    int i, found = 0;
+    pthread_mutex_lock(&lx_mu);
+    for (i = 0; i < LX_PROCS && !found; i++) {
+        struct aoi_proc *q = lx_procs[i];
+        if (q && q->pgid == pgrp && q->pid == pgrp) {
+            const char *b = strrchr(q->exe, '/');
+            snprintf(out, n, "%s", b ? b + 1 : q->exe);
+            found = 1;
+        }
+    }
+    pthread_mutex_unlock(&lx_mu);
+    return found ? 0 : -1;
 }
 
 /* An epoll set for the child of a fork: its own copy. */
@@ -4134,7 +4191,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case 5: case 6: case 7: case 8: case 9: case 10: case 11: case 12: case 13: case 14: case 15: case 16:
-        r = err(L_ENOTSUP);                                        /* *xattr: no extended attributes */
+        if (p->linux_mode)                                         /* Linux mode: set/remove accepted (not stored), */
+            r = nr <= 7 || nr >= 14 ? 0 : nr <= 10 ? err(L_ENODATA) : 0;   /* none to get, an empty list */
+        else r = err(L_ENOTSUP);                                   /* *xattr: no extended attributes */
+        break;
+    case 452:                                                      /* fchmodat2(dirfd, path, mode, flags) */
+        if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
+        to_host(p, g, h);
+        if ((a3 & 0x100) && !lstat(h, &st) && S_ISLNK(st.st_mode)) { r = err(L_ENOTSUP); break; }
+        r = chmod(h, lx_mode(p, -1, h, (mode_t)a2 & 07777)) ? herr() : 0;
         break;
     case 228: case 229: case 230: case 231: case 284:              /* mlock, munlock, mlockall, munlockall, mlock2 */
         r = 0;

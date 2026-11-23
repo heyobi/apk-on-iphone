@@ -215,6 +215,10 @@ struct aoi_tty;
 void aoi_proc_attach_tty_to(struct aoi_proc *p, struct aoi_tty *tty);
 /* Linux mode: a process restored from a snapshot (core/snap.c) rejoins the registry. */
 void aoi_proc_linux_resume(struct aoi_proc *p);
+/* Linux mode: live child processes; SIGs to a whole session; the name of a group's leader. */
+int aoi_proc_children(struct aoi_proc *p);
+int aoi_proc_kill_session(int sid, int sig);
+int aoi_proc_name_of_pgrp(int pgrp, char *out, size_t n);
 /* Linux mode: the terminal's foreground process group (TIOCSPGRP), or 0. */
 extern volatile int aoi_tty_pgrp;
 
