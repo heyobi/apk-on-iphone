@@ -50,6 +50,10 @@ if [ "${2:-}" = net ]; then
     cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
     check "getent hosts"           "deb.debian.org"        60  /usr/bin/getent hosts deb.debian.org
     check "apt update"             "Get:"                  900 /usr/bin/apt-get update
+    # libc6 upgrades run debconf from the preinst (the phone failed with /usr/lib/cdebconf/debconf)
+    check "debconf env"            "BOS"                   30  /bin/sh -c 'env | grep -i debconf; [ "$DEBCONF_USE_CDEBCONF" ] && echo DOLU || echo BOS'
+    check "upgrade libc6"          "libc6"                 1200 /bin/sh -c 'apt-get install -y --only-upgrade libc6 libc-bin zlib1g 2>&1 | tail -n 15; dpkg -l libc6 | tail -n 1'
+    check "venv with pip"          "pip"                   900 /bin/sh -c 'apt-get install -y --no-install-recommends python3-venv >/dev/null 2>&1; time python3 -m venv /tmp/venv 2>&1 | tail -n 5; /tmp/venv/bin/pip --version'
     check "apt install python3"    "Setting up python3"    1800 /usr/bin/apt-get install -y --no-install-recommends python3
     check "python3 files"          "python3.13"            30  /bin/sh -c 'ls -la /usr/bin/python3* /usr/bin/*.dpkg-new 2>&1; od -c -N 8 /usr/bin/python3.13'
     check "python3"                "499999500000"          120 /usr/bin/python3 -c 'print(sum(range(10**6)))'
