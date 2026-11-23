@@ -177,6 +177,7 @@ struct aoi_proc {
     volatile uint64_t xsig;         /* signals sent by other processes (bit sig-1), taken between slices */
     int term_sig;                   /* the signal that ended the process (wait status), or 0 */
     int trace_shared;               /* trace is the parent's FILE: not closed here */
+    uint32_t cred[6];               /* real, effective, saved uid; the same for gid (0: root) */
     uint64_t *samples;              /* if set: pc at the end of each time slice (profiling) */
     size_t nsamples, maxsamples;
 };

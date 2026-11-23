@@ -104,7 +104,7 @@ int main(int argc, char **argv)
         "HOME=/root", "USER=root", "LOGNAME=root", "SHELL=/bin/sh", "LANG=C.UTF-8", NULL };
     const char *envp[80], *cwd = "/root", *err;
     char term[64];
-    int ne = 0, a = 1, trace = 0, quiet = getenv("LXRUN_QUIET") != NULL, term = 0;
+    int ne = 0, a = 1, trace = 0, quiet = getenv("LXRUN_QUIET") != NULL, use_tty = 0;
     enum aoi_stop st;
     double t0, t1;
     while (base_env[ne]) { envp[ne] = base_env[ne]; ne++; }
@@ -112,7 +112,7 @@ int main(int argc, char **argv)
     envp[ne++] = term;
     for (;;) {
         if (argc > a && !strcmp(argv[a], "-t")) { trace = 1; a++; }
-        else if (argc > a && !strcmp(argv[a], "-i")) { term = 1; a++; }
+        else if (argc > a && !strcmp(argv[a], "-i")) { use_tty = 1; a++; }
         else if (argc > a + 1 && !strcmp(argv[a], "-e") && ne < 79) { envp[ne++] = argv[a + 1]; a += 2; }
         else if (argc > a + 1 && !strcmp(argv[a], "-C")) { cwd = argv[a + 1]; a += 2; }
         else break;
@@ -144,7 +144,7 @@ int main(int argc, char **argv)
             setrlimit(RLIMIT_NOFILE, &rl);
         }
     }
-    if (term) {
+    if (use_tty) {
         pthread_t th;
         int cols = 80, rows = 24;
         if (!getenv("LXRUN_KEYS") && isatty(0) && !tcgetattr(0, &saved_tio)) {

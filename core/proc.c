@@ -2586,6 +2586,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         np->pid = p->vf->pid; np->ppid = PID(p); np->pgid = p->vf->pgid; np->sid = p->sid;
         np->th[0].tid = np->pid;
         np->th[0].sigmask = p->th[p->vf->thread].sigmask;
+        memcpy(np->cred, p->cred, sizeof np->cred);
         for (k = 1; k <= 64; k++) if (p->sigact[k][0] == 1) np->sigact[k][0] = 1;   /* SIG_IGN survives execve */
         if (!np->trace && p->trace) { np->trace = p->trace; np->trace_shared = 1; }
     }
@@ -3964,10 +3965,38 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_getppid: r = p->ppid ? (uint64_t)p->ppid : 1; break;
-    case NR_getuid: case NR_geteuid: case NR_getgid: case NR_getegid: r = p->uid; break;
+    case NR_getuid: case NR_geteuid: case NR_getgid: case NR_getegid:
+        r = !p->linux_mode ? p->uid : p->cred[nr == NR_getuid ? 0 : nr == NR_geteuid ? 1 : nr == NR_getgid ? 3 : 4];
+        break;
     case 148: case 150: {                                          /* getresuid, getresgid */
-        uint32_t u = p->uid;
-        r = put(p, a0, &u, 4) && put(p, a1, &u, 4) && put(p, a2, &u, 4) ? 0 : err(L_EFAULT);
+        uint32_t u = p->uid, *cr = p->cred + (nr == 148 ? 0 : 3);
+        if (p->linux_mode) r = put(p, a0, cr, 4) && put(p, a1, cr + 1, 4) && put(p, a2, cr + 2, 4) ? 0 : err(L_EFAULT);
+        else r = put(p, a0, &u, 4) && put(p, a1, &u, 4) && put(p, a2, &u, 4) ? 0 : err(L_EFAULT);
+        break;
+    }
+    case 146: case 144: case 145: case 143: case 147: case 149: {  /* setuid, setgid, setre*id, setres*id */
+        /* Linux mode: credentials are tracked as the kernel does (apt drops to _apt and
+         * checks it cannot get back), but not enforced on files: the host owns them all. */
+        int gid = nr == 144 || nr == 143 || nr == 149;
+        uint32_t *cr = p->cred + (gid ? 3 : 0), want[3];
+        int priv = p->cred[1] == 0, k;
+        if (!p->linux_mode) { r = err(L_ENOSYS); break; }   /* (Android: as before) */
+        want[0] = want[1] = want[2] = 0xffffffffu;
+        if (nr == 146 || nr == 144) {                              /* set*id(x) */
+            if (priv) want[0] = want[1] = want[2] = (uint32_t)a0;
+            else want[1] = (uint32_t)a0;
+        } else if (nr == 145 || nr == 143) {                       /* setre*id(r, e) */
+            want[0] = (uint32_t)a0; want[1] = (uint32_t)a1;
+            if (want[0] != 0xffffffffu || (want[1] != 0xffffffffu && want[1] != cr[0])) want[2] = want[1] != 0xffffffffu ? want[1] : cr[1];
+        } else { want[0] = (uint32_t)a0; want[1] = (uint32_t)a1; want[2] = (uint32_t)a2; }
+        r = 0;
+        if (!priv)
+            for (k = 0; k < 3; k++)
+                if (want[k] != 0xffffffffu && want[k] != cr[0] && want[k] != cr[1] && want[k] != cr[2]) r = err(L_EPERM);
+        if (r) break;
+        for (k = 0; k < 3; k++) if (want[k] != 0xffffffffu) cr[k] = want[k];
+        if (p->trace) fprintf(p->trace, "[proc] %d credentials uid %u/%u/%u gid %u/%u/%u\n", p->pid,
+                              p->cred[0], p->cred[1], p->cred[2], p->cred[3], p->cred[4], p->cred[5]);
         break;
     }
     case NR_umask: r = 022; break;
@@ -4347,7 +4376,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = sys_pselect(p, a0, a1, a2, a3, a4);
         break;
     case 158: {                                                    /* getgroups: just the process's group */
-        uint32_t gid = p->uid;
+        uint32_t gid = p->linux_mode ? p->cred[4] : p->uid;
         if ((int32_t)a0 < 0) { r = err(L_EINVAL); break; }
         r = a0 == 0 ? 1 : put(p, a1, &gid, 4) ? 1 : err(L_EFAULT);
         break;
