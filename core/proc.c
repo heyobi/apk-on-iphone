@@ -59,6 +59,8 @@ static void lx_register(struct aoi_proc *p);
 struct aoi_vfork {
     int thread, pid;
     int pgid;                                   /* Linux mode: the child's setpgid before its execve */
+    uint64_t sigact[65][4];                     /* the parent's handlers: the child's changes are its own */
+    char cwd[AOI_PATH];                         /* and its chdir (posix_spawn's file actions) */
     struct aoi_cpu cpu;                         /* the parent at its svc */
     uint64_t sigmask;
     struct aoi_proc_fd fd[AOI_PROC_FDS];        /* the parent's fd table */
@@ -2404,6 +2406,8 @@ static uint64_t vfork_start(struct aoi_proc *p, struct aoi_cpu *c, uint64_t stac
     v->cpu = *c; v->sigmask = p->th[p->cur].sigmask;
     if (stack) c->sp = stack;                                      /* musl/glibc posix_spawn: the child's own stack */
     v->pgid = p->pgid;
+    memcpy(v->sigact, p->sigact, sizeof v->sigact);
+    memcpy(v->cwd, p->cwd, sizeof v->cwd);
     memcpy(v->fd, p->fd, sizeof v->fd);
     for (i = 0; i < AOI_PROC_FDS; i++) {                           /* the child's own copies */
         struct aoi_proc_fd *f = &p->fd[i];
@@ -2434,6 +2438,8 @@ static void vfork_end(struct aoi_proc *p, struct aoi_cpu *c, uint64_t ret)
     }
     memcpy(p->fd, v->fd, sizeof p->fd);
     p->th[v->thread].sigmask = v->sigmask;
+    memcpy(p->sigact, v->sigact, sizeof p->sigact);
+    memcpy(p->cwd, v->cwd, sizeof p->cwd);
     memcpy(c->x, v->cpu.x, sizeof c->x);
     memcpy(c->vreg, v->cpu.vreg, sizeof c->vreg);
     c->sp = v->cpu.sp; c->n = v->cpu.n; c->z = v->cpu.z; c->c = v->cpu.c; c->v = v->cpu.v;
@@ -3231,6 +3237,23 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
         r = (uint64_t)fdn;
         if (p->trace) fprintf(p->trace, "[sys] open %s -> %d\n", g, fdn);
+        break;
+    }
+    case 436: {                                                    /* close_range(first, last, flags) */
+        uint64_t fd, last = a1 < AOI_PROC_FDS - 1 ? a1 : AOI_PROC_FDS - 1;
+        if (a0 > a1) { r = err(L_EINVAL); break; }
+        for (fd = a0; fd <= last; fd++) {
+            if (!(f = fd_get(p, fd))) continue;
+            if (a2 & 4) { f->cloexec = 1; continue; }              /* CLOSE_RANGE_CLOEXEC */
+            if (fd > 2 || p->own_stdio || p->vf) { if (f->dir) closedir(f->dir); else close(f->host); }
+            if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
+            if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
+            if (f->kind == AOI_FD_DNS && f->peer >= 0) close(f->peer);
+            free(f->req);
+            f->used = 0; f->dir = NULL; f->ep = NULL; f->req = NULL; f->nreq = 0; f->connecting = 0;
+            if (!p->vf) epoll_forget(p, (int)fd);
+        }
+        r = 0;
         break;
     }
     case NR_close:
