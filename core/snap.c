@@ -518,6 +518,7 @@ const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root
     aoi_mono_offset = 0;                                     /* guest time never goes back */
     now = aoi_mono_ns();
     if (now < mono) aoi_mono_offset = mono - now;
+    aoi_proc_linux_resume(p);                                /* (Linux userland mode only) */
     return NULL;
 fail:
     fclose(f);

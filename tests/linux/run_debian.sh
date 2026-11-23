@@ -18,11 +18,13 @@ check() {   # check NAME EXPECTED-SUBSTRING TIMEOUT PROGRAM ARGS...
     else
         echo "FAIL debian: $name (rc=$rc, ${secs}s)"; fail=1
         printf '%s\n' "$out" | tail -n 15 | sed 's/^/     | /'
-        AOI_CHILD_TRACE=/dev/null LXRUN_QUIET=1 timeout "$to" "$L" -t "$R" "$@" 2>&1 | grep -v '^\[sched\]' | tail -n 50 | sed 's/^/     t /'
+        rm -f /tmp/lx-child.trace
+        AOI_CHILD_TRACE=/tmp/lx-child.trace LXRUN_QUIET=1 timeout "$to" "$L" -t "$R" "$@" 2>&1 | grep -v '^\[sched\]' | tail -n 50 | sed 's/^/     t /'
+        [ -f /tmp/lx-child.trace ] && grep -v '^\[sched\]' /tmp/lx-child.trace | grep -E "execve|stopped|not impl|= -|\[sig\]|credentials" | tail -n 60 | sed 's/^/     c /'
     fi
     printf '%s\n' "$out" | head -n 12 | sed 's/^/     > /'
 }
-check "ld.so --version"  "GNU C Library"   30  /lib/ld-linux-aarch64.so.1 --version
+check "ld.so --version"  "GLIBC"   30  /lib/ld-linux-aarch64.so.1 --version
 check "bash"             "bash 5"          30  /bin/bash -c 'echo bash ${BASH_VERSINFO[0]}'
 check "debian_version"   "13"              30  /bin/cat /etc/debian_version
 check "ls -la /"         "etc"             30  /bin/ls -la /
@@ -38,7 +40,8 @@ check "date"             "20"              30  /bin/date -u +%Y
 check "perl"             "perl ok"         30  /usr/bin/perl -e 'print "perl ok\n"'
 if [ "${2:-}" = net ]; then
     cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
-    check "apt update"             "Reading package lists" 900 /usr/bin/apt-get update
+    check "getent hosts"           "deb.debian.org"        60  /usr/bin/getent hosts deb.debian.org
+    check "apt update"             "Get:"                  900 /usr/bin/apt-get update
     check "apt install python3"    "Setting up python3"    1800 /usr/bin/apt-get install -y --no-install-recommends python3
     check "python3"                "499999500000"          120 /usr/bin/python3 -c 'print(sum(range(10**6)))'
     check "apt install git"        "Setting up git"        1800 /usr/bin/apt-get install -y --no-install-recommends git

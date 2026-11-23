@@ -2797,6 +2797,15 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd)
     if (!aoi_tty_pgrp) aoi_tty_pgrp = p->pgid;
 }
 
+void aoi_proc_linux_resume(struct aoi_proc *p)
+{
+    if (!p->linux_mode) return;
+    p->xsig = 0;
+    p->trace_shared = 0;
+    lx_register(p);
+    aoi_tty_pgrp = p->pgid;
+}
+
 /* An epoll set for the child of a fork: its own copy. */
 static struct aoi_epoll *epoll_copy(const struct aoi_epoll *ep)
 {
@@ -3558,6 +3567,24 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (a3) put(p, a3, &v, 4);
         if (a4) put(p, a4, &l, 4);
         r = 0;
+        break;
+    }
+    case 269: case 243: {                                          /* sendmmsg, recvmmsg (glibc's resolver: A + AAAA) */
+        uint64_t i, n = nr == 269 ? a2 : a2, flags = nr == 269 ? a3 : a3;
+        if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind != AOI_FD_INET && f->kind != AOI_FD_PIPE) { r = err(L_ENOTSOCK); break; }
+        if (n > 1024) n = 1024;
+        r = 0;
+        for (i = 0; i < n; i++) {
+            uint64_t k = f->kind == AOI_FD_PIPE ? unix_msg(p, f, a1 + 64 * i, i ? flags | 0x40 : flags, nr == 243)
+                                                : net_msg(p, f, a1 + 64 * i, i ? flags | 0x40 : flags, nr == 243);
+            uint32_t len32;
+            if (IS_ERR(k) || c->stop == AOI_STOP_RESTART) { if (!i) r = k; break; }
+            len32 = (uint32_t)k;
+            if (!put(p, a1 + 64 * i + 56, &len32, 4)) { r = err(L_EFAULT); break; }
+            r = i + 1;
+            if (nr == 243 && (flags & 0x10000)) flags |= 0x40;    /* MSG_WAITFORONE: the rest without waiting */
+        }
         break;
     }
     case NR_bind: case NR_listen: case NR_shutdown: case NR_getsockname: case NR_getpeername:

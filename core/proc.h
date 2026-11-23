@@ -205,6 +205,8 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd);
 int aoi_proc_kill_group(int pgid, int sig);
 /* Linux mode: fds 0-2 become the terminal (core/tty.c's aoi_console). */
 void aoi_proc_attach_tty(struct aoi_proc *p);
+/* Linux mode: a process restored from a snapshot (core/snap.c) rejoins the registry. */
+void aoi_proc_linux_resume(struct aoi_proc *p);
 /* Linux mode: the terminal's foreground process group (TIOCSPGRP), or 0. */
 extern volatile int aoi_tty_pgrp;
 
