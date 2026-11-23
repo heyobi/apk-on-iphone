@@ -4062,6 +4062,22 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, 1, g))) { r = err(rc); break; }
         if (!strcmp(g, "/dev/binder") || !strcmp(g, "/dev/hwbinder") || !strcmp(g, "/dev/vndbinder") ||
             !strcmp(g, "/dev/dma_heap/system") || !strcmp(g, "/dev/dma_heap/system-uncached")) { r = 0; break; }
+        if (p->linux_mode) {
+            /* Linux mode: Linux's rules on the guest's modes, not the host's access(): an iOS
+             * app's files are never executable for iOS (debconf's `test -x frontend`). Every
+             * file is root's, so another uid gets the "other" bits. */
+            int want = (int)a2 & 7;
+            uint32_t uid = nr == NR_faccessat2 && (a3 & 0x200) ? p->cred[1] : p->cred[0];   /* AT_EACCESS */
+            if (is_tty_path(g)) { r = 0; break; }
+            to_host(p, g, h);
+            if (stat(h, &st)) { r = herr(); break; }
+            r = 0;
+            if (uid == 0) {
+                if ((want & 1) && !S_ISDIR(st.st_mode) && !(st.st_mode & 0111)) r = err(L_EACCES);
+            } else if (((want & 4) && !(st.st_mode & 04)) || ((want & 2) && !(st.st_mode & 02)) ||
+                       ((want & 1) && !(st.st_mode & 01))) r = err(L_EACCES);
+            break;
+        }
         to_host(p, g, h);
         r = access(h, (int)a2 & 7) ? herr() : 0;
         if (!r && (a2 & 2) && p->uid && owner(p, g) != p->uid && !stat(h, &st) && S_ISREG(st.st_mode))
