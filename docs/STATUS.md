@@ -1,4 +1,118 @@
-# Status and handoff (2026-10-04)
+# Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
+
+## Linux userland mode (2026-11-23, branch `linux-userland`)
+
+The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
+aarch64 Linux root file system, unmodified, as root: **Alpine 3.24** (musl, busybox,
+apk) and **Debian 13 "trixie"** (glibc 2.41, bash, coreutils, perl, dpkg, apt).
+Android mode is untouched: everything new is behind `aoi_proc.linux_mode`
+(`aoi_proc_linux()`), and `make test` / `make difftest` stay green (every class `WRONG 0`).
+
+How to run it (Linux host; CI does this on an arm64 runner, `.github/workflows/linux-userland.yml`):
+
+    make build/lxrun
+    sh tests/linux/fetch-alpine.sh ~/alpine        # official mirror, SHA-256 checked
+    build/lxrun ~/alpine /bin/sh -c 'uname -a; apk --version'
+    build/lxrun -i ~/alpine /bin/sh -l             # with a terminal (raw host tty)
+    sh tests/linux/run_alpine.sh ~/alpine net      # 20 checks incl. apk add python3
+    sh tests/linux/fetch-debian.sh ~/debian        # debian:trixie-slim, digests checked
+    sh tests/linux/run_debian.sh ~/debian net      # 21 checks incl. apt install python3 git
+
+What the core gained for it (all in this repository's own code):
+
+- **Processes.** `fork()` is a real copy: `aoi_vm_clone` copies the sparse address space
+  (copy-on-write `vm_copy` on Darwin, copies of the touched host pages elsewhere) and
+  dups the fd table; the child runs on a host thread of its own. `execve()` replaces
+  the image in place (`exec_replace`); vfork/posix_spawn children (musl and glibc pass a
+  stack) still start a fresh process. Up to 4096 arguments (dpkg's py_compile).
+  A vfork child's sigaction/chdir no longer leak into the parent.
+- **Process ids, groups, sessions, signals between processes**: a registry of live
+  processes; `kill`/`tgkill` to other pids and groups, SIGCHLD to the parent, setpgid/
+  setsid/getsid, `rt_sigsuspend`, signal-terminated wait status. Orphans live on.
+- **The terminal** (`core/tty.c`): a pty slave with Linux's line discipline (canonical
+  editing, echo, ^C/^\ to the foreground group, ^D, CR/NL), termios (TCGETS/TCSETS and
+  the termios2 forms), window size + SIGWINCH, TIOCSPGRP job control. Guest fds of kind
+  `AOI_FD_TTY` (`/dev/tty`, `/dev/pts/0`, fds 0-2 after `aoi_proc_attach_tty`).
+- **Fake root**: uid/gid tracked per process (setresuid & co., so apt's drop to `_apt`
+  works) but not enforced on files; every file is owned by root; chmod keeps the owner's
+  rw on the host file (dpkg creates files with mode 0), as fakeroot does.
+- Syscalls added: `statx`, `pselect6`, `sendmmsg`/`recvmmsg` (glibc's resolver),
+  `close_range` (Python's posix_spawn), `getgroups`/`setgroups`, `times`, wait4 rusage;
+  `readv` waits on empty pipes (musl's stdio reads with readv).
+- CPU: scalar `cmeq/cmge/cmgt/cmle/cmlt #0`, `abs`, `neg` (64-bit; perl uses `cmeq d, d, #0`).
+
+What runs (CI, host path, every push):
+
+| | Alpine 3.24 | Debian 13 |
+|---|---|---|
+| shell, coreutils / busybox, pipes, `$(...)`, scripts | yes | yes (bash) |
+| interactive shell with Ctrl-C (job control) | yes | (same core) |
+| package manager | `apk update`, `apk add python3` (10 s / 24 s) | `apt update` (72 s), `apt install python3` (160 s) and `git` (150 s), maintainer scripts |
+| python3 | yes | yes (3.13) |
+| DNS / HTTP(S) | yes (musl) | yes (glibc, via sendmmsg) |
+
+**On iOS: LxTerm** (`lxios/`, `.github/workflows/lxterm.yml`): a one-screen app, a
+terminal (xterm.js in a WKWebView) with a key row (Esc, Ctrl, Tab, arrows, |, -, /,
+~, ^C, ^D). It bundles both roots as .tar.gz (Alpine 4 MB + python3, Debian ~35 MB +
+python3, both installed by their own package managers running in our interpreter in
+CI) and unpacks them into Application Support on first launch. Built for the
+simulator (run there in CI: screenshots and `Documents/measure-*.txt`) and as an
+unsigned IPA (artifact `LxTerm-ipa`) to sideload. Launch arguments: `-distro alpine|debian`,
+`-demo`, `-measure`, `-resume`.
+
+Measurements (2026-11-23). Host: `tests/linux/bench.sh` with `build/lxrun` on the CI's
+arm64 runner (~125 M guest instructions/s). Simulator: LxTerm `-measure` in the iOS
+simulator on the CI's macOS runner (Apple silicon, shared VM), Alpine / Debian.
+Not yet measured on a physical iPhone.
+
+| | host (Alpine) | simulator, Alpine | simulator, Debian |
+|---|---:|---:|---:|
+| first launch: unpack the root | | 2.2 s (1,408 files) | 3.0 s (4,060 files) |
+| boot to the shell prompt | | 0.014 s | 0.150 s |
+| resume the shell from its snapshot | | 0.040 s | 0.086 s |
+| process start (`sh -c true`) | 0.006 s | 0.011 s | 0.005 s |
+| `python3 -c pass` | 0.37 s | 0.94 s | 1.24 s |
+| `python3`: 1M-iteration `for` loop (incl. start) | 10.4 s | 18.4 s | 16.2 s |
+| `sh` while-loop, 100k iterations | 12.5 s | 29.5 s | 23.8 s |
+| `sha256sum` of 16 MiB (from `dd`, through a pipe) | 5.0 s | 9.0 s | 6.1 s |
+
+iSH: no comparable published numbers were found (its issue tracker has only
+reports such as `pip -V` taking minutes on old iPads); the same commands should be
+timed in iSH on the same phone before claiming a ratio.
+
+<p>
+<img src="screenshots/sim-lxterm-chooser.jpg" width="180" alt="LxTerm: choose Alpine or Debian">
+<img src="screenshots/sim-lxterm-alpine.jpg" width="180" alt="Alpine shell in LxTerm (simulator)">
+<img src="screenshots/sim-lxterm-debian.jpg" width="180" alt="Debian shell in LxTerm (simulator)">
+<img src="screenshots/sim-lxterm-resumed.jpg" width="180" alt="Alpine shell resumed from its snapshot">
+</p>
+
+Not done yet / known gaps:
+
+- **Not tried on a physical iPhone** yet (simulator only); the IPA is built.
+- No ptys for programs that open `/dev/ptmx` (tmux, script, sshd); one terminal per app.
+- Job control stops (SIGTSTP/SIGSTOP, `fg`/`bg`) are ignored; Ctrl-Z does nothing.
+- `/proc` is the Android-era synthetic subset (`/proc/self/...`); no `/proc/<pid>` for
+  other processes (`ps` shows nothing), no `/proc/self/fd` directory, no `/sys`.
+- File ownership is not stored (everything is root's); modes keep owner rw on the host.
+- MAP_SHARED pages are not shared between a forked parent and child.
+- No rseq/clone3 (glibc falls back), no ptrace, no namespaces, no AF_UNIX sockets other
+  than socketpair (no local daemons), no inotify events.
+- Speed is the interpreter's: ~125 M guest instructions/s on the CI's arm64 runner,
+  ~80-90 M/s on an iPhone 16 Pro; a Python `for` loop of 1M iterations takes ~10 s on
+  the host.
+
+Licensing (for a later App Store build): all new core code is this project's own
+(nothing copied). Watch-outs: the bundled roots contain GPL-2/GPL-3 programs (busybox,
+bash, coreutils, apt); shipping GPLv3 binaries inside an App Store app has the VLC-2011
+problem. Downloading the root on first launch from the distributions' own mirrors
+avoids bundling them. App Review 2.5.2 (running code not in the bundle) is the other
+risk; iSH and UTM SE are in the store as precedent.
+
+Recommendation: keep the core here (one core, both modes tested by CI), and make the
+app a separate repository/app once it heads for the App Store, consuming `core/` as a
+subtree, so its license can be decided separately.
+
 
 ## What runs today
 

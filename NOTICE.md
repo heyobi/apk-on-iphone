@@ -30,6 +30,22 @@ These are not part of this repository; the build fetches them (`.github/workflow
 The Android apps a user adds are theirs, not part of LiquidAPK, and are not
 distributed with it.
 
+## Shipped inside the LxTerm demo app (`lxios/`, `.github/workflows/lxterm.yml`)
+
+LxTerm runs an ordinary Linux root file system in the same core. Its own code
+(`lxios/`, `core/tty.c`, the Linux userland mode in `core/proc.c`, `tools/lxrun.c`) is
+part of this repository. The build adds:
+
+| Component | Where it comes from | License |
+|---|---|---|
+| xterm.js 5.5.0 and its fit addon (the terminal view) | npm `@xterm/xterm`, `@xterm/addon-fit` (npm checks the registry's integrity hash) | MIT; text in the app's `licenses/` |
+| Alpine Linux aarch64 minirootfs, plus python3 installed with `apk` | dl-cdn.alpinelinux.org, SHA-256 checked (`tests/linux/fetch-alpine.sh`) | each package its own: busybox GPL-2.0, musl MIT, apk-tools GPL-2.0, Python PSF, … (`/lib/apk/db/installed` lists them) |
+| Debian 13 arm64 root (`debian:trixie-slim`), plus python3 installed with `apt` | the official image on Docker Hub, manifest and layer digests checked (`tests/linux/fetch-debian.sh`); packages from deb.debian.org | each package its own (`/usr/share/doc/*/copyright`): glibc LGPL-2.1, bash and coreutils GPL-3.0, dpkg/apt GPL-2.0, perl GPL/Artistic, … |
+
+Debian is a registered trademark of Software in the Public Interest, Inc.; Alpine
+Linux is a trademark of its project. LxTerm is not affiliated with or endorsed by
+either; the root file systems are their unmodified images.
+
 ## Tools used to build and test (not shipped)
 
 | Tool | Use | License |
