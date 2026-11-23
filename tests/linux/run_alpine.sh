@@ -36,10 +36,18 @@ check "ps"             "PID"               20  /bin/ps
 check "apk --version"  "apk-tools"         20  /sbin/apk --version
 check "find | sort"    "/etc/passwd"       30  /bin/sh -c 'find /etc -name passwd | sort'
 check "tar roundtrip"  "hostname"          30  /bin/sh -c 'cd /tmp && tar -cf t.tar /etc/hostname 2>/dev/null; tar -tf t.tar'
+# The terminal (core/tty.c): an interactive ash, keys typed as on the phone.
+out="$(LXRUN_QUIET=1 LXRUN_KEYS='echo hi-$((40+2))\r\wsleep 30\r\w\x03\wecho after-ctrl-c\r\wexit\r' timeout 60 "$L" -i "$R" /bin/sh -i 2>&1)"; rc=$?
+if [ $rc -eq 0 ] && printf '%s' "$out" | grep -q "hi-42" && printf '%s' "$out" | grep -q "after-ctrl-c"; then
+    echo "OK   alpine: interactive sh, Ctrl-C"
+else
+    echo "FAIL alpine: interactive sh, Ctrl-C (rc=$rc)"; fail=1
+fi
+printf '%s\n' "$out" | tail -n 12 | sed 's/^/     > /'
 if [ "${2:-}" = net ]; then
     cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
-    check "apk update"      "OK:"           600 /sbin/apk update
-    check "apk add python3" "OK:"           900 /sbin/apk add python3
+    check "apk update"      "OK:"           300 /sbin/apk update
+    check "apk add python3" "OK:"           600 /sbin/apk add python3
     check "python3"         "499999500000"  120 /usr/bin/python3 -c 'print(sum(range(10**6)))'
     check "python3 script"  "sha256 ok"     120 /usr/bin/python3 -c 'import hashlib,json,os; h=hashlib.sha256(b"abc").hexdigest(); print("sha256", "ok" if h.startswith("ba7816bf") else h, json.dumps(os.uname().machine))'
 fi

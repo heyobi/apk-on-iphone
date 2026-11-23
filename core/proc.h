@@ -48,7 +48,8 @@ enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AO
        AOI_FD_INET,                 /* AF_INET/AF_INET6: a host socket, non-blocking underneath */
        AOI_FD_DNS,                  /* netd's /dev/socket/dnsproxyd, answered with the host's resolver */
        AOI_FD_TIMERFD,              /* timerfd: expirations counted in `count` */
-       AOI_FD_DMAHEAP };            /* /dev/dma_heap/system: allocations are memfds */
+       AOI_FD_DMAHEAP,              /* /dev/dma_heap/system: allocations are memfds */
+       AOI_FD_TTY };                /* Linux mode: the terminal (core/tty.c, aoi_console) */
 
 /* An epoll instance: level-triggered interest entries {fd, events, data}. */
 struct aoi_epoll { int refs, n, cap; struct { int fd; uint32_t events; uint64_t data; } *e; };
@@ -201,6 +202,8 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd);
 /* Linux mode: sends sig to every process of group pgid (the terminal's Ctrl-C), from any
  * host thread. Returns how many got it. */
 int aoi_proc_kill_group(int pgid, int sig);
+/* Linux mode: fds 0-2 become the terminal (core/tty.c's aoi_console). */
+void aoi_proc_attach_tty(struct aoi_proc *p);
 /* Linux mode: the terminal's foreground process group (TIOCSPGRP), or 0. */
 extern volatile int aoi_tty_pgrp;
 

@@ -10,6 +10,7 @@
 #include "hle.h"
 #include "gpu.h"
 #include "gralloc.h"
+#include "tty.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -1489,6 +1490,10 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         break;
     }
     case AOI_FD_LOGD: r |= EP_OUT; break;
+    case AOI_FD_TTY:
+        if (aoi_console && aoi_tty_readable(aoi_console)) r |= EP_IN;
+        r |= EP_OUT;
+        break;
     default: break;                                                /* sockets, binder, epoll, uffd: never */
     }
     return r & (want | EP_ERR | EP_HUP);
@@ -1573,6 +1578,167 @@ static uint64_t sys_epoll_pwait(struct aoi_proc *p, struct aoi_proc_fd *f, uint6
     }
     if (n || timeout_ms == 0) { p->th[p->cur].poll_deadline = 0; return (uint64_t)n; }
     return poll_wait(p, timeout_ms < 0 ? -1 : (int64_t)timeout_ms * 1000000) ? 0 : 0;
+}
+
+/* pselect6(n, readfds, writefds, exceptfds, timeout, sigmask): fd_ready over the sets. */
+static uint64_t sys_pselect(struct aoi_proc *p, uint64_t nfds, uint64_t rp, uint64_t wp, uint64_t ep, uint64_t tsp)
+{
+    uint64_t in[2][16], out[2][16], ex[16];
+    int64_t timeout = -1;
+    int i, n = 0, words;
+    if (nfds > 1024) return err(L_EINVAL);
+    words = (int)((nfds + 63) / 64);
+    memset(in, 0, sizeof in); memset(out, 0, sizeof out); memset(ex, 0, sizeof ex);
+    if (tsp) {
+        uint8_t ts[16];
+        if (!get(p, tsp, ts, 16)) return err(L_EFAULT);
+        timeout = (int64_t)u64(ts) * 1000000000 + (int64_t)u64(ts + 8);
+    }
+    if ((rp && !get(p, rp, in[0], (uint64_t)words * 8)) || (wp && !get(p, wp, in[1], (uint64_t)words * 8)))
+        return err(L_EFAULT);
+    for (i = 0; i < (int)nfds; i++) {
+        uint32_t want = 0, rev;
+        if (in[0][i / 64] >> (i % 64) & 1) want |= EP_IN;
+        if (in[1][i / 64] >> (i % 64) & 1) want |= EP_OUT;
+        if (!want) continue;
+        if (!fd_get(p, (uint64_t)i)) return err(L_EBADF);
+        rev = fd_ready(p, i, want);
+        if (rev & (EP_IN | EP_HUP | EP_ERR) && (want & EP_IN)) { out[0][i / 64] |= 1ULL << (i % 64); n++; }
+        if (rev & (EP_OUT | EP_ERR) && (want & EP_OUT)) { out[1][i / 64] |= 1ULL << (i % 64); n++; }
+    }
+    if (n || timeout == 0) {
+        p->th[p->cur].poll_deadline = 0;
+        if ((rp && !put(p, rp, out[0], (uint64_t)words * 8)) || (wp && !put(p, wp, out[1], (uint64_t)words * 8)) ||
+            (ep && !put(p, ep, ex, (uint64_t)words * 8)))
+            return err(L_EFAULT);
+        return (uint64_t)n;
+    }
+    poll_wait(p, timeout);
+    return 0;
+}
+
+/* ---------- the terminal (Linux mode, core/tty.c) ---------- */
+
+static int is_tty_path(const char *g)
+{
+    return !strcmp(g, "/dev/tty") || !strcmp(g, "/dev/console") || !strcmp(g, "/dev/pts/0") || !strcmp(g, "/dev/tty0");
+}
+
+/* A terminal looks like /dev/pts/0: a character device, major 136. */
+static void tty_stat(uint8_t *sbuf)
+{
+    uint32_t mode = 020620;
+    uint64_t rdev = 136 << 8, size = 0;
+    memcpy(sbuf + 16, &mode, 4);
+    memcpy(sbuf + 32, &rdev, 8);
+    memcpy(sbuf + 48, &size, 8);
+}
+
+/* struct stat (Linux arm64, 128 bytes) -> struct statx (256 bytes, STATX_BASIC_STATS). */
+static void statx_from_stat(const uint8_t *s, uint8_t *x)
+{
+    uint64_t dev = u64(s), rdev = u64(s + 32);
+    uint32_t v;
+    uint16_t mode = (uint16_t)u32(s + 16);
+    memset(x, 0, 256);
+    v = 0x7ff; memcpy(x, &v, 4);                                   /* stx_mask */
+    memcpy(x + 4, s + 56, 4);                                      /* blksize */
+    memcpy(x + 16, s + 20, 4);                                     /* nlink */
+    memcpy(x + 20, s + 24, 8);                                     /* uid, gid */
+    memcpy(x + 28, &mode, 2);
+    memcpy(x + 32, s + 8, 8);                                      /* ino */
+    memcpy(x + 40, s + 48, 8);                                     /* size */
+    memcpy(x + 48, s + 64, 8);                                     /* blocks */
+    memcpy(x + 64, s + 72, 8); memcpy(x + 72, s + 80, 4);          /* atime */
+    memcpy(x + 80, s + 104, 8); memcpy(x + 88, s + 112, 4);        /* btime: ctime's */
+    memcpy(x + 96, s + 104, 8); memcpy(x + 104, s + 112, 4);       /* ctime */
+    memcpy(x + 112, s + 88, 8); memcpy(x + 120, s + 96, 4);        /* mtime */
+    v = (uint32_t)((rdev >> 8) & 0xfff); memcpy(x + 128, &v, 4);
+    v = (uint32_t)((rdev & 0xff) | ((rdev >> 12) & 0xfff00)); memcpy(x + 132, &v, 4);
+    v = (uint32_t)((dev >> 8) & 0xfff); memcpy(x + 136, &v, 4);
+    v = (uint32_t)((dev & 0xff) | ((dev >> 12) & 0xfff00)); memcpy(x + 140, &v, 4);
+}
+
+static uint64_t tty_read(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf, uint64_t n)
+{
+    static _Thread_local char b[16384];
+    long k;
+    if (!aoi_console) return 0;
+    if (!n) return 0;
+    k = aoi_tty_read(aoi_console, b, n < sizeof b ? n : sizeof b);
+    if (k < 0) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 5000000);
+    return put(p, buf, b, (uint64_t)k) ? (uint64_t)k : err(L_EFAULT);
+}
+
+static uint64_t tty_write(struct aoi_proc *p, uint64_t buf, uint64_t n)
+{
+    static _Thread_local char b[16384];
+    uint64_t done = 0;
+    while (done < n) {
+        uint64_t k = n - done < sizeof b ? n - done : sizeof b;
+        if (!get(p, buf + done, b, k)) return done ? done : err(L_EFAULT);
+        if (aoi_console) aoi_tty_write(aoi_console, b, (size_t)k);
+        else if (write(1, b, (size_t)k) < 0) break;
+        done += k;
+    }
+    return done;
+}
+
+static uint64_t tty_ioctl(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t req, uint64_t arg)
+{
+    uint8_t tio[44];
+    uint16_t ws[4];
+    int32_t v;
+    if (!aoi_console) return err(L_ENOTTY);
+    switch (req) {
+    case 0x5401: aoi_tty_get(aoi_console, tio); return put(p, arg, tio, 36) ? 0 : err(L_EFAULT);   /* TCGETS */
+    case 0x802c542a: aoi_tty_get(aoi_console, tio); return put(p, arg, tio, 44) ? 0 : err(L_EFAULT);   /* TCGETS2 */
+    case 0x5402: case 0x5403: case 0x5404:                         /* TCSETS, TCSETSW, TCSETSF */
+        if (!get(p, arg, tio, 36)) return err(L_EFAULT);
+        aoi_tty_set(aoi_console, tio, 36, req == 0x5404);
+        return 0;
+    case 0x402c542b: case 0x402c542c: case 0x402c542d:             /* TCSETS2, TCSETSW2, TCSETSF2 */
+        if (!get(p, arg, tio, 44)) return err(L_EFAULT);
+        aoi_tty_set(aoi_console, tio, 44, req == 0x402c542d);
+        return 0;
+    case 0x5413: aoi_tty_winsize(aoi_console, ws); return put(p, arg, ws, 8) ? 0 : err(L_EFAULT);   /* TIOCGWINSZ */
+    case 0x5414:                                                   /* TIOCSWINSZ */
+        if (!get(p, arg, ws, 8)) return err(L_EFAULT);
+        aoi_tty_set_winsize(aoi_console, ws);
+        return 0;
+    case 0x540f: v = aoi_tty_pgrp ? aoi_tty_pgrp : p->pgid; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPGRP */
+    case 0x5410:                                                   /* TIOCSPGRP */
+        if (!get(p, arg, &v, 4)) return err(L_EFAULT);
+        aoi_tty_pgrp = v;
+        if (p->trace) fprintf(p->trace, "[tty] foreground group %d\n", v);
+        return 0;
+    case 0x5429: v = p->sid; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGSID */
+    case 0x540e: case 0x5422: case 0x540a: case 0x5409: case 0x5425: return 0;   /* TIOCSCTTY, TIOCNOTTY, TCXONC, TCSBRK(P) */
+    case 0x540b: if (arg != 1) aoi_tty_flush(aoi_console); return 0;   /* TCFLSH: input (or both) */
+    case 0x541b: v = (int32_t)aoi_tty_pending(aoi_console); return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* FIONREAD */
+    case 0x5411: v = 0; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCOUTQ */
+    case 0x5421: if (!get(p, arg, &v, 4)) return err(L_EFAULT); f->nonblock = v != 0; return 0;   /* FIONBIO */
+    case 0x80045430: v = 0; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPTN */
+    default:
+        if (p->trace) fprintf(p->trace, "[tty] ioctl %#llx not implemented\n", (unsigned long long)req);
+        return err(L_EINVAL);
+    }
+}
+
+void aoi_proc_attach_tty(struct aoi_proc *p)
+{
+    int i;
+    for (i = 0; i < 3; i++) {
+        int h = open("/dev/null", O_RDWR | O_CLOEXEC);
+        if (h < 0) continue;
+        if (p->fd[i].used && p->fd[i].host > 2) close(p->fd[i].host);
+        p->fd[i].used = 1;
+        p->fd[i].host = h;
+        p->fd[i].kind = AOI_FD_TTY;
+        p->fd[i].nonblock = 0;
+        p->fd[i].cloexec = 0;
+        snprintf(p->fd[i].path, AOI_PATH, "/dev/pts/0");
+    }
 }
 
 static uint64_t sys_ppoll(struct aoi_proc *p, uint64_t fds, uint64_t nfds, uint64_t tsp)
@@ -2818,6 +2984,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     switch (nr) {
     case NR_read: case NR_pread64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (f->kind == AOI_FD_TTY) { r = tty_read(p, f, a1, a2); break; }
         if (f->kind == AOI_FD_TIMERFD) {                           /* expirations since the last read */
             uint64_t v;
             if (a2 < 8) { r = err(L_EINVAL); break; }
@@ -2869,6 +3036,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         if (f->kind == AOI_FD_DNS) { r = dns_write(p, f, a1, a2); break; }
+        if (f->kind == AOI_FD_TTY) { r = tty_write(p, a1, a2); break; }
         if (f->host <= 2) fflush(stdout);
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 0, nr == NR_write ? -1 : (int64_t)a3) : 0;
         if (r == err(L_EAGAIN) && (f->kind == AOI_FD_PIPE || f->kind == AOI_FD_INET) && !f->nonblock)
@@ -2894,6 +3062,21 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = total;
             break;
         }
+        if (f->kind == AOI_FD_TTY) {                               /* the terminal: one buffer at a time */
+            r = 0;
+            for (i = 0; i < a2; i++) {
+                uint8_t e[16];
+                uint64_t k;
+                if (!get(p, a1 + i * 16, e, 16)) { r = err(L_EFAULT); break; }
+                if (!u64(e + 8)) continue;
+                k = nr == NR_readv ? tty_read(p, f, u64(e), u64(e + 8)) : tty_write(p, u64(e), u64(e + 8));
+                if (IS_ERR(k) || (p->cpu.stop == AOI_STOP_RESTART)) { if (!total) r = k; break; }
+                total += k;
+                r = total;
+                if (nr == NR_readv) break;                         /* (a line at a time) */
+            }
+            break;
+        }
         if (f->kind != AOI_FD_FILE && f->kind != AOI_FD_PIPE && f->kind != AOI_FD_INET) { r = err(L_ENOTCONN); break; }
         r = 0;
         for (i = 0; i < a2; i++) {
@@ -2904,6 +3087,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             base = u64(e); len = u64(e + 8);
             if (!len) continue;
             k = xfer(p, f->host, base, len, nr == NR_readv, -1);
+            if (k == -L_EAGAIN && !total && f->kind != AOI_FD_FILE && !f->nonblock) {   /* (musl reads stdio with readv) */
+                r = block_and_retry(p, 1000000);
+                break;
+            }
             if (k < 0) { r = total ? total : (uint64_t)k; break; }
             total += (uint64_t)k;
             r = total;
@@ -2916,6 +3103,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
         if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
+        } else if (p->linux_mode && is_tty_path(g)) {              /* the terminal (core/tty.c) */
+            if (!aoi_console) { r = err(6); break; }
+            if ((hfd = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+            if ((fdn = fd_new(p, hfd, "/dev/pts/0", 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
+            p->fd[fdn].kind = AOI_FD_TTY;
+            p->fd[fdn].nonblock = (a2 & 04000) != 0;
+            p->fd[fdn].cloexec = (a2 & 02000000) != 0;
+            r = (uint64_t)fdn;
+            break;
         } else if (!strcmp(g, "/dev/aoi_home")) {                  /* aoi: the app left for the launcher */
             if (p->home) p->home(p->frame_ctx);
             r = err(L_ENOENT);
@@ -3032,22 +3228,48 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (fstat(f->host, &st)) { r = herr(); break; }
         lx_stat(&st, sbuf, owner(p, f->path));
+        if (f->kind == AOI_FD_TTY) tty_stat(sbuf);
         r = put(p, a1, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
+    case 291: {                                                    /* statx(dirfd, path, flags, mask, buf) */
+        int empty = (a2 & 0x1000) != 0, tty = 0;
+        char path0[2];
+        uint8_t sx[256];
+        if (empty && gstr(p, a1, path0, 2) && !path0[0]) {
+            if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+            if (fstat(f->host, &st)) { r = herr(); break; }
+            snprintf(g, AOI_PATH, "%s", f->path);
+            tty = f->kind == AOI_FD_TTY;
+        } else {
+            if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0x100), g))) { r = err(rc); break; }
+            if (!(a2 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);
+            if (p->linux_mode && aoi_console && is_tty_path(g)) { tty = 1; to_host(p, "/dev/null", h); }
+            else to_host(p, g, h);
+            if ((a2 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
+        }
+        lx_stat(&st, sbuf, owner(p, g));
+        if (tty) tty_stat(sbuf);
+        statx_from_stat(sbuf, sx);
+        r = put(p, a4, sx, sizeof sx) ? 0 : err(L_EFAULT);
+        break;
+    }
     case NR_newfstatat: {
-        int empty = (a3 & 0x1000) != 0;                           /* AT_EMPTY_PATH */
+        int empty = (a3 & 0x1000) != 0, tty = 0;                  /* AT_EMPTY_PATH */
         char path0[2];
         if (empty && gstr(p, a1, path0, 2) && !path0[0]) {
             if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
             if (fstat(f->host, &st)) { r = herr(); break; }
             snprintf(g, AOI_PATH, "%s", f->path);
+            tty = f->kind == AOI_FD_TTY;
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
             if (!(a3 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);   /* (linker64) */
-            to_host(p, g, h);
+            if (p->linux_mode && aoi_console && is_tty_path(g)) { tty = 1; to_host(p, "/dev/null", h); }
+            else to_host(p, g, h);
             if ((a3 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
         lx_stat(&st, sbuf, owner(p, g));
+        if (tty) tty_stat(sbuf);
         r = put(p, a2, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
     }
@@ -3499,6 +3721,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = ioctl(f->host, FIONREAD, &v) ? herr() : put(p, a2, &v, 4) ? 0 : err(L_EFAULT);
             break;
         }
+        if ((f = fd_get(p, a0)) && f->kind == AOI_FD_TTY) { r = tty_ioctl(p, f, a1, a2); break; }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_DMAHEAP) {
             uint8_t ad[24];                                        /* dma_heap_allocation_data {len, fd, fd_flags, heap_flags} */
             uint64_t len;
@@ -4120,6 +4343,16 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         }
         break;
     }
+    case 72:                                                       /* pselect6 */
+        r = sys_pselect(p, a0, a1, a2, a3, a4);
+        break;
+    case 158: {                                                    /* getgroups: just the process's group */
+        uint32_t gid = p->uid;
+        if ((int32_t)a0 < 0) { r = err(L_EINVAL); break; }
+        r = a0 == 0 ? 1 : put(p, a1, &gid, 4) ? 1 : err(L_EFAULT);
+        break;
+    }
+    case 159: r = 0; break;                                        /* setgroups: accepted */
     case 133: {                                                    /* rt_sigsuspend(mask, size) */
         struct aoi_thread *t = &p->th[p->cur];
         uint64_t m;
@@ -4199,8 +4432,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     default:
         if (nr < sizeof p->unknown * 8 && !(p->unknown[nr / 8] & (1 << (nr % 8)))) {
             p->unknown[nr / 8] |= (unsigned char)(1 << (nr % 8));
-            fprintf(stderr, "[aoiproc] syscall %llu not implemented (ENOSYS), pc=%#llx\n",
-                    (unsigned long long)nr, (unsigned long long)c->pc);
+            if (!p->linux_mode || p->log || p->trace)                  /* (not into a Linux terminal) */
+                fprintf(p->linux_mode && p->trace ? p->trace : stderr, "[aoiproc] syscall %llu not implemented (ENOSYS), pc=%#llx\n",
+                        (unsigned long long)nr, (unsigned long long)c->pc);
         }
         r = err(L_ENOSYS);
         break;

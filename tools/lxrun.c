@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE                     /* cfmakeraw */
 #define _DARWIN_C_SOURCE
 /* lxrun: run a program from an ordinary aarch64 Linux root file system (Alpine's
  * minirootfs, a Debian rootfs) in the interpreter, as root, with a Linux
@@ -9,8 +9,15 @@
  * -t logs every syscall to stderr (AOI_CHILD_TRACE=file adds child processes);
  * -C sets the starting directory (a guest path, default /root).
  * AOI_SNAPSHOT_SAVE=file saves the process when it opens /dev/aoi_snapshot;
- * AOI_SNAPSHOT_LOAD=file resumes one instead of starting PROGRAM. */
+ * AOI_SNAPSHOT_LOAD=file resumes one instead of starting PROGRAM.
+ * -i: the guest gets a terminal (core/tty.c, as the iOS app's view): the host's own
+ * terminal in raw mode, or, with LXRUN_KEYS, typed keys from a script: C escapes
+ * (\r Enter, \x03 Ctrl-C, \e Esc, \t) and \w for a one-second pause. */
 #include "../core/proc.h"
+#include "../core/tty.h"
+
+#include <pthread.h>
+#include <termios.h>
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -21,6 +28,56 @@
 #include <sys/resource.h>
 
 static struct aoi_proc proc;
+static struct termios saved_tio;
+static int raw_tty;
+
+static void tty_out(void *ctx, const char *s, size_t n)
+{
+    (void)ctx;
+    while (n) {
+        ssize_t k = write(1, s, n);
+        if (k <= 0) break;
+        s += k; n -= (size_t)k;
+    }
+}
+
+static void *keys_script(void *arg)
+{
+    const char *s = arg;
+    unsigned gap = getenv("LXRUN_KEY_GAP") ? (unsigned)atoi(getenv("LXRUN_KEY_GAP")) : 200;
+    struct timespec ts = { 1, 0 };
+    nanosleep(&ts, NULL);                            /* let the program start */
+    while (*s) {
+        char c = *s++;
+        if (c == '\\' && *s) {
+            char e = *s++;
+            if (e == 'w') { ts.tv_sec = 1; ts.tv_nsec = 0; nanosleep(&ts, NULL); continue; }
+            if (e == 'r') c = '\r'; else if (e == 'n') c = '\n'; else if (e == 't') c = '\t';
+            else if (e == 'e') c = 27; else if (e == '\\') c = '\\';
+            else if (e == 'x' && s[0] && s[1]) { char h[3] = { s[0], s[1], 0 }; c = (char)strtol(h, NULL, 16); s += 2; }
+            else c = e;
+        }
+        aoi_tty_input(aoi_console, &c, 1);
+        ts.tv_sec = 0; ts.tv_nsec = (long)gap * 1000000L / 10;
+        nanosleep(&ts, NULL);
+        if (c == '\r') { ts.tv_sec = gap / 1000; ts.tv_nsec = (long)(gap % 1000) * 1000000L; nanosleep(&ts, NULL); }
+    }
+    return NULL;
+}
+
+static void *keys_host(void *arg)
+{
+    char b[256];
+    (void)arg;
+    for (;;) {
+        ssize_t k = read(0, b, sizeof b);
+        if (k <= 0) break;
+        aoi_tty_input(aoi_console, b, (size_t)k);
+    }
+    return NULL;
+}
+
+static void restore_tty(void) { if (raw_tty) tcsetattr(0, TCSANOW, &saved_tio); }
 
 static double now_s(void)
 {
@@ -47,7 +104,7 @@ int main(int argc, char **argv)
         "HOME=/root", "USER=root", "LOGNAME=root", "SHELL=/bin/sh", "LANG=C.UTF-8", NULL };
     const char *envp[80], *cwd = "/root", *err;
     char term[64];
-    int ne = 0, a = 1, trace = 0, quiet = getenv("LXRUN_QUIET") != NULL;
+    int ne = 0, a = 1, trace = 0, quiet = getenv("LXRUN_QUIET") != NULL, term = 0;
     enum aoi_stop st;
     double t0, t1;
     while (base_env[ne]) { envp[ne] = base_env[ne]; ne++; }
@@ -55,6 +112,7 @@ int main(int argc, char **argv)
     envp[ne++] = term;
     for (;;) {
         if (argc > a && !strcmp(argv[a], "-t")) { trace = 1; a++; }
+        else if (argc > a && !strcmp(argv[a], "-i")) { term = 1; a++; }
         else if (argc > a + 1 && !strcmp(argv[a], "-e") && ne < 79) { envp[ne++] = argv[a + 1]; a += 2; }
         else if (argc > a + 1 && !strcmp(argv[a], "-C")) { cwd = argv[a + 1]; a += 2; }
         else break;
@@ -78,6 +136,29 @@ int main(int argc, char **argv)
             return 1;
         }
         aoi_proc_linux(&proc, cwd);
+    }
+    {
+        struct rlimit rl;                            /* every process dups its fds */
+        if (!getrlimit(RLIMIT_NOFILE, &rl) && rl.rlim_cur < 4096) {
+            rl.rlim_cur = rl.rlim_max < 4096 ? rl.rlim_max : 4096;
+            setrlimit(RLIMIT_NOFILE, &rl);
+        }
+    }
+    if (term) {
+        pthread_t th;
+        int cols = 80, rows = 24;
+        if (!getenv("LXRUN_KEYS") && isatty(0) && !tcgetattr(0, &saved_tio)) {
+            struct termios t = saved_tio;
+            cfmakeraw(&t);
+            tcsetattr(0, TCSANOW, &t);
+            raw_tty = 1;
+            atexit(restore_tty);
+        }
+        aoi_tty_new(tty_out, NULL, cols, rows);
+        aoi_proc_attach_tty(&proc);
+        if (getenv("LXRUN_KEYS")) pthread_create(&th, NULL, keys_script, (void *)getenv("LXRUN_KEYS"));
+        else pthread_create(&th, NULL, keys_host, NULL);
+        pthread_detach(th);
     }
     if (getenv("AOI_SNAPSHOT_SAVE")) snprintf(proc.snap_path, sizeof proc.snap_path, "%s", getenv("AOI_SNAPSHOT_SAVE"));
     if (trace) proc.trace = stderr;
