@@ -520,6 +520,24 @@ static void lx_stat(const struct stat *st, uint8_t *o, uint32_t uid)
 #endif
 }
 
+/* The host devices passed through get Linux's numbers (Darwin's /dev/null is 3,2: glibc's
+ * daemon() checks for 1,3 and gives up otherwise; tmux's server starts with it). */
+static void dev_fix(uint8_t *sbuf, const char *g)
+{
+    static const struct { const char *path; unsigned major, minor; } devs[] = {
+        { "/dev/null", 1, 3 }, { "/dev/zero", 1, 5 }, { "/dev/random", 1, 8 }, { "/dev/urandom", 1, 9 },
+        { "/dev/full", 1, 7 }, { NULL, 0, 0 } };
+    int i;
+    for (i = 0; devs[i].path; i++)
+        if (!strcmp(g, devs[i].path)) {
+            uint64_t rdev = (devs[i].minor & 0xff) | (devs[i].major << 8), dev = 6, ino = 100 + (uint64_t)i;
+            uint32_t mode = 020666;
+            memcpy(sbuf + 0, &dev, 8); memcpy(sbuf + 8, &ino, 8);
+            memcpy(sbuf + 16, &mode, 4); memcpy(sbuf + 32, &rdev, 8);
+            return;
+        }
+}
+
 static void note_map(struct aoi_proc *p, uint64_t start, uint64_t len, uint64_t off, const char *path);
 static void shm_sync(struct aoi_proc *p, uint64_t a, uint64_t len, int drop);
 
@@ -3990,6 +4008,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (fstat(f->host, &st)) { r = herr(); break; }
         lx_stat(&st, sbuf, owner(p, f->path));
+        dev_fix(sbuf, f->path);
         tty_stat_fd(f, sbuf);
         r = put(p, a1, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
@@ -4010,6 +4029,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if ((a2 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
         lx_stat(&st, sbuf, owner(p, g));
+        dev_fix(sbuf, g);
         if (tty == 1) tty_stat_fd(f, sbuf);
         else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
         statx_from_stat(sbuf, sx);
@@ -4032,6 +4052,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if ((a3 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
         }
         lx_stat(&st, sbuf, owner(p, g));
+        dev_fix(sbuf, g);
         if (tty == 1) tty_stat_fd(f, sbuf);
         else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
         r = put(p, a2, sbuf, 128) ? 0 : err(L_EFAULT);
