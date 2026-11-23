@@ -33,6 +33,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -5019,6 +5020,14 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         memset(sf, 0, sizeof sf);
         sf[0] = 0xef53; sf[1] = PAGE; sf[2] = sf[3] = sf[4] = 1 << 20; sf[5] = sf[6] = 1 << 20;
         sf[8] = 255; sf[9] = PAGE;                                 /* f_namelen, f_frsize */
+        if (p->linux_mode) {                                       /* Linux mode: the phone's storage (df, apt) */
+            struct statvfs vs;
+            if (!statvfs(p->root, &vs) && vs.f_frsize) {
+                sf[1] = sf[9] = vs.f_frsize;
+                sf[2] = vs.f_blocks; sf[3] = vs.f_bfree; sf[4] = vs.f_bavail;
+                sf[5] = vs.f_files; sf[6] = vs.f_ffree;
+            }
+        }
         r = put(p, a1, sf, 120) ? 0 : err(L_EFAULT);
         break;
     }

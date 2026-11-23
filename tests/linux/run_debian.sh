@@ -59,6 +59,16 @@ if [ "${2:-}" = net ]; then
     check "addgroup (adduser)"    "lxgrp2"                60  /bin/sh -c 'addgroup --system --debug lxgrp2 2>&1 | tail -n 8; getent group lxgrp2' 
     check "ps aux"                 "PID"                   30  /bin/sh -c 'sleep 3 & ps aux'
     check "tmux session"           "1 windows"             90  /bin/sh -c 'tmux new-session -d "sleep 30"; sleep 2; tmux ls; tmux kill-server'
+    # tmux attached to the terminal (as on the phone): the client hands its tty to the server
+    T=${LX_TRACES:-/tmp/lx-traces}; mkdir -p "$T"
+    out="$(LXRUN_QUIET=1 LXRUN_KEYS='tmux\r\w\w\w\wecho in-tmux-$((2*21))\r\w\w\wexit\r\w\w\wexit\r' timeout 90 "$L" -i "$R" /bin/bash -i 2>&1)"; rc=$?
+    if printf '%s' "$out" | grep -q "in-tmux-42" && ! printf '%s' "$out" | grep -q "server exited"; then echo "OK   debian: tmux attached"
+    else
+        echo "FAIL debian: tmux attached (rc=$rc)"; fail=1
+        printf '%s\n' "$out" | tr -d '\033' | tail -n 15 | sed 's/^/     | /'
+        LXRUN_QUIET=1 AOI_CHILD_TRACE=$T/tmux-children.trace LXRUN_KEYS='tmux\r\w\w\w\wecho in-tmux\r\w\w\wexit\r\w\w\wexit\r' timeout 90 "$L" -t -i "$R" /bin/bash -i > "$T/tmux-main.trace" 2>&1
+        cat "$T"/tmux-*.trace | grep -E "stopped|not impl|exec|\[unix\]|\[tty\]|= -(22|38|95|9|14)$" | head -n 40 | sed 's/^/     e /'
+    fi
     check "ssh to github"          "Permission denied (publickey)" 90 /bin/sh -c 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1; true'
     check "git clone (https)"      "README"                300 /bin/sh -c 'cd /tmp && git clone -q --depth 1 https://github.com/heyobi/lxterm.git && ls lxterm' 
 fi
