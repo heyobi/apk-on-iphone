@@ -869,6 +869,10 @@ static int sig_send(struct aoi_proc *p, int i, int sig)
 {
     struct aoi_thread *t = &p->th[i];
     uint64_t h = p->sigact[sig][0];
+    if (p->linux_mode && (t->sigmask & SIGBIT(sig)) && sig != 9 && sig != 19) {   /* blocked: it waits, */
+        t->pending |= SIGBIT(sig);                                 /* whatever its action (signalfd, sigwait) */
+        return 1;
+    }
     if (h == 1 || (h == 0 && default_ignored(sig))) return 1;
     if (h == 0) {
         if (!p->linux_mode) fprintf(stderr, "[aoiproc] signal %d to thread %d (default action: terminate)\n", sig, t->tid);
@@ -1536,6 +1540,12 @@ static uint32_t fd_ready(struct aoi_proc *p, int fd, uint32_t want)
         break;
     }
     case AOI_FD_LOGD: r |= EP_OUT; break;
+    case AOI_FD_SIGNALFD: {
+        int k;
+        for (k = 0; k < AOI_PROC_THREADS; k++)
+            if (p->th[k].state != AOI_T_FREE && (p->th[k].pending & f->count)) { r |= EP_IN; break; }
+        break;
+    }
     case AOI_FD_TTY: case AOI_FD_PTM: {
         int m = 0;
         struct aoi_tty *t = aoi_tty_of_host(f->host, &m);
@@ -3698,6 +3708,21 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_read: case NR_pread64: {
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) { r = tty_read(p, f, a1, a2); break; }
+        if (f->kind == AOI_FD_SIGNALFD) {                          /* struct signalfd_siginfo per pending signal */
+            uint64_t ready = 0;
+            int k, sig;
+            uint8_t info[128];
+            if (a2 < 128) { r = err(L_EINVAL); break; }
+            for (k = 0; k < AOI_PROC_THREADS; k++) if (p->th[k].state != AOI_T_FREE) ready |= p->th[k].pending;
+            if (!(ready &= f->count)) { r = f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 5000000); break; }
+            sig = __builtin_ctzll(ready) + 1;
+            for (k = 0; k < AOI_PROC_THREADS; k++) p->th[k].pending &= ~SIGBIT(sig);
+            memset(info, 0, sizeof info);
+            put32(info, 0, (uint32_t)sig);                         /* ssi_signo */
+            put32(info, 8, (uint32_t)-6);                          /* ssi_code: SI_TKILL */
+            r = put(p, a1, info, 128) ? 128 : err(L_EFAULT);
+            break;
+        }
         if (f->kind == AOI_FD_TIMERFD) {                           /* expirations since the last read */
             uint64_t v;
             if (a2 < 8) { r = err(L_EINVAL); break; }
@@ -4998,6 +5023,22 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!get(p, a0, m, 8)) { r = err(L_EFAULT); break; }
         t->sigwait_mask = u64(m);
         t->sigwait_info = a1;
+        if (p->linux_mode) {                                       /* one already waiting: taken at once */
+            uint64_t ready = 0;
+            int k, sig;
+            for (k = 0; k < AOI_PROC_THREADS; k++) if (p->th[k].state != AOI_T_FREE) ready |= p->th[k].pending;
+            if ((ready &= t->sigwait_mask)) {
+                uint8_t info[128];
+                sig = __builtin_ctzll(ready) + 1;
+                for (k = 0; k < AOI_PROC_THREADS; k++) p->th[k].pending &= ~SIGBIT(sig);
+                memset(info, 0, sizeof info);
+                put32(info, 0, (uint32_t)sig);
+                if (a1) put(p, a1, info, sizeof info);
+                t->sigwait_mask = 0;
+                r = (uint64_t)sig;
+                break;
+            }
+        }
         if (a2) {
             uint8_t ts[16];
             if (!get(p, a2, ts, 16)) { r = err(L_EFAULT); break; }
@@ -5186,6 +5227,26 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         memset(tms, 0, sizeof tms);
         if (a0 && !put(p, a0, tms, sizeof tms)) { r = err(L_EFAULT); break; }
         r = (uint64_t)(now_ns() / 10000000);
+        break;
+    }
+    case 74: {                                                     /* signalfd4(fd, mask, size, flags) */
+        uint64_t m;
+        int d, n;
+        if (!get(p, a1, &m, 8)) { r = err(L_EFAULT); break; }
+        m &= ~UNBLOCKABLE;
+        if ((int64_t)(int32_t)a0 != -1) {                          /* a new mask for an existing one */
+            if (!(f = fd_get(p, a0)) || f->kind != AOI_FD_SIGNALFD) { r = err(L_EINVAL); break; }
+            f->count = m;
+            r = a0;
+            break;
+        }
+        if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
+        if ((n = fd_new(p, d, "anon_inode:[signalfd]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
+        p->fd[n].kind = AOI_FD_SIGNALFD;
+        p->fd[n].count = m;
+        p->fd[n].nonblock = (a3 & 04000) != 0;
+        p->fd[n].cloexec = (a3 & 02000000) != 0;
+        r = (uint64_t)n;
         break;
     }
     case 72:                                                       /* pselect6 */

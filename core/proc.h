@@ -51,7 +51,8 @@ enum { AOI_FD_FILE = 0, AOI_FD_SOCKET, AOI_FD_LOGD, AOI_FD_UFFD, AOI_FD_PIPE, AO
        AOI_FD_DMAHEAP,              /* /dev/dma_heap/system: allocations are memfds */
        AOI_FD_TTY,                  /* Linux mode: a terminal's slave side (core/tty.c) */
        AOI_FD_PTM,                  /* Linux mode: a pty's master side (/dev/ptmx) */
-       AOI_FD_ULISTEN };            /* Linux mode: a listening AF_UNIX socket with a file name */
+       AOI_FD_ULISTEN,              /* Linux mode: a listening AF_UNIX socket with a file name */
+       AOI_FD_SIGNALFD };           /* Linux mode: signalfd (its mask in count) */
 
 /* An epoll instance: level-triggered interest entries {fd, events, data}. */
 struct aoi_epoll { int refs, n, cap; struct { int fd; uint32_t events; uint64_t data; } *e; };
