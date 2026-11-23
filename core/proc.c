@@ -48,6 +48,7 @@
 #define PAGE        AOI_VM_PAGE
 #define GUEST_PID   1000
 #define PID(p)      ((p)->pid ? (p)->pid : GUEST_PID)
+#define AOI_ARGS    4096                        /* argv / envp entries an execve takes */
 
 static int lx_newpid(void);                     /* Linux mode: processes (see lx_fork) */
 static int lx_take(struct aoi_proc *p);
@@ -605,7 +606,7 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
 {
     struct loaded prog, interp;
     const char *e;
-    uint64_t sp, argp[256], envp_a[256], execfn, platform, rnd, *v, words[600];
+    uint64_t sp, argp[AOI_ARGS], envp_a[AOI_ARGS], execfn, platform, rnd, *v, words[2 * AOI_ARGS + 64];
     int envc = 0, i, n = 0;
     uint8_t random16[16];
 
@@ -618,9 +619,9 @@ const char *aoi_proc_exec(struct aoi_proc *p, const char *root, const char *path
     p->mem.vm = &p->vm;
     for (i = 0; i < 3; i++) { p->fd[i].used = 1; p->fd[i].host = i; snprintf(p->fd[i].path, AOI_PATH, "/dev/tty"); }
 
-    if (argc > 255) return "too many arguments";
+    if (argc >= AOI_ARGS) return "too many arguments";
     while (envp && envp[envc]) envc++;
-    if (envc > 255) return "too many environment variables";
+    if (envc >= AOI_ARGS) return "too many environment variables";
 
     if ((e = load_elf(p, path, &prog))) return e;
     resolve(p, "/", path, 1, p->exe);
@@ -1617,6 +1618,16 @@ static uint64_t sys_pselect(struct aoi_proc *p, uint64_t nfds, uint64_t rp, uint
     return 0;
 }
 
+/* Linux mode: the host mode for a guest chmod. Root may open anything, the host user
+ * may not: the owner keeps read and write (and search on directories), as fakeroot. */
+static mode_t lx_mode(struct aoi_proc *p, int fd, const char *h, mode_t m)
+{
+    struct stat st;
+    if (!p->linux_mode) return m;
+    if (fd >= 0 ? fstat(fd, &st) : stat(h, &st)) return m | 0600;
+    return m | (S_ISDIR(st.st_mode) ? 0700 : 0600);
+}
+
 /* ---------- the terminal (Linux mode, core/tty.c) ---------- */
 
 static int is_tty_path(const char *g)
@@ -2514,8 +2525,8 @@ static uint64_t exec_replace(struct aoi_proc *p, struct aoi_cpu *c, struct aoi_p
  * ends the vfork. */
 static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, uint64_t av, uint64_t ev)
 {
-    static _Thread_local char strs[64 * 1024];
-    const char *argv[258], *envp[258];
+    static _Thread_local char strs[256 * 1024];
+    const char *argv[AOI_ARGS + 2], *envp[AOI_ARGS + 2];
     char g[AOI_PATH], h[AOI_PATH], head[256], interp[AOI_PATH] = "", iarg[256] = "";
     size_t used = 0;
     int argc = 0, envc = 0, k, fd;
@@ -2527,7 +2538,8 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         uint64_t a = k ? ev : av, sp;
         const char **out = k ? envp : argv;
         int *n = k ? &envc : &argc;
-        while (a && *n < 256 && get(p, a + 8 * (uint64_t)*n, &sp, 8) && sp) {
+        while (a && get(p, a + 8 * (uint64_t)*n, &sp, 8) && sp) {
+            if (*n >= AOI_ARGS - 2 || used >= sizeof strs - 4096) return err(L_E2BIG);
             size_t l = 0;
             while (used + l < sizeof strs - 1 && get(p, sp + l, strs + used + l, 1) && strs[used + l]) l++;
             strs[used + l] = 0;
@@ -2560,7 +2572,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         for (; *t && *t != '\n'; t++) {}
         while (t > s && (t[-1] == ' ' || t[-1] == '\t' || t[-1] == '\r')) t--;
         snprintf(iarg, sizeof iarg, "%.*s", (int)(t - s), s);
-        if (argc > 254) return err(L_E2BIG);
+        if (argc > AOI_ARGS - 4) return err(L_E2BIG);
         memmove(argv + (iarg[0] ? 2 : 1), argv, sizeof *argv * (size_t)(argc + 1));
         argv[0] = interp;
         if (iarg[0]) argv[1] = iarg;
@@ -3207,7 +3219,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                 r = (uint64_t)fdn;
                 break;
             }
-            hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)a3);
+            hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)(p->linux_mode ? (a3 & 07777) | 0600 : a3));
+            if (hfd < 0 && errno == EACCES && p->linux_mode && !p->cred[1] && !stat(h, &fs)) {
+                /* root reads and writes any file: the host file gets the owner's bits it lacks
+                 * (dpkg creates files with mode 0 and sets the mode last), as fakeroot does */
+                chmod(h, (fs.st_mode & 07777) | (S_ISDIR(fs.st_mode) ? 0700 : 0600));
+                hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)((a3 & 07777) | 0600));
+            }
         }
         if (hfd < 0) { r = herr(); break; }
         if ((fdn = fd_new(p, hfd, g, 0)) < 0) { close(hfd); r = err(L_EMFILE); break; }
@@ -3655,12 +3673,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case NR_fchmod:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        r = fchmod(f->host, (mode_t)a1 & 07777) ? herr() : 0;
+        r = fchmod(f->host, lx_mode(p, f->host, NULL, (mode_t)a1 & 07777)) ? herr() : 0;
         break;
     case NR_fchmodat:
         if ((rc = at_path(p, sx32(a0), a1, 1, g))) { r = err(rc); break; }
         to_host(p, g, h);
-        r = chmod(h, (mode_t)a2 & 07777) ? herr() : 0;
+        r = chmod(h, lx_mode(p, -1, h, (mode_t)a2 & 07777)) ? herr() : 0;
         break;
     case NR_fchown: case NR_fchownat:                              /* one user: accepted, not applied */
         r = nr == NR_fchown && !fd_get(p, a0) ? err(L_EBADF) : 0;
@@ -3668,7 +3686,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_mkdirat:
         if ((rc = at_path(p, sx32(a0), a1, 0, g))) { r = err(rc); break; }
         to_host(p, g, h);
-        r = mkdir(h, (mode_t)a2 & 07777) ? herr() : 0;
+        r = mkdir(h, (mode_t)(a2 & 07777) | (p->linux_mode ? 0700 : 0)) ? herr() : 0;
         break;
     case NR_unlinkat:
         if ((rc = at_path(p, sx32(a0), a1, 0, g))) { r = err(rc); break; }
@@ -4383,6 +4401,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             int32_t st = ch->status, cpid = ch->pid;
             if (nr == 260) {
                 if (a1 && !put(p, a1, &st, 4)) { r = err(L_EFAULT); break; }
+                if (a3) {                                          /* rusage: not counted per child */
+                    uint8_t ru[144];
+                    memset(ru, 0, sizeof ru);
+                    if (!put(p, a3, ru, sizeof ru)) { r = err(L_EFAULT); break; }
+                }
                 r = (uint64_t)cpid;
             } else {
                 uint8_t si[128];
@@ -4398,6 +4421,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             }
             if (!(nr == 95 && (opts & 0x01000000))) { free(ch); p->child[i] = NULL; }   /* (WNOWAIT keeps it) */
         }
+        break;
+    }
+    case 153: {                                                    /* times: no CPU accounting; the clock in ticks */
+        uint8_t tms[32];
+        memset(tms, 0, sizeof tms);
+        if (a0 && !put(p, a0, tms, sizeof tms)) { r = err(L_EFAULT); break; }
+        r = (uint64_t)(now_ns() / 10000000);
         break;
     }
     case 72:                                                       /* pselect6 */

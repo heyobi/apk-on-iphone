@@ -229,7 +229,10 @@ static void *boot(void *arg)
             if (!(err = aoi_snap_load(p, g_snap, g_root, NULL))) {
                 resumed = 1;
                 M("snapshot resume: %.3f s\n", now_s() - t0);
-                aoi_tty_input(aoi_console, "\r", 1);          /* a fresh prompt */
+                {
+                    const char *cmd = "echo \"resumed from its snapshot, pid $$\"; date\r";
+                    aoi_tty_input(aoi_console, cmd, strlen(cmd));   /* a fresh prompt, and proof it lives */
+                }
             } else M("snapshot resume failed: %s\n", err);
         }
         if (!resumed) {

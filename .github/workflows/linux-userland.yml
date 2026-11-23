@@ -27,6 +27,8 @@ jobs:
         run: sh tests/linux/fetch-alpine.sh "$RUNNER_TEMP/alpine"
       - name: Alpine checks
         run: sh tests/linux/run_alpine.sh "$RUNNER_TEMP/alpine" net
+      - name: Benchmarks (host)
+        run: sh tests/linux/bench.sh "$RUNNER_TEMP/alpine"
 
   debian:
     runs-on: ubuntu-24.04-arm

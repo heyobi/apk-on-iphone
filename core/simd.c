@@ -972,6 +972,21 @@ static __attribute__((noinline)) int scalar_misc(struct aoi_cpu *c, uint32_t ins
     int u = insn >> 29 & 1, size = insn >> 22 & 3, op = insn >> 12 & 0x1f, n = insn >> 5 & 31, d = insn & 31;
     int dbl = size & 1, key = u << 6 | (size >> 1) << 5 | op;
     uint64_t z;
+    if (op >= 0x08 && op <= 0x0b) {                    /* cmgt/cmge/cmeq/cmle/cmlt #0, abs/neg: 64-bit only */
+        int64_t v = (int64_t)c->vreg[n][0];
+        if (size != 3 || (op == 0x0a && u)) return 0;
+        switch (op << 1 | u) {
+        case 0x10: z = v > 0 ? ~0ULL : 0; break;       /* cmgt */
+        case 0x11: z = v >= 0 ? ~0ULL : 0; break;      /* cmge */
+        case 0x12: z = v == 0 ? ~0ULL : 0; break;      /* cmeq */
+        case 0x13: z = v <= 0 ? ~0ULL : 0; break;      /* cmle */
+        case 0x14: z = v < 0 ? ~0ULL : 0; break;       /* cmlt */
+        case 0x16: z = v < 0 ? 0 - (uint64_t)v : (uint64_t)v; break;   /* abs */
+        default: z = 0 - (uint64_t)v; break;           /* neg */
+        }
+        c->vreg[d][0] = z; c->vreg[d][1] = 0;
+        return 1;
+    }
     if (op < 0x0c || !fp_misc(key, lane(c->vreg[n], 0, dbl ? 8 : 4), dbl, &z, 1)) return 0;
     c->vreg[d][0] = z; c->vreg[d][1] = 0;
     return 1;
