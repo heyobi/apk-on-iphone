@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -73,11 +74,29 @@ struct aoi_tty *aoi_console;
 static struct aoi_tty *ttys[AOI_TTYS];
 static pthread_mutex_t ttys_mu = PTHREAD_MUTEX_INITIALIZER;
 
+/* A host object with an identity of its own: an unlinked temp file (sockets and pipes have
+ * no dependable inode on Darwin). sv[0] is what guest fds dup, holding a shared flock;
+ * sv[1] is a second open of the same file: an exclusive flock through it succeeds only
+ * once every dup of sv[0] is closed. */
 static int pair(int sv[2])
 {
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) return -1;
+    char path[1024];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(path, sizeof path, "%s/aoitty-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    if ((sv[0] = mkstemp(path)) < 0) return -1;
+    if ((sv[1] = open(path, O_RDONLY)) < 0) { close(sv[0]); unlink(path); return -1; }
+    unlink(path);
     fcntl(sv[0], F_SETFD, FD_CLOEXEC); fcntl(sv[1], F_SETFD, FD_CLOEXEC);
+    flock(sv[0], LOCK_SH);
     return 0;
+}
+
+/* Every dup of sv[0] is closed. */
+static int pair_released(int keep)
+{
+    if (flock(keep, LOCK_EX | LOCK_NB)) return 0;
+    flock(keep, LOCK_UN);
+    return 1;
 }
 
 /* A new terminal in the first free slot (or NULL). */
@@ -155,9 +174,7 @@ static void tok_prune(struct aoi_tty *t)
 {
     int i;
     for (i = 0; i < t->ntok; i++) {
-        struct pollfd pf;
-        pf.fd = t->tok[i]; pf.events = POLLOUT; pf.revents = 0;
-        if (poll(&pf, 1, 0) > 0 && (pf.revents & (POLLHUP | POLLERR))) {
+        if (pair_released(t->tok[i])) {
             close(t->tok[i]);
             t->tok[i] = t->tok[--t->ntok]; t->tokdev[i] = t->tokdev[t->ntok]; t->tokino[i] = t->tokino[t->ntok];
             i--;
