@@ -128,9 +128,9 @@ final class Net {
             }
         case "/net/avail":
             guard let fd = conns[id] else { reply("err", Data()); return }
-            var n: Int32 = 0
-            _ = ioctl(fd, FIONREAD, &n)
-            reply("ok", Data(String(n).utf8))
+            var buf = [UInt8](repeating: 0, count: 65536)              /* (ioctl is variadic: not callable from Swift) */
+            let n = recv(fd, &buf, buf.count, MSG_PEEK | MSG_DONTWAIT)
+            reply("ok", Data(String(max(n, 0)).utf8))
         case "/net/close":
             if let fd = conns.removeValue(forKey: id) { close(fd) }
             reply("ok", Data())
