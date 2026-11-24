@@ -5452,6 +5452,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = block_and_retry(p, 10000000);                          /* (lx_take and kill set pending meanwhile) */
         break;
     }
+    case 151: case 152:                                            /* setfsuid, setfsgid: root stays root */
+        r = 0;
+        break;
     case 293:                                                      /* rseq: glibc probes it and does without */
         r = err(L_ENOSYS);
         break;
