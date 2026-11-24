@@ -50,6 +50,26 @@ jobs:
           path: /tmp/lx-traces
           retention-days: 5
 
+  rpm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: fedora, tag: latest }
+          - { image: almalinux, tag: latest }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: ${{ matrix.image }} arm64 rootfs (official image, digests checked)
+        run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" ${{ matrix.tag }} ${{ matrix.image }}
+      - name: ${{ matrix.image }} checks
+        run: sh tests/linux/run_rpm.sh "$RUNNER_TEMP/root" ${{ matrix.image }} net
+
   regress:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
