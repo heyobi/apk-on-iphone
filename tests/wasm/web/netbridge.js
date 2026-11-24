@@ -56,6 +56,7 @@
             if (sock.lxDns) return 4 | (sock.lxQ.length ? 1 : 0);
             if (sock.lxId === undefined) return 0;
             var r = call('poll?id=' + sock.lxId);
+            if ((sock.lxPolls = (sock.lxPolls || 0) + 1) <= 5 || r.status !== 'again') log('poll ' + sock.lxId + ' ' + r.status);
             var m = 4;                                             /* POLLOUT: writes are queued by the app */
             if (r.status === 'data' || r.status === 'eof') m |= 1; /* POLLIN */
             if (r.status === 'eof') m |= 16;                       /* POLLHUP */
@@ -86,6 +87,7 @@
             if (sock.type !== 1) fail(5);
             var host = DNS.lookup_addr(addr) || addr;
             var r = call('connect?host=' + encodeURIComponent(host) + '&port=' + port);
+            log('tcp connect ' + host + ':' + port + ' -> ' + r.status + ' ' + new TextDecoder().decode(r.data));
             if (r.status !== 'ok') fail(r.status === 'refused' ? 14 : r.status === 'timeout' ? 73 : 23);   /* ECONNREFUSED, ETIMEDOUT, EHOSTUNREACH (WASI numbers) */
             sock.lxId = new TextDecoder().decode(r.data);
             sock.daddr = addr; sock.dport = port;
@@ -103,7 +105,8 @@
                 return length;
             }
             if (sock.lxId === undefined) fail(53);                 /* ENOTCONN */
-            var r = call('send?id=' + sock.lxId, buffer.slice(offset, offset + length));
+            var r = call('send?id=' + sock.lxId, new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length).slice());
+            log('tcp send ' + sock.lxId + ' ' + length + ' -> ' + r.status);
             if (r.status !== 'ok') fail(64);                       /* EPIPE */
             return length;
         },
@@ -115,6 +118,7 @@
             }
             if (sock.lxId === undefined) fail(53);
             var r = call('recv?id=' + sock.lxId + '&max=' + length);
+            if (r.status !== 'again') log('tcp recv ' + sock.lxId + ' ' + r.status + ' ' + r.data.length);
             if (r.status === 'data') return { buffer: r.data, addr: sock.daddr, port: sock.dport };
             if (r.status === 'eof') return null;
             if (r.status === 'again') fail(6);                     /* EAGAIN */
