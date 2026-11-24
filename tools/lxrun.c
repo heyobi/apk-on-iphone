@@ -97,6 +97,8 @@ static long peak_rss_mib(void)
 #endif
 }
 
+extern uint64_t aoi_syscall_count;
+
 int main(int argc, char **argv)
 {
     static const char *base_env[] = {
@@ -169,8 +171,8 @@ int main(int argc, char **argv)
     fflush(stdout);
     if (st == AOI_STOP_EXIT) {
         if (!quiet || getenv("LXRUN_STATS"))
-            fprintf(stderr, "[lxrun] exit %d, %" PRIu64 " instructions, %.2f s, peak RSS %ld MiB\n",
-                    proc.cpu.exit_code, proc.cpu.steps, t1 - t0, peak_rss_mib());
+            fprintf(stderr, "[lxrun] exit %d, %" PRIu64 " instructions, %.2f s, peak RSS %ld MiB, %" PRIu64 " syscalls (all processes)\n",
+                    proc.cpu.exit_code, proc.cpu.steps, t1 - t0, peak_rss_mib(), aoi_syscall_count);
         return proc.cpu.exit_code & 0xff;
     }
     {

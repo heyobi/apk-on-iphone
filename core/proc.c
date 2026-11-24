@@ -3718,8 +3718,10 @@ static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t n
     return err(L_ENOSYS);
 }
 
+uint64_t aoi_syscall_count;                                         /* all processes (tools/lxrun LXRUN_STATS) */
 uint64_t aoi_proc_syscall(struct aoi_cpu *c)
 {
+    aoi_syscall_count++;
     struct aoi_proc *p = c->host_ctx;
     uint64_t nr = c->x[8], a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3], a4 = c->x[4],
              a5 = c->x[5], r;
