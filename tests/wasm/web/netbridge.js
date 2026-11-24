@@ -16,6 +16,7 @@
         return { status: x.getResponseHeader('X-Lx') || 'err', data: r };
     }
     function fail(errno) { throw new FS.ErrnoError(errno); }
+    function log(m) { (Module.lxNetLog = Module.lxNetLog || []).push(m); if (Module.lxNetLog.length > 200) Module.lxNetLog.shift(); }
     /* DNS over UDP (glibc's resolver talks to the nameserver itself): the query's name is
      * resolved by the app (its getaddrinfo: the phone's DNS and VPN settings) and the answer
      * built here as a DNS message. */
@@ -26,10 +27,12 @@
         var qend = i + 5;                                          /* the 0 label, type, class */
         if (qend > q.length) return null;
         var qtype = (q[i + 1] << 8) | q[i + 2];
+        log('dns ' + labels.join('.') + ' type ' + qtype);
         var ips = [];
         if (qtype === 1 || qtype === 28) {
             var r = call('resolve?host=' + encodeURIComponent(labels.join('.')) + '&type=' + (qtype === 1 ? 'A' : 'AAAA'));
-            if (r.status === 'ok') ips = new TextDecoder().decode(r.data).split('\n').filter(Boolean);
+            if (r.status === 'ok') ips = new TextDecoder().decode(r.data).split('\n').filter(Boolean)
+                .filter(function (ip) { return qtype === 1 ? ip.indexOf(':') < 0 : ip.indexOf('.') < 0; });   /* no v4-mapped */
         }
         var parts = [];
         ips.forEach(function (ip) {
@@ -42,6 +45,7 @@
             }
             parts.push([0xc0, 12, qtype >> 8, qtype & 255, 0, 1, 0, 0, 0, 60, 0, raw.length].concat(raw));
         });
+        log('  answer ' + ips.length + ': ' + ips.slice(0, 2).join(' '));
         var out = [q[0], q[1], 0x81, ips.length || qtype === 28 ? 0x80 : 0x83, 0, 1, 0, ips.length, 0, 0, 0, 0];
         for (var k = 12; k < qend; k++) out.push(q[k]);
         parts.forEach(function (p) { out = out.concat(p); });
@@ -64,6 +68,7 @@
         listen: function () { fail(58); },
         accept: function () { fail(58); },
         connect: function (sock, addr, port) {
+            log('connect type ' + sock.type + ' ' + addr + ':' + port);
             if (sock.type === 2) {                                 /* UDP: only DNS (port 53), answered here */
                 if (port !== 53) fail(5);
                 sock.lxDns = true; sock.lxQ = sock.lxQ || []; sock.daddr = addr; sock.dport = port;
@@ -80,6 +85,7 @@
             return peer ? { addr: sock.daddr || '0.0.0.0', port: sock.dport || 0 } : { addr: '0.0.0.0', port: 0 };
         },
         sendmsg: function (sock, buffer, offset, length, addr, port) {
+            if (sock.type === 2) log('send udp ' + length + ' to ' + addr + ':' + port);
             if (sock.type === 2) {
                 if (port !== undefined && port !== 53) fail(5);
                 if (!sock.lxQ) { sock.lxQ = []; sock.lxDns = true; sock.daddr = addr; sock.dport = 53; }
@@ -93,6 +99,7 @@
             return length;
         },
         recvmsg: function (sock, length) {
+            if (sock.lxDns) log('recv dns, queued ' + sock.lxQ.length);
             if (sock.lxDns) {
                 if (!sock.lxQ.length) fail(6);
                 return { buffer: sock.lxQ.shift(), addr: sock.daddr, port: 53 };

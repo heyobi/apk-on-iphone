@@ -132,6 +132,7 @@ async function run(tar, args, keep, env) {
     let rc;
     try { rc = M.callMain(['/r'].concat(args)); } catch (e) { rc = e && e.status !== undefined ? e.status : String(e); }
     const r = { rc, out: out.slice(-1500), untar_s: +((t1 - t0) / 1000).toFixed(2), run_s: +((performance.now() - t1) / 1000).toFixed(2) };
+    if (M.lxNetLog) r.net = M.lxNetLog.slice(-40).join(' | ');
     if (keep) r.M = M;
     return r;
 }
@@ -192,6 +193,8 @@ onmessage = async e => {
         // the network through the app (netbridge.js): a name, plain HTTP from Python, apt
         for (const [name, args] of [
             ['net_getent', ['/usr/bin/getent', 'hosts', 'deb.debian.org']],
+            ['net_ahosts', ['/usr/bin/getent', 'ahosts', 'deb.debian.org']],
+            ['net_ahostsv4', ['/usr/bin/getent', 'ahostsv4', 'deb.debian.org']],
             ['net_http', ['/usr/bin/python3', '-c', 'import urllib.request as u; r = u.urlopen("http://deb.debian.org/debian/dists/trixie/Release", timeout=30); print("http", r.status, len(r.read()))']],
             ['net_apt', ['/bin/sh', '-c', 'apt-get update 2>&1 | tail -n 5']]]) {
             postMessage({ log: 'running ' + name });
