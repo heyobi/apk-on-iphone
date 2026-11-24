@@ -160,6 +160,9 @@ enum {
     I64_AND = 0x83, I64_OR = 0x84, I64_XOR = 0x85, I64_SHL = 0x86, I64_SHRS = 0x87, I64_SHRU = 0x88, I64_ROTR = 0x8a,
     WRAP = 0xa7, EXT_S = 0xac, EXT_U = 0xad, I64_EXT8S = 0xc2, I64_EXT16S = 0xc3, I64_EXT32S = 0xc4,
     T_I32 = 0x7f, T_I64 = 0x7e, T_VOID = 0x40,
+    F64_EQ = 0x61, F64_LT = 0x63, F64_GT = 0x64, F64_ABS = 0x99, F64_NEG = 0x9a, F64_SQRT = 0x9f,
+    F64_ADD = 0xa0, F64_SUB = 0xa1, F64_MUL = 0xa2, F64_DIV = 0xa3,
+    F64_CVT_I64S = 0xb9, F64_CVT_I64U = 0xba, I64_REINT_F64 = 0xbd, F64_REINT_I64 = 0xbf,
 };
 #define OFF(f) ((uint32_t)offsetof(struct aoi_cpu, f))
 
@@ -387,6 +390,174 @@ static void store(struct jit *j, int len, int depth)
     put(&j->b, END);
 }
 
+/* SIMD&FP registers: the CPU structure's vreg[n][0] (low 64 bits) and [1] (high) */
+static void vget(struct jit *j, int r, int hi) { lget(j, 0); mem_op(j, I64_LOAD, OFF(vreg) + 16u * (unsigned)r + (hi ? 8u : 0u)); }
+static void vset(struct jit *j, int r, int hi)   /* value (i64) on the stack */
+{
+    lset(j, L_SV); lget(j, 0); lget(j, L_SV); mem_op(j, I64_STORE, OFF(vreg) + 16u * (unsigned)r + (hi ? 8u : 0u));
+}
+static void vzero_hi(struct jit *j, int r) { i64c(j, 0); vset(j, r, 1); }
+
+/* bytes len (1..16) between guest memory at L_A and vector register rt (a load clears the rest) */
+static void vmem(struct jit *j, int load_, int rt, int len, int depth)
+{
+    if (load_) {
+        load(j, len < 16 ? len : 8, 0, depth); vset(j, rt, 0);
+        if (len == 16) { lget(j, L_A); i64c(j, 8); op(j, I64_ADD); lset(j, L_A); load(j, 8, 0, depth); vset(j, rt, 1); }
+        else vzero_hi(j, rt);
+    } else {
+        vget(j, rt, 0); lset(j, L_TC); store(j, len < 16 ? len : 8, depth);
+        if (len == 16) { lget(j, L_A); i64c(j, 8); op(j, I64_ADD); lset(j, L_A); vget(j, rt, 1); lset(j, L_TC); store(j, 8, depth); }
+    }
+}
+
+/* SIMD&FP loads and stores, floating point (double) arithmetic, a few system and atomic
+ * instructions. 1 translated, 0 not here. */
+static int insn_fp(struct jit *j, uint32_t w)
+{
+    uint64_t pc = j->pc;
+    int rd = w & 31, rn = (w >> 5) & 31, rm = (w >> 16) & 31;
+    const int D = 0;
+    /* ---- system ---- */
+    if ((w & 0xffffffe0u) == 0xd53bd040u) { lget(j, 0); mem_op(j, I64_LOAD, OFF(tpidr)); reg_set(j, rd, 0, 0); return 1; }   /* mrs tpidr_el0 */
+    if ((w & 0xffffffe0u) == 0xd51bd040u) { reg_get(j, rd, 0); lset(j, L_SV); lget(j, 0); lget(j, L_SV); mem_op(j, I64_STORE, OFF(tpidr)); return 1; }
+    if ((w & 0xfffff09fu) == 0xd503309fu) return 1;                /* dsb, dmb, isb: one thread at a time */
+    if (w == 0xd503305fu) { lget(j, 0); i32c(j, 0); mem_op(j, I32_STORE, OFF(excl_valid)); return 1; }   /* clrex */
+
+    /* ---- load-acquire / store-release, exclusives (one guest thread runs at a time) ---- */
+    if ((w & 0x3fbffc00u) == 0x089ffc00u) {                       /* ldar (L=1) / stlr (L=0) */
+        int size = w >> 30, L = w >> 22 & 1;
+        reg_get(j, rn, 1); lset(j, L_A);
+        if (L) { load(j, 1 << size, 0, D); reg_set(j, rd, 0, 0); }
+        else { reg_get(j, rd, 0); lset(j, L_TC); store(j, 1 << size, D); }
+        return 1;
+    }
+    if ((w & 0x3fe07c00u) == 0x08407c00u) {                       /* ldxr / ldaxr */
+        int size = w >> 30;
+        reg_get(j, rn, 1); ltee(j, L_TB); lset(j, L_A);
+        load(j, 1 << size, 0, D); reg_set(j, rd, 0, 0);
+        lget(j, 0); lget(j, L_TB); mem_op(j, I64_STORE, OFF(excl_addr));
+        lget(j, 0); i32c(j, 1); mem_op(j, I32_STORE, OFF(excl_valid));
+        return 1;
+    }
+    if ((w & 0x3fe07c00u) == 0x08007c00u) {                       /* stxr / stlxr: status in ws (rm field) */
+        int size = w >> 30, rs = rm;
+        if (rs == rd || rs == rn) return 0;                        /* (constrained unpredictable: the interpreter) */
+        reg_get(j, rn, 1); ltee(j, L_TB); lset(j, L_A);
+        lget(j, 0); mem_op(j, I32_LOAD, OFF(excl_valid));
+        lget(j, 0); mem_op(j, I64_LOAD, OFF(excl_addr)); lget(j, L_TB); op(j, I64_EQ); op(j, I32_AND);
+        put(&j->b, IF); put(&j->b, T_VOID);
+          reg_get(j, rd, 0); lset(j, L_TC); store(j, 1 << size, D + 1);
+          i64c(j, 0); reg_set(j, rs, 0, 0);
+        put(&j->b, ELSE);
+          i64c(j, 1); reg_set(j, rs, 0, 0);
+        put(&j->b, END);
+        lget(j, 0); i32c(j, 0); mem_op(j, I32_STORE, OFF(excl_valid));
+        return 1;
+    }
+
+    /* ---- SIMD&FP loads and stores ---- */
+    if ((w & 0x3f000000u) == 0x3d000000u) {                       /* unsigned offset */
+        int size = w >> 30, opc = (w >> 22) & 3, len, sc;
+        if ((opc & 2) && size) return 0;
+        len = (opc & 2) ? 16 : 1 << size; sc = (opc & 2) ? 4 : size;
+        reg_get(j, rn, 1); i64c(j, (int64_t)(((w >> 10) & 0xfff) << sc)); op(j, I64_ADD); lset(j, L_A);
+        vmem(j, opc & 1, rd, len, D);
+        return 1;
+    }
+    if ((w & 0x3f200000u) == 0x3c000000u) {                       /* unscaled, pre-, post-index */
+        int size = w >> 30, opc = (w >> 22) & 3, mode = (w >> 10) & 3, len;
+        int64_t imm = (int64_t)sextn((w >> 12) & 0x1ff, 9);
+        if ((opc & 2) && size) return 0;
+        len = (opc & 2) ? 16 : 1 << size;
+        if (mode == 0 || mode == 2) { reg_get(j, rn, 1); i64c(j, imm); op(j, I64_ADD); lset(j, L_A); vmem(j, opc & 1, rd, len, D); return 1; }
+        reg_get(j, rn, 1); if (mode == 3) { i64c(j, imm); op(j, I64_ADD); }
+        ltee(j, L_TB); lset(j, L_A);
+        vmem(j, opc & 1, rd, len, D);
+        lget(j, L_TB); if (mode == 1) { i64c(j, imm); op(j, I64_ADD); }
+        reg_set(j, rn, 1, 0);
+        return 1;
+    }
+    if ((w & 0x3f200c00u) == 0x3c200800u) {                       /* register offset */
+        int size = w >> 30, opc = (w >> 22) & 3, option = (w >> 13) & 7, sbit = w >> 12 & 1, len, sc;
+        if ((opc & 2) && size) return 0;
+        len = (opc & 2) ? 16 : 1 << size; sc = (opc & 2) ? 4 : size;
+        reg_get(j, rn, 1); extended(j, rm, 0, option, sbit ? sc : 0); op(j, I64_ADD); lset(j, L_A);
+        vmem(j, opc & 1, rd, len, D);
+        return 1;
+    }
+    if ((w & 0x3f000000u) == 0x1c000000u) {                       /* ldr (literal) s/d/q */
+        int opc = w >> 30;
+        if (opc == 3) return 0;
+        i64c(j, (int64_t)(pc + (uint64_t)(sextn((w >> 5) & 0x7ffff, 19) << 2))); lset(j, L_A);
+        vmem(j, 1, rd, 4 << opc, D);
+        return 1;
+    }
+    if ((w & 0x3e000000u) == 0x2c000000u) {                       /* ldp / stp s/d/q */
+        int opc = w >> 30, typ = (w >> 23) & 3, L = w >> 22 & 1, rt2 = (w >> 10) & 31, len;
+        int64_t imm;
+        if (opc == 3) return 0;
+        len = 4 << opc;
+        imm = (int64_t)sextn((w >> 15) & 0x7f, 7) * len;
+        if (L && rd == rt2) return 0;
+        reg_get(j, rn, 1); if (typ != 1) { i64c(j, imm); op(j, I64_ADD); } lset(j, L_TB);
+        lget(j, L_TB); lset(j, L_A); vmem(j, L, rd, len, D);
+        lget(j, L_TB); i64c(j, len); op(j, I64_ADD); lset(j, L_A); vmem(j, L, rt2, len, D);
+        if (typ == 1 || typ == 3) { lget(j, L_TB); if (typ == 1) { i64c(j, imm); op(j, I64_ADD); } reg_set(j, rn, 1, 0); }
+        return 1;
+    }
+
+    /* ---- moves between general and FP registers, conversions (double, 64-bit) ---- */
+    if ((w & 0xfffffc00u) == 0x9e660000u) { vget(j, rn, 0); reg_set(j, rd, 0, 0); return 1; }                 /* fmov xd, dn */
+    if ((w & 0xfffffc00u) == 0x9e670000u) { reg_get(j, rn, 0); vset(j, rd, 0); vzero_hi(j, rd); return 1; }  /* fmov dd, xn */
+    if ((w & 0xfffffc00u) == 0x1e260000u) { vget(j, rn, 0); i64c(j, 0xffffffffLL); op(j, I64_AND); reg_set(j, rd, 0, 0); return 1; }   /* fmov wd, sn */
+    if ((w & 0xfffffc00u) == 0x1e270000u) { reg_get32(j, rn, 0); op(j, EXT_U); vset(j, rd, 0); vzero_hi(j, rd); return 1; }            /* fmov sd, wn */
+    if ((w & 0xfffffc00u) == 0x9e620000u || (w & 0xfffffc00u) == 0x9e630000u) {                                 /* scvtf / ucvtf dd, xn */
+        reg_get(j, rn, 0); op(j, (w >> 16 & 1) ? F64_CVT_I64U : F64_CVT_I64S); op(j, I64_REINT_F64); vset(j, rd, 0); vzero_hi(j, rd);
+        return 1;
+    }
+    if ((w & 0xfffffc00u) == 0x9e780000u || (w & 0xfffffc00u) == 0x9e790000u) {                                 /* fcvtzs / fcvtzu xd, dn (saturating) */
+        vget(j, rn, 0); op(j, F64_REINT_I64); put(&j->b, 0xfc); putu(&j->b, (w >> 16 & 1) ? 7u : 6u); reg_set(j, rd, 0, 0);
+        return 1;
+    }
+    /* ---- double arithmetic (default FPCR: round to nearest, as the interpreter's host does) ---- */
+    if ((w & 0xffe0fc00u) == 0x1e602800u || (w & 0xffe0fc00u) == 0x1e603800u ||
+        (w & 0xffe0fc00u) == 0x1e600800u || (w & 0xffe0fc00u) == 0x1e601800u) {                                 /* fadd fsub fmul fdiv d */
+        int o = (w >> 12) & 0xf;
+        vget(j, rn, 0); op(j, F64_REINT_I64); vget(j, rm, 0); op(j, F64_REINT_I64);
+        op(j, o == 2 ? F64_ADD : o == 3 ? F64_SUB : o == 0 ? F64_MUL : F64_DIV);
+        op(j, I64_REINT_F64); vset(j, rd, 0); vzero_hi(j, rd);
+        return 1;
+    }
+    if ((w & 0xfffffc00u) == 0x1e604000u || (w & 0xfffffc00u) == 0x1e614000u ||
+        (w & 0xfffffc00u) == 0x1e60c000u || (w & 0xfffffc00u) == 0x1e61c000u) {                                 /* fmov fneg fabs fsqrt d */
+        int o = (w >> 15) & 3;
+        vget(j, rn, 0);
+        if (o == 2) { i64c(j, (int64_t)0x8000000000000000ULL); op(j, I64_XOR); }
+        else if (o == 1) { i64c(j, 0x7fffffffffffffffLL); op(j, I64_AND); }
+        else if (o == 3) { op(j, F64_REINT_I64); op(j, F64_SQRT); op(j, I64_REINT_F64); }
+        vset(j, rd, 0); vzero_hi(j, rd);
+        return 1;
+    }
+    if ((w & 0xffe0fc17u) == 0x1e602000u) {                       /* fcmp dn, dm / dn, #0 (not fcmpe's signalling) */
+        vget(j, rn, 0); lset(j, L_TA);                             /* raw bits; reinterpreted as doubles below */
+        if (w & 8) i64c(j, 0); else vget(j, rm, 0);
+        lset(j, L_TB);
+        /* a = TA, b = TB as doubles */
+        lget(j, L_TA); op(j, F64_REINT_I64); lget(j, L_TB); op(j, F64_REINT_I64); op(j, F64_LT); fset(j, L_N);
+        lget(j, L_TA); op(j, F64_REINT_I64); lget(j, L_TB); op(j, F64_REINT_I64); op(j, F64_EQ); fset(j, L_Z);
+        /* c: not less (equal, greater or unordered); v: unordered */
+        lget(j, L_TA); op(j, F64_REINT_I64); lget(j, L_TA); op(j, F64_REINT_I64); op(j, F64_EQ);
+        lget(j, L_TB); op(j, F64_REINT_I64); lget(j, L_TB); op(j, F64_REINT_I64); op(j, F64_EQ); op(j, I32_AND); op(j, I32_EQZ);
+        lset(j, L_UR);
+        fget(j, L_N); op(j, I32_EQZ); fset(j, L_C);
+        lget(j, L_UR); fset(j, L_V);
+        flags_def(j);
+        return 1;
+    }
+    return 0;
+}
+
 static int decode_bitmask(int n, int immr, int imms, int is64, uint64_t *wmask, uint64_t *tmask, int imm)
 {
     int len, levels, s, r, esize, d, i;
@@ -427,6 +598,10 @@ static int insn(struct jit *j, uint32_t w)
     int rd = w & 31, rn = (w >> 5) & 31, rm = (w >> 16) & 31;
     const int D = 0;                  /* blocks open inside the body block at instruction level */
 
+    {
+        int r = insn_fp(j, w);
+        if (r) return r;
+    }
     /* ---- branches ---- */
     if ((w & 0x7c000000u) == 0x14000000u) {                       /* b, bl */
         uint64_t t = pc + (uint64_t)(sextn(w & 0x3ffffff, 26) << 2);
@@ -720,7 +895,17 @@ static int insn(struct jit *j, uint32_t w)
             reg_set(j, rd, 0, 0);
             return 1;
         }
-        return 0;                                                  /* umulh/smulh: the interpreter */
+        if (op31 == 6) {                                           /* umulh via 32-bit halves */
+            reg_get(j, rn, 0); lset(j, L_TA); reg_get(j, rm, 0); lset(j, L_TB);
+            lget(j, L_TA); i64c(j, 0xffffffffLL); op(j, I64_AND); lget(j, L_TB); i64c(j, 0xffffffffLL); op(j, I64_AND); op(j, I64_MUL); i64c(j, 32); op(j, I64_SHRU);
+            lget(j, L_TA); i64c(j, 32); op(j, I64_SHRU); lget(j, L_TB); i64c(j, 0xffffffffLL); op(j, I64_AND); op(j, I64_MUL); op(j, I64_ADD); lset(j, L_TR);
+            lget(j, L_TR); i64c(j, 0xffffffffLL); op(j, I64_AND); lget(j, L_TA); i64c(j, 0xffffffffLL); op(j, I64_AND); lget(j, L_TB); i64c(j, 32); op(j, I64_SHRU); op(j, I64_MUL); op(j, I64_ADD); lset(j, L_TC);
+            lget(j, L_TA); i64c(j, 32); op(j, I64_SHRU); lget(j, L_TB); i64c(j, 32); op(j, I64_SHRU); op(j, I64_MUL);
+            lget(j, L_TR); i64c(j, 32); op(j, I64_SHRU); op(j, I64_ADD); lget(j, L_TC); i64c(j, 32); op(j, I64_SHRU); op(j, I64_ADD);
+            reg_set(j, rd, 0, 0);
+            return 1;
+        }
+        return 0;                                                  /* smulh: the interpreter */
     }
     return 0;
 }
