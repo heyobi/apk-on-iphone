@@ -109,6 +109,18 @@ void aoi_jit_flush(void)
     slot_used = 0;
 }
 
+/* One instruction through the interpreter, for what the translator does not do itself
+ * (SIMD, floating point, atomics, system registers ...): registers already live in the
+ * CPU structure, so nothing needs syncing. */
+static int jit_stepping;
+static void jit_step(struct aoi_cpu *c, uint64_t pc)
+{
+    c->pc = pc;
+    jit_stepping = 1;
+    aoi_cpu_run(c, c->steps + 1);
+    jit_stepping = 0;
+}
+
 /* slow paths, called from generated code through the table */
 static uint64_t jit_ld(struct aoi_cpu *c, uint64_t a, int len) { return rd(c, a, len); }
 static void jit_st(struct aoi_cpu *c, uint64_t a, uint64_t v, int len) { wr(c, a, v, len); }
@@ -153,7 +165,7 @@ enum {
 
 /* locals: 0 = cpu (param); then these */
 enum { L_X0 = 1, L_SP = 32, L_N = 33, L_Z, L_C, L_V, L_TA, L_TB, L_TR, L_TC, L_A, L_UA, L_UB, L_UR, L_H,
-       L_VSIZE, L_PROT, L_CHUNK, L_NPC, L_CNT, L_IDX, L_COUNT_ };
+       L_VSIZE, L_PROT, L_CHUNK, L_NPC, L_CNT, L_IDX, L_SV, L_UF, L_COUNT_ };
 /* local groups for the declaration: i64 x0-x30, sp; i32 n z c v; i64 ta tb tr tc a; i32 ua ub ur h;
  * i64 vsize; i32 prot chunk; i64 npc; i32 cnt idx */
 
@@ -182,8 +194,7 @@ static void mem_op(struct jit *j, uint8_t o, uint32_t off) { put(&j->b, o); putu
 static void reg_get(struct jit *j, int r, int sp_ok)
 {
     if (r == 31 && !sp_ok) { i64c(j, 0); return; }
-    if (r == 31) { j->rd_mask |= 1u << 31; lget(j, L_SP); return; }
-    j->rd_mask |= 1u << r; lget(j, L_X0 + r);
+    lget(j, 0); mem_op(j, I64_LOAD, r == 31 ? OFF(sp) : OFF(x) + 8u * (unsigned)r);
 }
 static void reg_get32(struct jit *j, int r, int sp_ok)
 {
@@ -195,9 +206,13 @@ static void reg_set(struct jit *j, int r, int sp_ok, int w32)
 {
     if (w32) op(j, EXT_U);
     if (r == 31 && !sp_ok) { op(j, DROP); return; }
-    if (r == 31) { j->wr_mask |= 1u << 31; lset(j, L_SP); return; }
-    j->wr_mask |= 1u << r; lset(j, L_X0 + r);
+    lset(j, L_SV); lget(j, 0); lget(j, L_SV);
+    mem_op(j, I64_STORE, r == 31 ? OFF(sp) : OFF(x) + 8u * (unsigned)r);
 }
+/* NZCV in the CPU structure (ints) */
+static uint32_t flag_off(int l) { return l == L_N ? OFF(n) : l == L_Z ? OFF(z) : l == L_C ? OFF(c) : OFF(v); }
+static void fget(struct jit *j, int l) { lget(j, 0); mem_op(j, I32_LOAD, flag_off(l)); }
+static void fset(struct jit *j, int l) { lset(j, L_UF); lget(j, 0); lget(j, L_UF); mem_op(j, I32_STORE, flag_off(l)); }
 static void flags_use(struct jit *j) { if (!j->flags_known) j->flags_rd = 1; }
 static void flags_def(struct jit *j) { j->flags_known = 1; j->flags_wr = 1; }
 
@@ -238,13 +253,13 @@ static void cond(struct jit *j, unsigned c)
 {
     flags_use(j);
     switch (c >> 1) {
-    case 0: lget(j, L_Z); break;
-    case 1: lget(j, L_C); break;
-    case 2: lget(j, L_N); break;
-    case 3: lget(j, L_V); break;
-    case 4: lget(j, L_C); lget(j, L_Z); op(j, I32_EQZ); op(j, I32_AND); break;
-    case 5: lget(j, L_N); lget(j, L_V); op(j, I32_EQ); break;
-    case 6: lget(j, L_Z); op(j, I32_EQZ); lget(j, L_N); lget(j, L_V); op(j, I32_EQ); op(j, I32_AND); break;
+    case 0: fget(j, L_Z); break;
+    case 1: fget(j, L_C); break;
+    case 2: fget(j, L_N); break;
+    case 3: fget(j, L_V); break;
+    case 4: fget(j, L_C); fget(j, L_Z); op(j, I32_EQZ); op(j, I32_AND); break;
+    case 5: fget(j, L_N); fget(j, L_V); op(j, I32_EQ); break;
+    case 6: fget(j, L_Z); op(j, I32_EQZ); fget(j, L_N); fget(j, L_V); op(j, I32_EQ); op(j, I32_AND); break;
     default: i32c(j, 1); return;
     }
     if (c & 1) op(j, I32_EQZ);
@@ -258,15 +273,15 @@ static void addsub(struct jit *j, int w32, int sub, int setf, int rd, int rd_sp)
     lget(j, A); lget(j, B); op(j, w32 ? (sub ? I32_SUB : I32_ADD) : (sub ? I64_SUB : I64_ADD)); lset(j, R);
     if (setf) {
         flags_def(j);
-        lget(j, R); if (w32) i32c(j, 0); else i64c(j, 0); op(j, w32 ? I32_LTS : I64_LTS); lset(j, L_N);
-        lget(j, R); op(j, w32 ? I32_EQZ : I64_EQZ); lset(j, L_Z);
-        if (sub) { lget(j, A); lget(j, B); op(j, w32 ? I32_GEU : I64_GEU); lset(j, L_C); }
-        else { lget(j, R); lget(j, A); op(j, w32 ? I32_LTU : I64_LTU); lset(j, L_C); }
+        lget(j, R); if (w32) i32c(j, 0); else i64c(j, 0); op(j, w32 ? I32_LTS : I64_LTS); fset(j, L_N);
+        lget(j, R); op(j, w32 ? I32_EQZ : I64_EQZ); fset(j, L_Z);
+        if (sub) { lget(j, A); lget(j, B); op(j, w32 ? I32_GEU : I64_GEU); fset(j, L_C); }
+        else { lget(j, R); lget(j, A); op(j, w32 ? I32_LTU : I64_LTU); fset(j, L_C); }
         /* v: sub ((a^b)&(a^r)) < 0, add (~(a^b)&(a^r)) < 0 */
         lget(j, A); lget(j, B); op(j, w32 ? I32_XOR : I64_XOR);
         if (!sub) { if (w32) i32c(j, -1); else i64c(j, -1); op(j, w32 ? I32_XOR : I64_XOR); }
         lget(j, A); lget(j, R); op(j, w32 ? I32_XOR : I64_XOR); op(j, w32 ? I32_AND : I64_AND);
-        if (w32) i32c(j, 0); else i64c(j, 0); op(j, w32 ? I32_LTS : I64_LTS); lset(j, L_V);
+        if (w32) i32c(j, 0); else i64c(j, 0); op(j, w32 ? I32_LTS : I64_LTS); fset(j, L_V);
     }
     if (rd != 31 || rd_sp) { lget(j, R); reg_set(j, rd, rd_sp, w32); }
 }
@@ -275,9 +290,9 @@ static void logic_flags(struct jit *j, int w32)
 {
     int R = w32 ? L_UR : L_TR;
     flags_def(j);
-    lget(j, R); if (w32) i32c(j, 0); else i64c(j, 0); op(j, w32 ? I32_LTS : I64_LTS); lset(j, L_N);
-    lget(j, R); op(j, w32 ? I32_EQZ : I64_EQZ); lset(j, L_Z);
-    i32c(j, 0); lset(j, L_C); i32c(j, 0); lset(j, L_V);
+    lget(j, R); if (w32) i32c(j, 0); else i64c(j, 0); op(j, w32 ? I32_LTS : I64_LTS); fset(j, L_N);
+    lget(j, R); op(j, w32 ? I32_EQZ : I64_EQZ); fset(j, L_Z);
+    i32c(j, 0); fset(j, L_C); i32c(j, 0); fset(j, L_V);
 }
 
 static void shifted(struct jit *j, int r, int w32, int typ, int amt)
@@ -633,8 +648,8 @@ static int insn(struct jit *j, uint32_t w)
           if (w >> 11 & 1) { if (w32) i32c(j, rm); else i64c(j, rm); } else { if (w32) reg_get32(j, rm, 0); else reg_get(j, rm, 0); }
           addsub(j, w32, opn, 1, 31, 0);
         put(&j->b, ELSE);
-          i32c(j, nzcv >> 3 & 1); lset(j, L_N); i32c(j, nzcv >> 2 & 1); lset(j, L_Z);
-          i32c(j, nzcv >> 1 & 1); lset(j, L_C); i32c(j, nzcv & 1); lset(j, L_V);
+          i32c(j, nzcv >> 3 & 1); fset(j, L_N); i32c(j, nzcv >> 2 & 1); fset(j, L_Z);
+          i32c(j, nzcv >> 1 & 1); fset(j, L_C); i32c(j, nzcv & 1); fset(j, L_V);
         put(&j->b, END);
         flags_def(j);
         return 1;
@@ -710,6 +725,13 @@ static int insn(struct jit *j, uint32_t w)
     return 0;
 }
 
+/* instructions that must go back to the interpreter loop rather than through jit_step:
+ * system calls (they may unmap code), exception-generating ones */
+static int region_ender(uint32_t w)
+{
+    return (w & 0xff000000u) == 0xd4000000u;                       /* svc, hvc, smc, brk, hlt, dcps */
+}
+
 /* direct targets of a branch word (ends the block): returns how many, in t[] */
 static int targets(uint32_t w, uint64_t pc, uint64_t t[2])
 {
@@ -754,6 +776,7 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
             int nt, q;
             probe.b.n = 0; probe.pc = base + 4u * (unsigned)si; probe.base = base; probe.start = start;
             r = insn(&probe, words[si]);
+            if (!r && !region_ender(words[si])) r = 1;              /* stepped through the interpreter inline */
             if (!r) break;
             if (r == 2) {
                 /* only code that ran: the starts seen (roots) and the fall-through after a
@@ -813,6 +836,20 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
             }
             before = j.b.n; rm0 = j.rd_mask; wm0 = j.wr_mask; fr0 = j.flags_rd; fw0 = j.flags_wr; fk0 = j.flags_known; mem0 = j.mem;
             r = insn(&j, words[si]);
+            if (!r && !region_ender(words[si])) {                  /* through the interpreter, inline */
+                note_refused(words[si]);
+                lget(&j, 0); i64c(&j, (int64_t)j.pc);
+                i32c(&j, (int32_t)(uintptr_t)jit_step); put(&j.b, CALL_IND); putu(&j.b, 3); put(&j.b, 0);
+                lget(&j, 0); mem_op(&j, I32_LOAD, OFF(stop));          /* a fault (or anything that stops): leave */
+                lget(&j, 0); mem_op(&j, I64_LOAD, OFF(pc)); i64c(&j, (int64_t)(j.pc + 4)); op(&j, I64_NE);
+                op(&j, I32_OR);
+                put(&j.b, IF); put(&j.b, T_VOID);
+                  lget(&j, 0); mem_op(&j, I64_LOAD, OFF(pc)); lset(&j, L_NPC);
+                  cnt_add(&j, j.ninsn + 1);
+                  put(&j.b, BR); putu(&j.b, (unsigned)(j.d_out + 1));
+                put(&j.b, END);
+                r = 1;
+            }
             if (!r) {                                              /* the interpreter goes on from here */
                 note_refused(words[si]);
                 j.b.n = before; j.rd_mask = rm0; j.wr_mask = wm0; j.flags_rd = fr0; j.flags_wr = fw0; j.flags_known = fk0; j.mem = mem0;
@@ -829,7 +866,7 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
     if (total < 2) { free(j.b.p); return 0; }
 
     /* the function: registers in, the region, registers out */
-    nlocals = 8;
+    nlocals = 10;
     putu(&body, (unsigned)nlocals);
     putu(&body, 32); put(&body, T_I64);                            /* x0-x30, sp */
     putu(&body, 4); put(&body, T_I32);                             /* n z c v */
@@ -839,16 +876,11 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
     putu(&body, 2); put(&body, T_I32);                             /* prot chunk */
     putu(&body, 1); put(&body, T_I64);                             /* npc */
     putu(&body, 2); put(&body, T_I32);                             /* cnt idx */
+    putu(&body, 1); put(&body, T_I64);                             /* sv */
+    putu(&body, 1); put(&body, T_I32);                             /* uf */
     {
         struct jit pj; memset(&pj, 0, sizeof pj);
-        uint32_t load_mask = j.rd_mask | j.wr_mask;                /* a register written on some path keeps its value on others */
         pj.b = body;
-        for (r = 0; r < 31; r++) if (load_mask >> r & 1) { lget(&pj, 0); mem_op(&pj, I64_LOAD, OFF(x) + 8u * (unsigned)r); lset(&pj, L_X0 + r); }
-        if (load_mask >> 31 & 1) { lget(&pj, 0); mem_op(&pj, I64_LOAD, OFF(sp)); lset(&pj, L_SP); }
-        if (j.flags_rd || j.flags_wr) {
-            lget(&pj, 0); mem_op(&pj, I32_LOAD, OFF(n)); lset(&pj, L_N); lget(&pj, 0); mem_op(&pj, I32_LOAD, OFF(z)); lset(&pj, L_Z);
-            lget(&pj, 0); mem_op(&pj, I32_LOAD, OFF(c)); lset(&pj, L_C); lget(&pj, 0); mem_op(&pj, I32_LOAD, OFF(v)); lset(&pj, L_V);
-        }
         if (j.mem) {                                               /* the address space: cpu->mem->vm */
             lget(&pj, 0); mem_op(&pj, I32_LOAD, OFF(mem)); mem_op(&pj, I32_LOAD, (uint32_t)offsetof(struct aoi_mem, vm)); lset(&pj, L_H);
             lget(&pj, L_H); mem_op(&pj, I64_LOAD, (uint32_t)offsetof(struct aoi_vm, size)); lset(&pj, L_VSIZE);
@@ -859,12 +891,6 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
         i64c(&pj, (int64_t)base); op(&pj, I64_SUB); i64c(&pj, 2); op(&pj, I64_SHRU); op(&pj, WRAP); lset(&pj, L_IDX);
         /* (a pc that is not a block start lands in $trap and returns 0: the interpreter takes it) */
         putbuf(&pj.b, &j.b);
-        for (r = 0; r < 31; r++) if (j.wr_mask >> r & 1) { lget(&pj, 0); lget(&pj, L_X0 + r); mem_op(&pj, I64_STORE, OFF(x) + 8u * (unsigned)r); }
-        if (j.wr_mask >> 31 & 1) { lget(&pj, 0); lget(&pj, L_SP); mem_op(&pj, I64_STORE, OFF(sp)); }
-        if (j.flags_wr) {
-            lget(&pj, 0); lget(&pj, L_N); mem_op(&pj, I32_STORE, OFF(n)); lget(&pj, 0); lget(&pj, L_Z); mem_op(&pj, I32_STORE, OFF(z));
-            lget(&pj, 0); lget(&pj, L_C); mem_op(&pj, I32_STORE, OFF(c)); lget(&pj, 0); lget(&pj, L_V); mem_op(&pj, I32_STORE, OFF(v));
-        }
         lget(&pj, 0); lget(&pj, L_NPC); mem_op(&pj, I64_STORE, OFF(pc));
         lget(&pj, L_CNT);
         put(&pj.b, END);
@@ -876,10 +902,11 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
     put(&m, 0); put(&m, 'a'); put(&m, 's'); put(&m, 'm'); put(&m, 1); put(&m, 0); put(&m, 0); put(&m, 0);
     /* types: 0 (i32)->i32, 1 (i32 i64 i32)->i64, 2 (i32 i64 i64 i32)->() */
     sec.n = 0;
-    putu(&sec, 3);
+    putu(&sec, 4);
     put(&sec, 0x60); putu(&sec, 1); put(&sec, T_I32); putu(&sec, 1); put(&sec, T_I32);
     put(&sec, 0x60); putu(&sec, 3); put(&sec, T_I32); put(&sec, T_I64); put(&sec, T_I32); putu(&sec, 1); put(&sec, T_I64);
     put(&sec, 0x60); putu(&sec, 4); put(&sec, T_I32); put(&sec, T_I64); put(&sec, T_I64); put(&sec, T_I32); putu(&sec, 0);
+    put(&sec, 0x60); putu(&sec, 2); put(&sec, T_I32); put(&sec, T_I64); putu(&sec, 0);
     put(&m, 1); putu(&m, sec.n); putbuf(&m, &sec);
     /* imports: env.mem (memory), env.tbl (table) */
     sec.n = 0;
@@ -948,7 +975,7 @@ aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc)
 {
     struct jit_slot *s;
     unsigned i = (unsigned)(pc & (AOI_VM_PAGE - 1)) >> 2;
-    if (!aoi_jit_enabled || !c->mem->vm || (pc & 3)) return NULL;
+    if (!aoi_jit_enabled || jit_stepping || !c->mem->vm || (pc & 3)) return NULL;
     if (!(s = slot_of(c, pc & ~(uint64_t)(AOI_VM_PAGE - 1), 1))) return NULL;
     if (s->fn > 0) { aoi_jit_runs++; return (aoi_jit_fn)(uintptr_t)s->fn; }
     if (s->fn < 0) return NULL;                                    /* nothing to translate here */
