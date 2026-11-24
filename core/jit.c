@@ -324,24 +324,41 @@ static void extended(struct jit *j, int r, int w32, int option, int sh)
 /* Guest address (i64) in L_A. Leaves the host address (i32) in L_H, or 0 for the slow path. */
 static void fast_addr(struct jit *j, int len, int need)
 {
+    /* the module's function 1 (tr_helper below): host address or 0; small code per access */
     j->mem = 1;
-    lget(j, L_A); i64c(j, 0x00ffffffffffffffLL); op(j, I64_AND); lset(j, L_A);   /* top byte ignore */
-    i32c(j, 0); lset(j, L_H);
-    lget(j, L_A); i64c(j, len); op(j, I64_ADD); lget(j, L_VSIZE); op(j, I64_LEU);
-    lget(j, L_A); lget(j, L_A); i64c(j, len - 1); op(j, I64_ADD); op(j, I64_XOR); i64c(j, AOI_VM_PAGE); op(j, I64_LTU);
-    op(j, I32_AND);
-    put(&j->b, IF); put(&j->b, T_VOID);
-      lget(j, L_PROT); lget(j, L_A); i64c(j, 12); op(j, I64_SHRU); op(j, WRAP); op(j, I32_ADD);
-      mem_op(j, I32_LOAD8U, 0); i32c(j, need | AOI_PROT_MISSING); op(j, I32_AND); i32c(j, need); op(j, I32_EQ);
-      put(&j->b, IF); put(&j->b, T_VOID);
-        lget(j, L_CHUNK); lget(j, L_A); i64c(j, AOI_VM_CHUNK_SHIFT); op(j, I64_SHRU); op(j, WRAP); i32c(j, 2); op(j, I32_SHL); op(j, I32_ADD);
-        mem_op(j, I32_LOAD, 0); lset(j, L_H);
-        lget(j, L_H);
-        put(&j->b, IF); put(&j->b, T_VOID);
-          lget(j, L_H); lget(j, L_A); i64c(j, AOI_VM_CHUNK - 1); op(j, I64_AND); op(j, WRAP); op(j, I32_ADD); lset(j, L_H);
-        put(&j->b, END);
-      put(&j->b, END);
-    put(&j->b, END);
+    lget(j, L_A); i32c(j, len); i32c(j, need); lget(j, L_PROT); lget(j, L_CHUNK); lget(j, L_VSIZE);
+    put(&j->b, 0x10); putu(&j->b, 1);                              /* call 1 */
+    lset(j, L_H);
+}
+
+/* function 1 of every module: (a i64, len i32, need i32, prot i32, chunk i32, vsize i64) -> host i32 or 0:
+ * top byte ignored, inside the space, one page, permission byte, the chunk's host memory */
+static void tr_helper(struct buf *out)
+{
+    struct jit h;
+    memset(&h, 0, sizeof h);
+    putu(&h.b, 1); putu(&h.b, 1); put(&h.b, T_I32);                /* local 6: h */
+    lget(&h, 0); i64c(&h, 0x00ffffffffffffffLL); op(&h, I64_AND); lset(&h, 0);
+    lget(&h, 0); lget(&h, 1); op(&h, EXT_U); op(&h, I64_ADD); lget(&h, 5); op(&h, I64_LEU);
+    lget(&h, 0); lget(&h, 0); lget(&h, 1); op(&h, EXT_U); op(&h, I64_ADD); i64c(&h, 1); op(&h, I64_SUB); op(&h, I64_XOR);
+    i64c(&h, AOI_VM_PAGE); op(&h, I64_LTU);
+    op(&h, I32_AND);
+    put(&h.b, IF); put(&h.b, T_VOID);
+      lget(&h, 3); lget(&h, 0); i64c(&h, 12); op(&h, I64_SHRU); op(&h, WRAP); op(&h, I32_ADD); mem_op(&h, I32_LOAD8U, 0);
+      lget(&h, 2); i32c(&h, AOI_PROT_MISSING); op(&h, I32_OR); op(&h, I32_AND); lget(&h, 2); op(&h, I32_EQ);
+      put(&h.b, IF); put(&h.b, T_VOID);
+        lget(&h, 4); lget(&h, 0); i64c(&h, AOI_VM_CHUNK_SHIFT); op(&h, I64_SHRU); op(&h, WRAP); i32c(&h, 2); op(&h, I32_SHL); op(&h, I32_ADD);
+        mem_op(&h, I32_LOAD, 0); ltee(&h, 6);
+        put(&h.b, IF); put(&h.b, T_VOID);
+          lget(&h, 6); lget(&h, 0); i64c(&h, AOI_VM_CHUNK - 1); op(&h, I64_AND); op(&h, WRAP); op(&h, I32_ADD);
+          op(&h, RETURN);
+        put(&h.b, END);
+      put(&h.b, END);
+    put(&h.b, END);
+    i32c(&h, 0);
+    put(&h.b, END);
+    putu(out, h.b.n); putbuf(out, &h.b);
+    free(h.b.p);
 }
 
 /* after a slow path: stop before this instruction if it faulted */
@@ -1087,11 +1104,13 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
     put(&m, 0); put(&m, 'a'); put(&m, 's'); put(&m, 'm'); put(&m, 1); put(&m, 0); put(&m, 0); put(&m, 0);
     /* types: 0 (i32)->i32, 1 (i32 i64 i32)->i64, 2 (i32 i64 i64 i32)->() */
     sec.n = 0;
-    putu(&sec, 4);
+    putu(&sec, 5);
     put(&sec, 0x60); putu(&sec, 1); put(&sec, T_I32); putu(&sec, 1); put(&sec, T_I32);
     put(&sec, 0x60); putu(&sec, 3); put(&sec, T_I32); put(&sec, T_I64); put(&sec, T_I32); putu(&sec, 1); put(&sec, T_I64);
     put(&sec, 0x60); putu(&sec, 4); put(&sec, T_I32); put(&sec, T_I64); put(&sec, T_I64); put(&sec, T_I32); putu(&sec, 0);
     put(&sec, 0x60); putu(&sec, 2); put(&sec, T_I32); put(&sec, T_I64); putu(&sec, 0);
+    put(&sec, 0x60); putu(&sec, 6); put(&sec, T_I64); put(&sec, T_I32); put(&sec, T_I32); put(&sec, T_I32); put(&sec, T_I32); put(&sec, T_I64);
+    putu(&sec, 1); put(&sec, T_I32);
     put(&m, 1); putu(&m, sec.n); putbuf(&m, &sec);
     /* imports: env.mem (memory), env.tbl (table) */
     sec.n = 0;
@@ -1100,13 +1119,13 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
     putname(&sec, "env"); putname(&sec, "tbl"); put(&sec, 0x01); put(&sec, 0x70); put(&sec, 0x00); putu(&sec, 1);
     put(&m, 2); putu(&m, sec.n); putbuf(&m, &sec);
     /* function 0: type 0 */
-    sec.n = 0; putu(&sec, 1); putu(&sec, 0);
+    sec.n = 0; putu(&sec, 2); putu(&sec, 0); putu(&sec, 4);
     put(&m, 3); putu(&m, sec.n); putbuf(&m, &sec);
     /* export "f" */
     sec.n = 0; putu(&sec, 1); putname(&sec, "f"); put(&sec, 0x00); putu(&sec, 0);
     put(&m, 7); putu(&m, sec.n); putbuf(&m, &sec);
     /* code */
-    putu(&code, 1); putu(&code, body.n); putbuf(&code, &body);
+    putu(&code, 2); putu(&code, body.n); putbuf(&code, &body); tr_helper(&code);
     put(&m, 10); putu(&m, code.n); putbuf(&m, &code);
 
     fn = jit_install(m.p, (int)m.n);
