@@ -518,8 +518,8 @@ class T:
                '  (import "env" "sys" (func $sys (param i64 i64 i64 i64) (result i64)))',
                f'  (import "env" "mem" (memory {self.mem_size // 65536}))',
                '  (func (export "run") (param $entry i32) (param $sp0 i64) (result i64)',
-               '    (local ' + ' '.join(f'$x{r}' for r in range(31)) + ' $sp $ta $tb $tc $tr i64)',
-               '    (local $n $z $c $v $idx $ua $ub $ur i32)',
+               '    ' + ' '.join(f'(local {v} i64)' for v in [f'$x{r}' for r in range(31)] + ['$sp', '$ta', '$tb', '$tc', '$tr']),
+               '    ' + ' '.join(f'(local {v} i32)' for v in ['$n', '$z', '$c', '$v', '$idx', '$ua', '$ub', '$ur']),
                '    (local.set $idx (local.get $entry)) (local.set $sp (local.get $sp0))',
                '    (loop $top']
         for k in range(nb - 1, -1, -1):
