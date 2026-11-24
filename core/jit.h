@@ -15,6 +15,8 @@ struct aoi_cpu;
 typedef int (*aoi_jit_fn)(struct aoi_cpu *c);
 /* The translation for a block start, or NULL (counts it; translates it once it is hot). */
 aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc);
+/* A block start the page's function did not know (it returned 0): note it for the next translation. */
+void aoi_jit_miss(struct aoi_cpu *c, uint64_t pc);
 /* Forget every translation (code was unmapped or changed protection, an address space ended). */
 void aoi_jit_flush(void);
 extern int aoi_jit_enabled;

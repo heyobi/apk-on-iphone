@@ -217,10 +217,14 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             aoi_jit_fn f = aoi_jit_find(c, c->pc);
             bs = 0;
             if (f) {
-                c->steps += (uint64_t)f(c);
-                bs = 1;
-                if (c->stop != AOI_RUN) break;
-                continue;
+                int n = f(c);
+                if (n) {
+                    c->steps += (uint64_t)n;
+                    bs = 1;
+                    if (c->stop != AOI_RUN) break;
+                    continue;
+                }
+                aoi_jit_miss(c, c->pc);                            /* not a start it knows: interpret this one */
             }
         }
 #endif

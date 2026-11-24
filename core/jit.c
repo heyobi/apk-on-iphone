@@ -24,11 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define JIT_HOT 200
+#define JIT_HOT 600                  /* block entries into a page before it is translated */
+#define JIT_MISS 48                  /* entries at new starts before it is translated again */
 #define JIT_BUDGET 200000         /* guest instructions per call before going back to the interpreter */
-#define JIT_SLOTS (1u << 16)
+#define JIT_SLOTS (1u << 14)
 
-struct jit_slot { uint64_t pc; const void *vm; int32_t fn; int32_t count; };
+/* one per (address space, guest page): the page's function and the block starts seen in it */
+struct jit_slot { uint64_t base; const void *vm; int32_t fn; int32_t count; uint32_t roots[AOI_VM_PAGE / 4 / 32]; };
 static struct jit_slot slots[JIT_SLOTS];
 static unsigned slot_used;
 uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs;
@@ -55,7 +57,7 @@ EM_JS(int, jit_install, (const uint8_t *code, int len), {
  * running the same library code at the same address (every bash, dpkg, apt started from a
  * shell) reuses the function instead of compiling it again. */
 #define MOD_SLOTS 8192
-struct mod_slot { uint64_t pc, hash; int32_t fn; };
+struct mod_slot { uint64_t base, hash; int32_t fn; };
 static struct mod_slot mods[MOD_SLOTS];
 static uint64_t page_hash(const uint8_t *p)
 {
@@ -689,25 +691,25 @@ static int targets(uint32_t w, uint64_t pc, uint64_t t[2])
     return 0;                                                      /* ret, br */
 }
 
-static int32_t translate(struct aoi_cpu *c, uint64_t pc0)
+static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots)
 {
     struct jit j, probe;
     struct buf m = { 0 }, sec = { 0 }, code = { 0 }, body = { 0 };
     uint8_t start[AOI_VM_PAGE / 4], seen[AOI_VM_PAGE / 4];
     uint16_t work[AOI_VM_PAGE / 4], order[AOI_VM_PAGE / 4];
     const uint32_t *words;
-    uint64_t base = pc0 & ~(uint64_t)(AOI_VM_PAGE - 1);
     int nw = 0, nb = 0, total = 0, i, r, kb, nlocals;
     int32_t fn;
     {
         uint8_t *p = gptr(c, base, AOI_VM_PAGE, AOI_PROT_X);
-        if (!p || (pc0 & 3)) return 0;
+        if (!p) return 0;
         words = (const uint32_t *)p;
     }
     memset(start, 0, sizeof start); memset(seen, 0, sizeof seen);
     memset(&probe, 0, sizeof probe);
-    /* discover the blocks reachable from pc0 inside the page */
-    start[(pc0 - base) >> 2] = 1; work[nw++] = (uint16_t)((pc0 - base) >> 2);
+    /* discover the blocks reachable inside the page from every start seen there */
+    for (i = 0; i < AOI_VM_PAGE / 4; i++)
+        if (roots[i >> 5] >> (i & 31) & 1) { start[i] = 1; work[nw++] = (uint16_t)i; }
     while (nw) {
         int s0 = work[--nw], si;
         if (seen[s0]) continue;
@@ -815,8 +817,9 @@ static int32_t translate(struct aoi_cpu *c, uint64_t pc0)
             lget(&pj, L_H); mem_op(&pj, I32_LOAD, (uint32_t)offsetof(struct aoi_vm, prot)); lset(&pj, L_PROT);
             lget(&pj, L_H); mem_op(&pj, I32_LOAD, (uint32_t)offsetof(struct aoi_vm, chunk)); lset(&pj, L_CHUNK);
         }
-        i32c(&pj, (int32_t)((pc0 - base) >> 2)); lset(&pj, L_IDX);
-        i64c(&pj, (int64_t)pc0); lset(&pj, L_NPC);
+        lget(&pj, 0); mem_op(&pj, I64_LOAD, OFF(pc)); ltee(&pj, L_NPC);           /* entered at cpu->pc: */
+        i64c(&pj, (int64_t)base); op(&pj, I64_SUB); i64c(&pj, 2); op(&pj, I64_SHRU); op(&pj, WRAP); lset(&pj, L_IDX);
+        /* (a pc that is not a block start lands in $trap and returns 0: the interpreter takes it) */
         putbuf(&pj.b, &j.b);
         for (r = 0; r < 31; r++) if (j.wr_mask >> r & 1) { lget(&pj, 0); lget(&pj, L_X0 + r); mem_op(&pj, I64_STORE, OFF(x) + 8u * (unsigned)r); }
         if (j.wr_mask >> 31 & 1) { lget(&pj, 0); lget(&pj, L_SP); mem_op(&pj, I64_STORE, OFF(sp)); }
@@ -862,52 +865,73 @@ static int32_t translate(struct aoi_cpu *c, uint64_t pc0)
     return fn;
 }
 
-static int32_t translate_cached(struct aoi_cpu *c, uint64_t pc)
+static int32_t translate_cached(struct aoi_cpu *c, uint64_t base, const uint32_t *roots)
 {
-    uint64_t base = pc & ~(uint64_t)(AOI_VM_PAGE - 1), h;
     uint8_t *p = gptr(c, base, AOI_VM_PAGE, AOI_PROT_X);
+    uint64_t h;
     unsigned i, k;
     int32_t fn;
     if (!p) return 0;
     h = page_hash(p);
-    i = (unsigned)((h ^ (pc >> 2) * 0x9e3779b97f4a7c15ULL) >> 40) & (MOD_SLOTS - 1);
+    for (i = 0; i < AOI_VM_PAGE / 4 / 32; i++) h = (h ^ roots[i]) * 0x100000001b3ULL;
+    i = (unsigned)((h ^ (base >> 12) * 0x9e3779b97f4a7c15ULL) >> 40) & (MOD_SLOTS - 1);
     for (k = 0; k < 8; k++) {
         struct mod_slot *m = &mods[(i + k) & (MOD_SLOTS - 1)];
-        if (m->fn && m->pc == pc && m->hash == h) { aoi_jit_reused++; return m->fn; }
+        if (m->fn && m->base == base && m->hash == h) { aoi_jit_reused++; return m->fn; }
     }
-    fn = translate(c, pc);
+    fn = translate(c, base, roots);
     if (fn > 0) {
-        for (k = 0; k < 8; k++) {
-            struct mod_slot *m = &mods[(i + k) & (MOD_SLOTS - 1)];
-            if (!m->fn) break;
-        }
-        if (k == 8) k = 0;                                         /* full here: replace the first */
-        mods[(i + k) & (MOD_SLOTS - 1)] = (struct mod_slot){ pc, h, fn };
+        for (k = 0; k < 8 && mods[(i + k) & (MOD_SLOTS - 1)].fn; k++) {}
+        if (k == 8) k = 0;
+        mods[(i + k) & (MOD_SLOTS - 1)] = (struct mod_slot){ base, h, fn };
     }
     return fn;
 }
 
-aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc)
+static struct jit_slot *slot_of(struct aoi_cpu *c, uint64_t base, int make)
 {
     const void *vm = c->mem->vm;
-    unsigned h = (unsigned)((pc >> 2) * 0x9e3779b1u ^ (uintptr_t)vm) & (JIT_SLOTS - 1), k;
-    if (!vm || !aoi_jit_enabled) return NULL;
+    unsigned h = (unsigned)((base >> 12) * 0x9e3779b1u ^ (uintptr_t)vm) & (JIT_SLOTS - 1), k;
     for (k = 0; k < 16; k++, h = (h + 1) & (JIT_SLOTS - 1)) {
         struct jit_slot *s = &slots[h];
-        if (s->pc == pc && s->vm == vm) {
-            if (s->fn > 0) { aoi_jit_runs++; return (aoi_jit_fn)(uintptr_t)s->fn; }
-            if (s->fn < 0) return NULL;                            /* tried: not translatable */
-            if (++s->count < JIT_HOT) return NULL;
-            s->fn = translate_cached(c, pc);
-            if (!s->fn) { s->fn = -1; return NULL; }
-            return (aoi_jit_fn)(uintptr_t)s->fn;
-        }
+        if (s->base == base && s->vm == vm) return s;
         if (!s->vm) {
+            if (!make) return NULL;
             if (slot_used > JIT_SLOTS / 2) { aoi_jit_flush(); return NULL; }
-            s->pc = pc; s->vm = vm; s->fn = 0; s->count = 1; slot_used++;
-            return NULL;
+            memset(s, 0, sizeof *s);
+            s->base = base; s->vm = vm; slot_used++;
+            return s;
         }
     }
     return NULL;
+}
+
+aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc)
+{
+    struct jit_slot *s;
+    unsigned i = (unsigned)(pc & (AOI_VM_PAGE - 1)) >> 2;
+    if (!aoi_jit_enabled || !c->mem->vm || (pc & 3)) return NULL;
+    if (!(s = slot_of(c, pc & ~(uint64_t)(AOI_VM_PAGE - 1), 1))) return NULL;
+    if (s->fn > 0) { aoi_jit_runs++; return (aoi_jit_fn)(uintptr_t)s->fn; }
+    if (s->fn < 0) return NULL;                                    /* nothing to translate here */
+    s->roots[i >> 5] |= 1u << (i & 31);
+    if (++s->count < JIT_HOT) return NULL;
+    s->count = 0;
+    s->fn = translate_cached(c, s->base, s->roots);
+    if (!s->fn) { s->fn = -1; return NULL; }
+    return (aoi_jit_fn)(uintptr_t)s->fn;
+}
+
+void aoi_jit_miss(struct aoi_cpu *c, uint64_t pc)
+{
+    struct jit_slot *s = slot_of(c, pc & ~(uint64_t)(AOI_VM_PAGE - 1), 0);
+    unsigned i = (unsigned)(pc & (AOI_VM_PAGE - 1)) >> 2;
+    int32_t fn;
+    if (!s || s->fn <= 0) return;
+    s->roots[i >> 5] |= 1u << (i & 31);
+    if (++s->count < JIT_MISS) return;
+    s->count = 0;
+    fn = translate_cached(c, s->base, s->roots);                   /* again, with the new starts */
+    if (fn > 0) s->fn = fn;
 }
 #endif
