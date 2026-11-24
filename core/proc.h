@@ -211,6 +211,15 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd);
 /* Every process: the guest directory `guest` (e.g. /root/Files) is the host directory `host`
  * (e.g. the app's folder shared with the Files app), not the one inside the root. */
 void aoi_proc_bind(const char *guest, const char *host);
+/* Linux mode: a new top-level process (after aoi_proc_exec + aoi_proc_linux) runs beside the
+ * others, on its own thread or, in one-thread builds, taking turns; it frees itself when it
+ * ends. 0, or -1. (Another session in the same address-space registry: a terminal tab.) */
+int aoi_proc_adopt(struct aoi_proc *np);
+/* Linux mode: is a process with this pid alive? */
+int aoi_proc_alive(int pid);
+/* One-thread builds: gives every adopted or child process one turn (when no aoi_proc_run is
+ * active, e.g. after the first process ended). 1 if any ran. */
+int aoi_proc_turn_others(void);
 
 /* Linux mode: sends sig to every process of group pgid (the terminal's Ctrl-C), from any
  * host thread. Returns how many got it. */

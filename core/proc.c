@@ -2824,6 +2824,26 @@ static int spawn_thread(struct aoi_child *ch)
 
 static uint64_t exec_replace(struct aoi_proc *p, struct aoi_cpu *c, struct aoi_proc *np);
 
+int aoi_proc_adopt(struct aoi_proc *np)
+{
+    struct aoi_child *ch = calloc(1, sizeof *ch);
+    if (!ch) return -1;
+    ch->pid = np->pid;
+    ch->proc = np;
+    ch->orphan = 1;                                                /* nobody waits: its turn frees it */
+    if (spawn_thread(ch)) { free(ch); return -1; }
+    return 0;
+}
+
+int aoi_proc_turn_others(void)
+{
+#ifdef AOI_ONE_THREAD
+    return one_others(NULL);
+#else
+    return 0;
+#endif
+}
+
 /* The vfork child's execve: path, argv and envp from guest memory; a "#!" script runs
  * its interpreter. Errors return to the child (it reports them and exits); success
  * ends the vfork. */
@@ -3115,6 +3135,15 @@ static struct aoi_proc *lx_find(int pid)                           /* (call with
     int i;
     for (i = 0; i < LX_PROCS; i++) if (lx_procs[i] && lx_procs[i]->pid == pid) return lx_procs[i];
     return NULL;
+}
+
+int aoi_proc_alive(int pid)
+{
+    int r;
+    pthread_mutex_lock(&lx_mu);
+    r = lx_find(pid) != NULL;
+    pthread_mutex_unlock(&lx_mu);
+    return r;
 }
 
 static uint64_t lx_getpgid(struct aoi_proc *p, int pid, int sid)
