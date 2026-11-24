@@ -98,6 +98,16 @@ slower), as expected before the translator. Not yet: more than one guest process
 each runs on a host thread; the web view has none, so processes must share one thread,
 suspending on blocking calls with JSPI).
 
+Several processes on one thread (2026-11-24): in WebAssembly builds (`AOI_ONE_THREAD`,
+set for Emscripten) spawn_thread puts a new guest process on a run list instead of a host
+thread. After each time slice, and whenever all of a process's threads wait, the
+outermost aoi_proc_run gives every other process one turn (child_turn); a nested turn
+that finds nothing to run hands the thread back, and the host sleeps (at most 1 ms) only
+when no process ran an instruction. No JSPI needed for this. Checks under node, all
+passing: an external command from sh, two- and three-stage pipelines, a background job
+with wait, a subshell's exit code, SIGPIPE (`yes | head`). Native builds keep a host
+thread per process (Debian, Alpine, make test and difftest unchanged).
+
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
 The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
