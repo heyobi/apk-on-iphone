@@ -18,7 +18,7 @@ aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc);
 /* Forget every translation (code was unmapped or changed protection, an address space ended). */
 void aoi_jit_flush(void);
 extern int aoi_jit_enabled;
-extern uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs;
+extern uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs, aoi_jit_reused;
 #else
 static inline void aoi_jit_flush(void) {}
 #endif

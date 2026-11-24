@@ -31,6 +31,11 @@ jobs:
         run: sh tests/wasm/run.sh "$RUNNER_TEMP/alpine"
       - name: Debian arm64 rootfs (official image, digests checked)
         run: sh tests/linux/fetch-debian.sh "$RUNNER_TEMP/debian"
+      - name: Python 3 into the Debian root (native lxrun, apt)
+        run: |
+          make build/lxrun > /dev/null
+          cp /etc/resolv.conf "$RUNNER_TEMP/debian/etc/resolv.conf"
+          LXRUN_QUIET=1 timeout 1500 build/lxrun "$RUNNER_TEMP/debian" /bin/sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 > /dev/null 2>&1; python3 --version'
       - name: Debian programs
         run: sh tests/wasm/run-debian.sh "$RUNNER_TEMP/debian"
       - name: Web build and root file system for the web view

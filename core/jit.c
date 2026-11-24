@@ -51,6 +51,21 @@ EM_JS(int, jit_install, (const uint8_t *code, int len), {
     }
 });
 
+/* Compiled regions by what they were made from (the page's bytes, the entry): a new process
+ * running the same library code at the same address (every bash, dpkg, apt started from a
+ * shell) reuses the function instead of compiling it again. */
+#define MOD_SLOTS 8192
+struct mod_slot { uint64_t pc, hash; int32_t fn; };
+static struct mod_slot mods[MOD_SLOTS];
+static uint64_t page_hash(const uint8_t *p)
+{
+    uint64_t h = 0xcbf29ce484222325ULL;
+    size_t i;
+    for (i = 0; i < AOI_VM_PAGE; i += 8) { uint64_t w; memcpy(&w, p + i, 8); h = (h ^ w) * 0x100000001b3ULL; }
+    return h;
+}
+uint64_t aoi_jit_reused;
+
 void aoi_jit_flush(void)
 {
     if (slot_used) memset(slots, 0, sizeof slots);
@@ -847,6 +862,31 @@ static int32_t translate(struct aoi_cpu *c, uint64_t pc0)
     return fn;
 }
 
+static int32_t translate_cached(struct aoi_cpu *c, uint64_t pc)
+{
+    uint64_t base = pc & ~(uint64_t)(AOI_VM_PAGE - 1), h;
+    uint8_t *p = gptr(c, base, AOI_VM_PAGE, AOI_PROT_X);
+    unsigned i, k;
+    int32_t fn;
+    if (!p) return 0;
+    h = page_hash(p);
+    i = (unsigned)((h ^ (pc >> 2) * 0x9e3779b97f4a7c15ULL) >> 40) & (MOD_SLOTS - 1);
+    for (k = 0; k < 8; k++) {
+        struct mod_slot *m = &mods[(i + k) & (MOD_SLOTS - 1)];
+        if (m->fn && m->pc == pc && m->hash == h) { aoi_jit_reused++; return m->fn; }
+    }
+    fn = translate(c, pc);
+    if (fn > 0) {
+        for (k = 0; k < 8; k++) {
+            struct mod_slot *m = &mods[(i + k) & (MOD_SLOTS - 1)];
+            if (!m->fn) break;
+        }
+        if (k == 8) k = 0;                                         /* full here: replace the first */
+        mods[(i + k) & (MOD_SLOTS - 1)] = (struct mod_slot){ pc, h, fn };
+    }
+    return fn;
+}
+
 aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc)
 {
     const void *vm = c->mem->vm;
@@ -858,7 +898,7 @@ aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc)
             if (s->fn > 0) { aoi_jit_runs++; return (aoi_jit_fn)(uintptr_t)s->fn; }
             if (s->fn < 0) return NULL;                            /* tried: not translatable */
             if (++s->count < JIT_HOT) return NULL;
-            s->fn = translate(c, pc);
+            s->fn = translate_cached(c, pc);
             if (!s->fn) { s->fn = -1; return NULL; }
             return (aoi_jit_fn)(uintptr_t)s->fn;
         }

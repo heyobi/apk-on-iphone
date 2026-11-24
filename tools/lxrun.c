@@ -220,8 +220,8 @@ int main(int argc, char **argv)
                     proc.cpu.exit_code, proc.cpu.steps, t1 - t0, peak_rss_mib(), aoi_syscall_count);
 #ifdef AOI_JIT
         if (!quiet || getenv("LXRUN_STATS"))
-            fprintf(stderr, "[lxrun] accelerator: %" PRIu64 " blocks translated, %" PRIu64 " refused by the engine, %" PRIu64 " block runs\n",
-                    aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs);
+            fprintf(stderr, "[lxrun] accelerator: %" PRIu64 " blocks translated, %" PRIu64 " refused by the engine, %" PRIu64 " reused, %" PRIu64 " region runs\n",
+                    aoi_jit_blocks, aoi_jit_failed, aoi_jit_reused, aoi_jit_runs);
 #endif
         return proc.cpu.exit_code & 0xff;
     }
