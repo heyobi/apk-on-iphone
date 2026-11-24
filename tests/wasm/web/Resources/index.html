@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<body style="font:12px ui-monospace,monospace;background:#111;color:#ddd">
+<pre id="o">starting…</pre>
+<script>
+// The wasm32 core in a worker of this web view: runs the checks in lxworker.js and
+// reports them to the app (BridgeBench's "done" handler writes Documents/result.json).
+const o = document.getElementById('o');
+const w = new Worker('lxworker.js');
+w.onmessage = e => {
+    if (e.data.log) { o.textContent += '\n' + e.data.log; return; }
+    o.textContent += '\nfinished';
+    webkit.messageHandlers.done.postMessage(JSON.stringify(e.data));
+};
+w.onerror = e => webkit.messageHandlers.done.postMessage(JSON.stringify({ worker_error: e.message }));
+w.postMessage({ go: true });
+</script>

@@ -29,3 +29,46 @@ jobs:
         run: sh tests/linux/fetch-alpine.sh "$RUNNER_TEMP/alpine"
       - name: Run single-process programs
         run: sh tests/wasm/run.sh "$RUNNER_TEMP/alpine"
+      - name: Web build and root file system for the web view
+        run: |
+          sh tests/wasm/build-web.sh
+          tar czf build/web/rootfs.tar.gz -C "$RUNNER_TEMP/alpine" .
+          ls -la build/web
+      - uses: actions/upload-artifact@v4
+        with: { name: lxweb, path: build/web, retention-days: 5 }
+
+  webview:
+    needs: node
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: lxweb, path: tests/wasm/web/Resources }
+      - name: Build the LxWeb test app for the simulator
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          cd tests/wasm/web && xcodegen generate
+          xcodebuild build -project LxWeb.xcodeproj -scheme LxWeb -configuration Release -sdk iphonesimulator             -destination 'generic/platform=iOS Simulator' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO > build.log 2>&1             || { grep -E "error:" build.log | head -n 40; tail -n 30 build.log; exit 1; }
+      - name: Run Linux programs in WKWebView (simulator)
+        run: |
+          cd tests/wasm/web
+          UDID=$(bash sim-device.sh "iPhone 17 Pro")
+          xcrun simctl boot "$UDID" || true; xcrun simctl bootstatus "$UDID" -b > /dev/null
+          APP=$(find build/dd -name LxWeb.app -path '*iphonesimulator*' | head -n 1)
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" com.heyobi.lxweb
+          D=$(xcrun simctl get_app_container "$UDID" com.heyobi.lxweb data)
+          for i in $(seq 1 600); do [ -f "$D/Documents/result.json" ] && break; sleep 2; done
+          python3 -c "
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          for k,v in d.items():
+              if isinstance(v,dict): print('==',k,'rc',v.get('rc'),'untar',v.get('untar_s'),'s run',v.get('run_s'),'s'); print(v.get('out','').strip()[-700:])
+              else: print(k,v)
+          " "$D/Documents/result.json" || echo "no result"
+          xcrun simctl io "$UDID" screenshot shot.png || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: lxweb-shot, path: tests/wasm/web/shot.png, retention-days: 5 }
