@@ -56,6 +56,7 @@
     var ops = {
         poll: function (sock) {
             if (sock.lxDns) return 4 | (sock.lxQ.length ? 1 : 0);
+            if (sock.lxListen !== undefined) return call('poll?id=' + sock.lxListen).status === 'data' ? 1 : 0;
             if (sock.lxId === undefined) return 0;
             var r = call('poll?id=' + sock.lxId);
             if ((sock.lxPolls = (sock.lxPolls || 0) + 1) <= 5 || r.status !== 'again') log('poll ' + sock.lxId + ' ' + r.status);
@@ -75,10 +76,37 @@
             }
             return 0;
         },
-        close: function (sock) { if (sock.lxId !== undefined) call('close?id=' + sock.lxId); sock.lxId = undefined; return 0; },
-        bind: function () { fail(58); },                            /* ENOTSUP: no listening sockets through the bridge yet */
-        listen: function () { fail(58); },
-        accept: function () { fail(58); },
+        close: function (sock) {
+            if (sock.lxId !== undefined) call('close?id=' + sock.lxId);
+            if (sock.lxListen !== undefined) call('close?id=' + sock.lxListen);
+            sock.lxId = sock.lxListen = undefined;
+            return 0;
+        },
+        /* listening sockets (python -m http.server, Flask, Jupyter): the app listens on the
+         * phone (its BSD sockets) and hands over each connection it accepts as a new id */
+        bind: function (sock, addr, port) {
+            if (sock.type !== 1) fail(58);                         /* (UDP servers: not through the bridge) */
+            sock.saddr = addr || '0.0.0.0'; sock.sport = port || 0;
+        },
+        listen: function (sock, backlog) {
+            var r = call('listen?host=' + encodeURIComponent(sock.saddr || '0.0.0.0') + '&port=' + (sock.sport || 0) + '&backlog=' + (backlog || 16));
+            log('listen ' + (sock.saddr || '0.0.0.0') + ':' + (sock.sport || 0) + ' -> ' + r.status);
+            if (r.status !== 'ok') fail(r.status === 'inuse' ? 3 : r.status === 'acces' ? 2 : 28);   /* EADDRINUSE, EACCES, EINVAL */
+            var f = new TextDecoder().decode(r.data).split(' ');
+            sock.lxListen = f[0]; sock.sport = parseInt(f[1], 10) || sock.sport;
+            sock.server = true;
+        },
+        accept: function (sock) {
+            if (sock.lxListen === undefined) fail(28);
+            var r = call('accept?id=' + sock.lxListen);
+            if (r.status === 'again') fail(6);
+            if (r.status !== 'ok') fail(28);
+            var f = new TextDecoder().decode(r.data).split(' ');
+            var ns = SOCKFS.createSocket(sock.family, sock.type, sock.protocol);
+            ns.lxId = f[0]; ns.daddr = f[1] || '127.0.0.1'; ns.dport = parseInt(f[2], 10) || 0;
+            ns.saddr = sock.saddr; ns.sport = sock.sport;
+            return ns;
+        },
         connect: function (sock, addr, port) {
             log('connect type ' + sock.type + ' ' + addr + ':' + port);
             if (sock.type === 2) {                                 /* UDP: only DNS (port 53), answered here */
@@ -95,7 +123,7 @@
             sock.daddr = addr; sock.dport = port;
         },
         getname: function (sock, peer) {
-            return peer ? { addr: sock.daddr || '0.0.0.0', port: sock.dport || 0 } : { addr: '0.0.0.0', port: 0 };
+            return peer ? { addr: sock.daddr || '0.0.0.0', port: sock.dport || 0 } : { addr: sock.saddr || '0.0.0.0', port: sock.sport || 0 };
         },
         sendmsg: function (sock, buffer, offset, length, addr, port) {
             if (sock.type === 2) log('send udp ' + length + ' to ' + addr + ':' + port);

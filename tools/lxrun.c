@@ -102,7 +102,10 @@ static void web_new(int id, int cols, int rows)
         w->t = t;
     }
     w->id = id;
-    if (aoi_proc_exec(np, web_root, web_argv[0], web_argc, web_argv, web_envp)) { free(np); return; }
+    {
+        const char *e = aoi_proc_exec(np, web_root, web_argv[0], web_argc, web_argv, web_envp);
+        if (e) { fprintf(stderr, "[lxrun] session %d: %s\n", id, e); free(np); return; }
+    }
     aoi_proc_linux(np, "/root");
     if (w->t) aoi_tty_resize(w->t, cols, rows);
     else if (!(w->t = aoi_tty_new(web_out, w, cols, rows))) { aoi_proc_free(np); free(np); return; }
@@ -111,6 +114,7 @@ static void web_new(int id, int cols, int rows)
     w->sid = np->sid;
     w->used = 1;
     if (aoi_proc_adopt(np)) { w->used = 0; aoi_proc_free(np); free(np); }
+    if (getenv("LXRUN_DEBUG")) fprintf(stderr, "[lxrun] session %d: pid %d, pts/%d, %s\n", id, w->sid, aoi_tty_index(w->t), w->used ? "running" : "failed");
 }
 
 static void web_poll(int64_t wait_ns)
@@ -154,6 +158,7 @@ static void web_poll(int64_t wait_ns)
             struct wsess *w;
             if (!(e = strchr(s, ';'))) break;
             *e = 0;
+            if (getenv("LXRUN_DEBUG")) fprintf(stderr, "[lxrun] ctl %s\n", s);
             if (sscanf(s, "N %d %d %d", &id, &c, &r) == 3) web_new(id, c, r);
             else if (sscanf(s, "S %d %d %d", &id, &c, &r) == 3) { if ((w = web_find(id))) aoi_tty_resize(w->t, c, r); }
             else if (sscanf(s, "C %d", &id) == 1) { if ((w = web_find(id))) aoi_proc_kill_session(w->sid, 9); }
