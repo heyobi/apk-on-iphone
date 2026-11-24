@@ -122,9 +122,10 @@ async function opfsFile(create) {
     return fh.createSyncAccessHandle();
 }
 
-async function run(tar, args, keep) {
+async function run(tar, args, keep, env) {
     let out = '';
-    const M = await createLx({ print: s => { out += s + '\n'; }, printErr: s => { out += s + '\n'; } });
+    const M = await createLx({ print: s => { out += s + '\n'; }, printErr: s => { out += s + '\n'; },
+                               preRun: [m => { m.ENV.LXRUN_STATS = '1'; if (env) Object.assign(m.ENV, env); }] });
     const t0 = performance.now();
     untar(M.FS, tar, '/r');
     const t1 = performance.now();
@@ -179,6 +180,15 @@ onmessage = async e => {
             ['deb_apt', ['/usr/bin/apt-get', '--version']],
         ];
         for (const [name, args] of dchecks) { postMessage({ log: 'running ' + name }); R[name] = await run(deb, args); }
+        // Python under JavaScriptCore (the web view's engine), with and without the accelerator
+        const py = 'print(sum(i for i in range(1000000)))';
+        const pj = 'import json,re\nd=[{"k":i,"v":str(i)*3} for i in range(20000)]\ns=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n)';
+        for (const [name, args, env] of [
+            ['py_loop_jit', ['/usr/bin/python3', '-c', py], null], ['py_loop_interp', ['/usr/bin/python3', '-c', py], { AOI_JIT: '0' }],
+            ['py_json_jit', ['/usr/bin/python3', '-c', pj], null], ['py_json_interp', ['/usr/bin/python3', '-c', pj], { AOI_JIT: '0' }]]) {
+            postMessage({ log: 'running ' + name });
+            R[name] = await run(deb, args, false, env);
+        }
 
         // write a file in Debian, save the whole root to OPFS for the next launch
         const last = await run(deb, ['/bin/bash', '-c', 'echo "written on the first launch: $(date -u +%H:%M:%S)" > /root/persist.txt; cat /root/persist.txt'], true);

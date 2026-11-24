@@ -8,7 +8,7 @@ fail=0
 check() {   # check NAME EXPECTED TIMEOUT PROGRAM ARGS...
     name=$1; exp=$2; to=$3; shift 3
     t0=$(date +%s.%N)
-    out="$(LXRUN_QUIET=1 LXRUN_STATS=1 timeout "$to" node "$DIR/build/lxrun.js" "$R" "$@" 2>&1)"; rc=$?
+    out="$(LXRUN_QUIET=1 LXRUN_STATS=1 timeout "$to" node ${NODEFLAGS:-} "$DIR/build/lxrun.js" "$R" "$@" 2>&1)"; rc=$?
     secs=$(echo "$(date +%s.%N) - $t0" | bc)
     if [ $rc -eq 0 ] && printf '%s\n' "$out" | grep -qF -- "$exp"; then echo "OK   wasm debian: $name (${secs}s)"
     else echo "FAIL wasm debian: $name (rc=$rc, ${secs}s)"; fail=1; fi
@@ -35,5 +35,11 @@ s=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n
 d=[{"k":i,"v":str(i)*3} for i in range(20000)]
 s=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n)'
     unset AOI_JIT
+    export NODEFLAGS="--no-liftoff --no-wasm-lazy-compilation"
+    check "python3 1M loop (accelerator on, V8 optimizing only)" "499999500000" 600 /usr/bin/python3 -c 'print(sum(i for i in range(1000000)))'
+    check "python3 json+re (accelerator on, V8 optimizing only)" "done"        600 /usr/bin/python3 -c 'import json,re
+d=[{"k":i,"v":str(i)*3} for i in range(20000)]
+s=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n)'
+    unset NODEFLAGS
 fi
 exit $fail
