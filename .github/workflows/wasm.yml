@@ -75,7 +75,7 @@ jobs:
           import json,sys
           d=json.load(open(sys.argv[1]))
           for k,v in d.items():
-              if isinstance(v,dict): print('==',k,'rc',v.get('rc'),'untar',v.get('untar_s'),'s run',v.get('run_s'),'s'); print(v.get('out','').strip()[-700:]); print('   net:', v.get('net','')[:1500]) if v.get('net') else None
+              if isinstance(v,dict): print('==',k,'rc',v.get('rc'),'untar',v.get('untar_s'),'s run',v.get('run_s'),'s'); print(v.get('out','').strip()[-700:]); print('   net:', v.get('net','')[:4000]) if v.get('net') else None
               else: print(k,v)
           " "$D/Documents/result.json" || echo "no result"
           xcrun simctl io "$UDID" screenshot shot.png || true

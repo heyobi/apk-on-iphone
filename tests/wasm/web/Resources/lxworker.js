@@ -132,7 +132,7 @@ async function run(tar, args, keep, env) {
     let rc;
     try { rc = M.callMain(['/r'].concat(args)); } catch (e) { rc = e && e.status !== undefined ? e.status : String(e); }
     const r = { rc, out: out.slice(-1500), untar_s: +((t1 - t0) / 1000).toFixed(2), run_s: +((performance.now() - t1) / 1000).toFixed(2) };
-    if (M.lxNetLog) r.net = M.lxNetLog.slice(-40).join(' | ');
+    if (M.lxNetLog) r.net = M.lxNetLog.slice(0, 60).join(' | ');
     if (keep) r.M = M;
     return r;
 }

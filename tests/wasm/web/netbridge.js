@@ -16,7 +16,7 @@
         return { status: x.getResponseHeader('X-Lx') || 'err', data: r };
     }
     function fail(errno) { throw new FS.ErrnoError(errno); }
-    function log(m) { (Module.lxNetLog = Module.lxNetLog || []).push(m); if (Module.lxNetLog.length > 200) Module.lxNetLog.shift(); }
+    function log(m) { (Module.lxNetLog = Module.lxNetLog || []); if (Module.lxNetLog.length < 120) Module.lxNetLog.push(m); }
     /* DNS over UDP (glibc's resolver talks to the nameserver itself): the query's name is
      * resolved by the app (its getaddrinfo: the phone's DNS and VPN settings) and the answer
      * built here as a DNS message. */
@@ -27,7 +27,7 @@
         var qend = i + 5;                                          /* the 0 label, type, class */
         if (qend > q.length) return null;
         var qtype = (q[i + 1] << 8) | q[i + 2];
-        log('dns ' + labels.join('.') + ' type ' + qtype);
+        log('dns id ' + ((q[0] << 8) | q[1]) + ' ' + labels.join('.') + ' type ' + qtype + ' qd ' + ((q[4] << 8) | q[5]) + ' ar ' + ((q[10] << 8) | q[11]) + ' len ' + q.length);
         var ips = [];
         if (qtype === 1 || qtype === 28) {
             var r = call('resolve?host=' + encodeURIComponent(labels.join('.')) + '&type=' + (qtype === 1 ? 'A' : 'AAAA'));
@@ -99,7 +99,7 @@
             return length;
         },
         recvmsg: function (sock, length) {
-            if (sock.lxDns) log('recv dns, queued ' + sock.lxQ.length);
+            if (sock.lxDns) log('recv dns len ' + length + ', queued ' + sock.lxQ.length + (sock.lxQ.length ? ' id ' + ((sock.lxQ[0][0] << 8) | sock.lxQ[0][1]) : ''));
             if (sock.lxDns) {
                 if (!sock.lxQ.length) fail(6);
                 return { buffer: sock.lxQ.shift(), addr: sock.daddr, port: 53 };
