@@ -54,11 +54,40 @@ Python loop 8.4 s → 0.7 s (12×), Python imports 1.25 s → 0.33 s (4×), apt-
 40 s → 9 s (4×), tar 27.7 s → 8.6 s (3×), find 0.23 s → 2.8 s (**12× slower**). The bridge,
 not the JIT, decides the result for anything that touches files.
 
+OPFS in the same WKWebView (worker, sync access handle on one disk image, two launches):
+
+| | first launch | second launch |
+|---|---|---|
+| image size at start | 0 | **268 MB: it persists** |
+| write 256 MB | 0.4 s | 0.3 s |
+| random 4 KiB read / write | 31 / 13 µs | 9 / 38 µs |
+| random 64-byte read | 2.5 µs | 1.1 µs |
+| flush | 22 ms | 37 ms |
+| quota | 10.3 GB | |
+| bench.wasm | 1.52 s | 0.88 s (22× the interpreter) |
+
+Also available in this WebKit: JSPI (`WebAssembly.Suspending`, Wasm code can wait on a
+promise, e.g. an asynchronous file open) and `Atomics.waitAsync`.
+
+With the file system in an OPFS image, a file syscall costs about 10-30 µs instead of
+150 µs: apt-cache search 40 s → about 3 s, find / about as now, compute 18-22× faster.
+
 Conclusion: in the web view, file syscalls must not cross to the app. The root file
 system would live where the worker can reach it synchronously (the Origin Private File
 System's sync access handles in workers), and only the terminal, the network and the
-Files app go through the bridge. Next: measure OPFS sync access from a worker in
-WKWebView (per-call cost, persistence, size limits), and the bridge on a real iPhone.
+Files app go through the bridge. Measured above: it works.
+
+Plan (milestones):
+1. The core (interpreter, syscall layer, ELF loader) built for wasm32 and run in a worker in
+   WKWebView, with the guest's files in an OPFS disk image: first a static busybox, then
+   Debian's bash.
+2. The translator inside the engine (C, at run time): hot guest blocks become Wasm
+   modules, compiled by the web view's JIT and called from the interpreter.
+3. The bridge only for the terminal, the network and the Files app; fork as several
+   guest processes inside one engine (as today).
+4. In LxTerm behind a setting, then by default; the native interpreter stays as fallback.
+Still to measure: the bridge and OPFS on a real iPhone, and the web content process's
+memory limit.
 
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
