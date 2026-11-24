@@ -50,10 +50,20 @@ EM_JS(int, js_tty_poll, (char *buf, int max, int wait_ms), {
     HEAPU8.set(r.subarray(0, n), buf);
     return n;
 });
+/* a new window size from the host (Module.lxSize = [cols, rows]), once */
+EM_JS(int, js_tty_size, (int *cols, int *rows), {
+    var z = Module.lxSize;
+    if (!z) return 0;
+    Module.lxSize = null;
+    HEAP32[cols >> 2] = z[0]; HEAP32[rows >> 2] = z[1];
+    return 1;
+});
 static void web_poll(int64_t wait_ns)
 {
     char b[4096];
+    int cols, rows;
     int n = js_tty_poll(b, (int)sizeof b, (int)(wait_ns / 1000000));
+    if (js_tty_size(&cols, &rows)) aoi_tty_resize(aoi_console, cols, rows);
     if (n > 0) { aoi_tty_input(aoi_console, b, (size_t)n); aoi_wake_seq++; }
 }
 #endif
