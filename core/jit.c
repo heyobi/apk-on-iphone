@@ -61,8 +61,7 @@ void aoi_jit_report(FILE *f)
         used[best] = 1;
         fprintf(f, " %08x:%u", refused_key[best] << 22, refused_n[best]);
     }
-    fprintf(f, "
-");
+    fprintf(f, "\n");
 }
 int aoi_jit_enabled = 1;
 
