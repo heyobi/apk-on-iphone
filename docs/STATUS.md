@@ -124,6 +124,17 @@ the next launch it comes back from OPFS (read 0.13 s, unpack 0.22 s) with the fi
 The benchmark: 21.6 s. Next: the terminal (keys in, output out) through the bridge; a
 real block-level root in OPFS instead of whole-root snapshots.
 
+The terminal through the bridge (2026-11-24): in wasm builds lxrun -i gives the scheduler
+a host turn (`aoi_host_poll`): when every process waits it sends the terminal's output to
+the app in the body of a synchronous request and gets the typed keys back; the app holds
+the answer while no key is due (up to 100 ms), and every ~20 ms while processes run it
+just looks. Keys, writes, closes, signals, exits and finished children bump
+`aoi_wake_seq`, which makes waiting processes retry at once, so short retries can be
+100 ms. An interactive bash in WKWebView on the root restored from OPFS: echo, a pipeline,
+sleep 30 interrupted with Ctrl-C ($? 130), a loop into tac, exit, all as on Linux; 246
+bridge requests in the 13 s session (2497 before the wake-ups). Next: the translator
+(stage 2), the bridge into LxTerm's SwiftTerm view, a block-level root in OPFS.
+
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
 The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
