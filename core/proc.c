@@ -1037,6 +1037,9 @@ static int64_t now_ns(void);
  * (the writer) get to run. */
 static uint64_t block_and_retry(struct aoi_proc *p, int64_t ns)
 {
+#ifdef AOI_ONE_THREAD
+    if (ns <= 10000000) ns = 100000000;    /* short retries: aoi_wake_seq (a write, an exit, a signal, keys) wakes it sooner */
+#endif
     p->th[p->cur].state = AOI_T_SLEEP;
     p->th[p->cur].deadline = now_ns() + ns;
     p->th[p->cur].restart = 1;
@@ -2753,6 +2756,9 @@ static int child_turn(struct aoi_child *ch, uint64_t steps)
         if (orphan) free(ch);
         else if (linux_mode && ppid) lx_post_pid(ppid, 17);       /* SIGCHLD, once wait4 can see it */
     }
+#ifdef AOI_ONE_THREAD
+    aoi_wake_seq++;                                                /* its parent's wait4 */
+#endif
     return 1;
 }
 
@@ -5528,6 +5534,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         (nr == NR_write || nr == NR_pwrite64 || nr == NR_writev ||
          (nr == NR_sendto && !(a3 & 0x4000)) || (nr == NR_sendmsg && !(a2 & 0x4000))))
         sig_send(p, p->cur, 13);
+#ifdef AOI_ONE_THREAD
+    if ((int64_t)r >= 0 && (nr == NR_write || nr == NR_pwrite64 || nr == NR_writev || nr == NR_sendto ||
+        nr == NR_sendmsg || nr == NR_close || nr == 129 || nr == 130 || nr == 131 || nr == 93 || nr == 94))
+        aoi_wake_seq++;                                            /* write, close, kill/tkill/tgkill, exit: a waiter may go on */
+#endif
     if (c->stop != AOI_STOP_RESTART) trace_sys(p, nr, r);       /* a blocked retry is not a result */
     return r;
 }
