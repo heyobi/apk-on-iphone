@@ -29,10 +29,15 @@ jobs:
         run: sh tests/linux/fetch-alpine.sh "$RUNNER_TEMP/alpine"
       - name: Run single-process programs
         run: sh tests/wasm/run.sh "$RUNNER_TEMP/alpine"
+      - name: Debian arm64 rootfs (official image, digests checked)
+        run: sh tests/linux/fetch-debian.sh "$RUNNER_TEMP/debian"
+      - name: Debian programs
+        run: sh tests/wasm/run-debian.sh "$RUNNER_TEMP/debian"
       - name: Web build and root file system for the web view
         run: |
           sh tests/wasm/build-web.sh
           tar czf build/web/rootfs.tar.gz -C "$RUNNER_TEMP/alpine" .
+          sudo tar czf build/web/rootfs-debian.tar.gz -C "$RUNNER_TEMP/debian" . && sudo chown $USER build/web/rootfs-debian.tar.gz
           ls -la build/web
       - uses: actions/upload-artifact@v4
         with: { name: lxweb, path: build/web, retention-days: 5 }
@@ -69,6 +74,13 @@ jobs:
               else: print(k,v)
           " "$D/Documents/result.json" || echo "no result"
           xcrun simctl io "$UDID" screenshot shot.png || true
+          echo "== second launch: the root from OPFS"
+          rm -f "$D/Documents/result.json"
+          xcrun simctl terminate "$UDID" com.heyobi.lxweb || true
+          sleep 2
+          xcrun simctl launch "$UDID" com.heyobi.lxweb
+          for i in $(seq 1 300); do [ -f "$D/Documents/result.json" ] && break; sleep 2; done
+          cat "$D/Documents/result.json" | head -c 3000 || echo "no second result"
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: lxweb-shot, path: tests/wasm/web/shot.png, retention-days: 5 }
