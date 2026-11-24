@@ -30,6 +30,36 @@ time (in C/JS, not Python), and send syscalls to the app through script messages
 cost of that bridge per syscall is unmeasured; syscall-heavy work (apt, file
 handling) would gain less than compute (compilers, Python).
 
+### Bridge and workload measurements (2026-11-24, `tests/accel/bridge`, `tests/accel/workloads.sh`)
+
+A test app (BridgeBench) runs in a real WKWebView on the iOS simulator (CI, virtual M1,
+iOS 18.7 runtime):
+
+| Measured in WKWebView | Result |
+|---|---|
+| bench.wasm in a worker, under the web view's JIT | **1.07 s** (the interpreter on the same Mac: 19.9 s, so **18.6×**) |
+| synchronous XHR from a worker to a custom URL scheme (app answers 8 bytes) | **151 µs** per round trip |
+| the same with a 64 KiB answer / a 4 KiB request body | 367 µs / 697 µs (the body reaches the app) |
+| `prompt()` from the page, answered by the app | 229 µs |
+| script message with a reply (asynchronous) | 224 µs |
+| SharedArrayBuffer | **missing**, although `crossOriginIsolated` is true |
+
+Syscalls of real Debian workloads in the interpreter (`LXRUN_STATS`, all processes):
+python3 -c pass 526 (0.33 s), Python imports 1746 (1.25 s), a 1M-iteration Python loop 1326
+(8.4 s), git init+add+commit 7323 (0.6 s), apt-cache search 45683 (40 s), tar czf of the
+Python library 47220 (27.7 s), find / 18525 (0.23 s). (gcc and git did not install in CI.)
+
+Estimate with every syscall crossing the bridge at 151 µs and compute 18× faster:
+Python loop 8.4 s → 0.7 s (12×), Python imports 1.25 s → 0.33 s (4×), apt-cache search
+40 s → 9 s (4×), tar 27.7 s → 8.6 s (3×), find 0.23 s → 2.8 s (**12× slower**). The bridge,
+not the JIT, decides the result for anything that touches files.
+
+Conclusion: in the web view, file syscalls must not cross to the app. The root file
+system would live where the worker can reach it synchronously (the Origin Private File
+System's sync access handles in workers), and only the terminal, the network and the
+Files app go through the bridge. Next: measure OPFS sync access from a worker in
+WKWebView (per-call cost, persistence, size limits), and the bridge on a real iPhone.
+
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
 The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
