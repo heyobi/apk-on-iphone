@@ -20,6 +20,8 @@ void aoi_jit_miss(struct aoi_cpu *c, uint64_t pc);
 /* Forget every translation (code was unmapped or changed protection, an address space ended). */
 void aoi_jit_flush(void);
 extern int aoi_jit_enabled;
+int aoi_jit_compile_ms(void);                 /* time the JavaScript engine spent compiling */
+int aoi_jit_kbytes(void);                     /* WebAssembly generated */
 extern uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs, aoi_jit_reused;
 #else
 static inline void aoi_jit_flush(void) {}

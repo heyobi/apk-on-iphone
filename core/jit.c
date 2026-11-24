@@ -30,13 +30,15 @@
 #define JIT_SLOTS (1u << 14)
 
 /* one per (address space, guest page): the page's function and the block starts seen in it */
-struct jit_slot { uint64_t base; const void *vm; int32_t fn; int32_t count; uint32_t roots[AOI_VM_PAGE / 4 / 32]; };
+struct jit_slot { uint64_t base; const void *vm; int32_t fn; int32_t count; int32_t need, redo; uint32_t roots[AOI_VM_PAGE / 4 / 32]; };
 static struct jit_slot slots[JIT_SLOTS];
 static unsigned slot_used;
 uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs;
 int aoi_jit_enabled = 1;
 
 EM_JS(int, jit_install, (const uint8_t *code, int len), {
+    var t0 = performance.now();
+    Module.jitBytes = (Module.jitBytes || 0) + len;
     try {
         var tbl = typeof wasmTable != 'undefined' ? wasmTable : wasmExports['__indirect_function_table'];
         var mem = typeof wasmMemory != 'undefined' ? wasmMemory : wasmExports['memory'];
@@ -45,6 +47,7 @@ EM_JS(int, jit_install, (const uint8_t *code, int len), {
         var idx = tbl.length;
         tbl.grow(1);
         tbl.set(idx, inst.exports.f);
+        Module.jitMs = (Module.jitMs || 0) + (performance.now() - t0);
         return idx;
     } catch (e) {
         if (!Module.jitErrors) Module.jitErrors = 0;
@@ -67,6 +70,9 @@ static uint64_t page_hash(const uint8_t *p)
     return h;
 }
 uint64_t aoi_jit_reused;
+
+EM_JS(int, aoi_jit_compile_ms, (void), { return Math.round(Module.jitMs || 0); });
+EM_JS(int, aoi_jit_kbytes, (void), { return Math.round((Module.jitBytes || 0) / 1024); });
 
 void aoi_jit_flush(void)
 {
@@ -721,11 +727,13 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
             r = insn(&probe, words[si]);
             if (!r) break;
             if (r == 2) {
+                /* only code that ran: the starts seen (roots) and the fall-through after a
+                 * conditional branch or a call; a taken target nobody reached yet stays out */
                 nt = targets(words[si], probe.pc, t);
                 for (q = 0; q < nt; q++)
-                    if (t[q] - base < AOI_VM_PAGE && !(t[q] & 3)) {
+                    if (t[q] == probe.pc + 4 && t[q] - base < AOI_VM_PAGE) {
                         int ti = (int)((t[q] - base) >> 2);
-                        if (!start[ti]) start[ti] = 1;
+                        start[ti] = 1;
                         if (!seen[ti] && nw < AOI_VM_PAGE / 4) work[nw++] = (uint16_t)ti;
                     }
                 break;
@@ -928,9 +936,12 @@ void aoi_jit_miss(struct aoi_cpu *c, uint64_t pc)
     unsigned i = (unsigned)(pc & (AOI_VM_PAGE - 1)) >> 2;
     int32_t fn;
     if (!s || s->fn <= 0) return;
+    if (s->roots[i >> 5] >> (i & 31) & 1) return;                  /* known: a start the function cut off (e.g. a refused instruction) */
     s->roots[i >> 5] |= 1u << (i & 31);
-    if (++s->count < JIT_MISS) return;
-    s->count = 0;
+    if (s->redo >= 4) return;                                      /* translated enough times: the rest stays interpreted */
+    if (!s->need) s->need = JIT_MISS;
+    if (++s->count < s->need) return;
+    s->count = 0; s->need *= 2; s->redo++;
     fn = translate_cached(c, s->base, s->roots);                   /* again, with the new starts */
     if (fn > 0) s->fn = fn;
 }
