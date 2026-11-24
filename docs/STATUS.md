@@ -1,5 +1,28 @@
 # Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
 
+## Tabs, servers and shared folders (2026-11-25)
+
+- **Several terminals in one wasm core** (LxTerm's ⚡ tabs): `lxrun -i` with `LXRUN_MULTI`
+  keeps sessions (a tty and a shell each) keyed by the host's id. Output goes out as frames
+  `[u32 id][u32 len][bytes]` with "T id name" (the foreground program: the tab title) and
+  "E id" (ended); the host answers with key frames and "N id cols rows" / "S id cols rows" /
+  "C id". New sessions: `aoi_proc_adopt` (an orphan top-level process taking turns), ended
+  ones seen with `aoi_proc_alive`; after the first session ends, `aoi_proc_turn_others` keeps
+  the rest running. A host with only `Module.lxPoll` still gets session 0.
+- **tty in wasm**: `flock` is a no-op in the web view, so the slave-fd tokens (counted by
+  flock) vanished and every lookup fell back to pts/0; a second session's bash saw another
+  group in the foreground and stopped itself with SIGTTIN. Slave fds are now dups of one host
+  file found by inode (hang-up is not detected in wasm).
+- **Listening sockets through the bridge** (`netbridge.js`): bind/listen/accept are
+  `/net/listen` and `/net/accept` in the app (BSD sockets on the phone); socket options are
+  accepted in wasm (Python's servers set SO_REUSEADDR). `python3 -m http.server` in the
+  accelerated engine answers curl on localhost (simulator CI).
+- **`aoi_proc_bind(guest, host)`**: one guest directory backed by a host folder (LxTerm: the
+  native engine's /root/Files is the folder shared with the Files app). `LXRUN_BIND=G=H`;
+  checked in `tests/linux/run_debian.sh`.
+- **Translator**: rbit, rev16, rev32, rev (they were refused); `tests/accel/bits.c` compares
+  translated and interpreted checksums.
+
 ## Accelerator threshold for JavaScriptCore (2026-11-24)
 
 On a real iPhone (LxTerm build 19) the accelerated engine ran a Python loop 3.2x faster
