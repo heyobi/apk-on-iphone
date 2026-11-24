@@ -2529,10 +2529,19 @@ static uint64_t net_sockopt(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t 
     if (set) {
         if (!sockopt_host(level, opt, &hl, &ho) || len < 4 || !get(p, val, &v, 4)) return 0;
         if (f->v4 && hl != SOL_SOCKET && hl != IPPROTO_TCP) return 0;
+#ifdef __EMSCRIPTEN__
+        (void)setsockopt(f->host, hl, ho, &v, sizeof v);           /* the web view's sockets take no options: accepted */
+        return 0;
+#else
         return setsockopt(f->host, hl, ho, &v, sizeof v) ? herr() : 0;
+#endif
     }
     if (sockopt_host(level, opt, &hl, &ho)) {
+#ifdef __EMSCRIPTEN__
+        if (getsockopt(f->host, hl, ho, &v, &vl)) v = ho == SO_TYPE ? SOCK_STREAM : 0;
+#else
         if (getsockopt(f->host, hl, ho, &v, &vl)) return herr();
+#endif
         if (ho == SO_ERROR) v = v ? lx_errno(v) : 0;
         if (ho == SO_TYPE) v = v == SOCK_STREAM ? 1 : v == SOCK_DGRAM ? 2 : v;
     }

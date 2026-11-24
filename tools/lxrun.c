@@ -111,6 +111,7 @@ static void web_new(int id, int cols, int rows)
     else if (!(w->t = aoi_tty_new(web_out, w, cols, rows))) { aoi_proc_free(np); free(np); return; }
     aoi_proc_attach_tty_to(np, w->t);
     np->log = proc.log;
+    if (getenv("LXRUN_DEBUG") && getenv("LXRUN_DEBUG")[0] == '2') { np->trace = stderr; np->trace_shared = 1; }
     w->sid = np->sid;
     w->used = 1;
     if (aoi_proc_adopt(np)) { w->used = 0; aoi_proc_free(np); free(np); }
