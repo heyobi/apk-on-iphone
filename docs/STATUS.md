@@ -89,6 +89,15 @@ Plan (milestones):
 Still to measure: the bridge and OPFS on a real iPhone, and the web content process's
 memory limit.
 
+Stage 1, first step (2026-11-24, `tests/wasm`, `.github/workflows/wasm.yml`): the core and
+tools/lxrun build for wasm32 with Emscripten unchanged and run under node (NODERAWFS):
+Alpine's dynamically linked busybox (musl's loader, echo, ls, uname, cat, sha256sum, sh
+arithmetic) and the accelerator benchmark give the right output. The interpreter compiled
+to Wasm runs the benchmark in 22.6 s against 13.2 s natively on the same runner (1.7×
+slower), as expected before the translator. Not yet: more than one guest process (today
+each runs on a host thread; the web view has none, so processes must share one thread,
+suspending on blocking calls with JSPI).
+
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
 The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
