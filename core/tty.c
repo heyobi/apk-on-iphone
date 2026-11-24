@@ -191,6 +191,16 @@ int aoi_tty_host_fd(struct aoi_tty *t, int master)
         if (d >= 0) fcntl(d, F_SETFD, FD_CLOEXEC);
         return d;
     }
+#ifdef __EMSCRIPTEN__
+    {   /* no flock in the web view (it always succeeds), so no tokens to count closed copies by:
+         * every slave fd is a dup of ph[0], found by its inode (a hang-up is never seen) */
+        int d = dup(t->ph[0]);
+        (void)sv; (void)st;
+        if (d >= 0) fcntl(d, F_SETFD, FD_CLOEXEC);
+        t->opened = 1;
+        return d;
+    }
+#endif
     pthread_mutex_lock(&t->mu);
     tok_prune(t);
     if (t->ntok == 64 || pair(sv) || fstat(sv[0], &st)) { pthread_mutex_unlock(&t->mu); return -1; }
@@ -204,6 +214,10 @@ int aoi_tty_host_fd(struct aoi_tty *t, int master)
 int aoi_tty_hungup(struct aoi_tty *t)
 {
     int r;
+#ifdef __EMSCRIPTEN__
+    (void)t;
+    return 0;
+#endif
     pthread_mutex_lock(&t->mu);
     tok_prune(t);
     r = t->opened && !t->ntok;
@@ -222,6 +236,9 @@ struct aoi_tty *aoi_tty_of_host(int hostfd, int *master)
         if (!t) continue;
         int k, hit = 0;
         for (k = 0; k < t->ntok; k++) if (a.st_ino == t->tokino[k] && a.st_dev == t->tokdev[k]) { hit = 1; break; }
+#ifdef __EMSCRIPTEN__
+        if (!hit && !fstat(t->ph[0], &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) hit = 1;
+#endif
         if (hit) { if (master) *master = 0; break; }
         if (!fstat(t->phm[0], &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) { if (master) *master = 1; break; }
     }
