@@ -26,7 +26,7 @@
 #include <string.h>
 
 #define JIT_HOT 600                  /* block entries into a page before it is translated */
-#define JIT_MISS 48                  /* entries at new starts before it is translated again */
+#define JIT_MISS 16                  /* new distinct starts seen before the page is translated again */
 #define JIT_BUDGET 200000         /* guest instructions per call before going back to the interpreter */
 #define JIT_SLOTS (1u << 14)
 
@@ -968,7 +968,7 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
                  * conditional branch or a call; a taken target nobody reached yet stays out */
                 nt = targets(words[si], probe.pc, t);
                 for (q = 0; q < nt; q++)
-                    if (t[q] - base < AOI_VM_PAGE && !(t[q] & 3)) {        /* every direct target in the page (compiling is cheap) */
+                    if (t[q] == probe.pc + 4 && t[q] - base < AOI_VM_PAGE) {   /* fall-through only: taken targets come in as seen starts */
                         int ti = (int)((t[q] - base) >> 2);
                         start[ti] = 1;
                         if (!seen[ti] && nw < AOI_VM_PAGE / 4) work[nw++] = (uint16_t)ti;
@@ -1180,10 +1180,9 @@ void aoi_jit_miss(struct aoi_cpu *c, uint64_t pc)
     if (!s || s->fn <= 0) return;
     if (s->roots[i >> 5] >> (i & 31) & 1) return;                  /* known: a start the function cut off (e.g. a refused instruction) */
     s->roots[i >> 5] |= 1u << (i & 31);
-    if (s->redo >= 12) return;                                      /* translated enough times: the rest stays interpreted */
-    if (!s->need) s->need = JIT_MISS;
-    if (++s->count < s->need) return;
-    s->count = 0; s->need *= 2; s->redo++;
+    if (s->redo >= 64) return;                                     /* translated enough times: the rest stays interpreted */
+    if (++s->count < JIT_MISS) return;                             /* (counts distinct new starts: an indirect branch's targets, */
+    s->count = 0; s->redo++;                                       /*  e.g. CPython's opcode handlers, come in quickly) */
     fn = translate_cached(c, s->base, s->roots);                   /* again, with the new starts */
     if (fn > 0) s->fn = fn;
 }
