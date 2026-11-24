@@ -31,9 +31,101 @@ final class Terminal {
     }
 }
 
+/// TCP connections for the guest (tests/wasm/web/netbridge.js): the app opens them with BSD
+/// sockets and keeps them by id; reads never block (the guest's poll/recv ask again).
+final class Net {
+    static let shared = Net()
+    private var conns: [Int: Int32] = [:]
+    private var nextID = 1
+
+    private static func open(_ host: String, _ port: Int) -> (Int32, String) {
+        var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: 0,
+                             ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, String(port), &hints, &res) == 0, let first = res else { return (-1, "unreach") }
+        defer { freeaddrinfo(first) }
+        var ai: UnsafeMutablePointer<addrinfo>? = first
+        var why = "unreach"
+        while let a = ai {
+            let fd = socket(a.pointee.ai_family, a.pointee.ai_socktype, a.pointee.ai_protocol)
+            if fd >= 0 {
+                var one: Int32 = 1
+                setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+                var tv = timeval(tv_sec: 15, tv_usec: 0)
+                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+                if connect(fd, a.pointee.ai_addr, a.pointee.ai_addrlen) == 0 {
+                    _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                    return (fd, "ok")
+                }
+                why = errno == ECONNREFUSED ? "refused" : errno == ETIMEDOUT ? "timeout" : "unreach"
+                close(fd)
+            }
+            ai = a.pointee.ai_next
+        }
+        return (-1, why)
+    }
+
+    /// One request; reply(status, bytes) on the main thread.
+    func handle(_ url: URL, body: Data?, reply: @escaping (String, Data) -> Void) {
+        let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func arg(_ n: String) -> String? { q.first { $0.name == n }?.value }
+        let id = Int(arg("id") ?? "") ?? 0
+        switch url.path {
+        case "/net/connect":
+            let host = arg("host") ?? "", port = Int(arg("port") ?? "") ?? 0
+            DispatchQueue.global().async {
+                let (fd, why) = Net.open(host, port)
+                DispatchQueue.main.async {
+                    if fd < 0 { reply(why, Data()); return }
+                    let n = self.nextID; self.nextID += 1
+                    self.conns[n] = fd
+                    reply("ok", Data(String(n).utf8))
+                }
+            }
+        case "/net/send":
+            guard let fd = conns[id] else { reply("err", Data()); return }
+            let data = body ?? Data()
+            var sent = 0, ok = true
+            data.withUnsafeBytes { p in
+                while sent < data.count {
+                    let k = send(fd, p.baseAddress! + sent, data.count - sent, 0)
+                    if k > 0 { sent += k; continue }
+                    if k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { var pf = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0); _ = poll(&pf, 1, 1000); continue }
+                    ok = false; break
+                }
+            }
+            reply(ok ? "ok" : "err", Data())
+        case "/net/recv", "/net/poll":
+            guard let fd = conns[id] else { reply("err", Data()); return }
+            let peek = url.path == "/net/poll"
+            let max = peek ? 1 : min(Int(arg("max") ?? "") ?? 65536, 262144)
+            var buf = [UInt8](repeating: 0, count: max)
+            let k = recv(fd, &buf, max, peek ? (MSG_PEEK | MSG_DONTWAIT) : MSG_DONTWAIT)
+            if k > 0 { reply("data", peek ? Data() : Data(buf[0..<k])) }
+            else if k == 0 { reply("eof", Data()) }
+            else if errno == EAGAIN || errno == EWOULDBLOCK { reply("again", Data()) }
+            else { reply("err", Data()) }
+        case "/net/close":
+            if let fd = conns.removeValue(forKey: id) { close(fd) }
+            reply("ok", Data())
+        default:
+            reply("err", Data())
+        }
+    }
+}
+
 final class Scheme: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else { return }
+        if url.path.hasPrefix("/net/") {
+            Net.shared.handle(url, body: task.request.httpBody) { status, data in
+                task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                                headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(data.count)", "X-Lx": status])!)
+                task.didReceive(data)
+                task.didFinish()
+            }
+            return
+        }
         if url.path == "/tty" {
             let term = Terminal.shared
             term.requests += 1

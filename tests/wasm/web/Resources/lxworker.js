@@ -189,6 +189,14 @@ onmessage = async e => {
             postMessage({ log: 'running ' + name });
             R[name] = await run(deb, args, false, env);
         }
+        // the network through the app (netbridge.js): a name, plain HTTP from Python, apt
+        for (const [name, args] of [
+            ['net_getent', ['/usr/bin/getent', 'hosts', 'deb.debian.org']],
+            ['net_http', ['/usr/bin/python3', '-c', 'import urllib.request as u; r = u.urlopen("http://deb.debian.org/debian/dists/trixie/Release", timeout=30); print("http", r.status, len(r.read()))']],
+            ['net_apt', ['/bin/sh', '-c', 'apt-get update 2>&1 | tail -n 5']]]) {
+            postMessage({ log: 'running ' + name });
+            R[name] = await run(deb, args);
+        }
 
         // write a file in Debian, save the whole root to OPFS for the next launch
         const last = await run(deb, ['/bin/bash', '-c', 'echo "written on the first launch: $(date -u +%H:%M:%S)" > /root/persist.txt; cat /root/persist.txt'], true);
