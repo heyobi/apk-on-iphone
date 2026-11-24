@@ -129,6 +129,7 @@ async function run(tar, args, keep, env) {
                                preRun: [m => { m.ENV.LXRUN_STATS = '1'; if (env) Object.assign(m.ENV, env); }] });
     const t0 = performance.now();
     untar(M.FS, tar, '/r');
+    if (M.BRIDGEFS) { try { M.FS.mkdirTree('/r/root/Files'); M.FS.mount(M.BRIDGEFS, {}, '/r/root/Files'); } catch (e) {} }
     const t1 = performance.now();
     let rc;
     try { rc = M.callMain(['/r'].concat(args)); } catch (e) { rc = e && e.status !== undefined ? e.status : String(e); }
@@ -197,7 +198,8 @@ onmessage = async e => {
             ['net_ahosts', ['/usr/bin/getent', 'ahosts', 'deb.debian.org']],
             ['net_ahostsv4', ['/usr/bin/getent', 'ahostsv4', 'deb.debian.org']],
             ['net_http', ['/usr/bin/python3', '-c', 'import urllib.request as u; r = u.urlopen("http://deb.debian.org/debian/dists/trixie/Release", timeout=30); print("http", r.status, len(r.read()))']],
-            ['net_apt', ['/bin/sh', '-c', 'apt-get update 2>&1 | tail -n 5']]]) {
+            ['net_apt', ['/bin/sh', '-c', 'apt-get update 2>&1 | tail -n 5']],
+            ['files', ['/bin/bash', '-c', 'cd /root/Files && echo hello from Linux > hello.txt && mkdir -p d && cp hello.txt d/copy.txt && mv hello.txt d/moved.txt && ls -la . d && cat d/copy.txt && wc -c d/moved.txt && python3 -c "open(\'/root/Files/big.bin\',\'wb\').write(bytes(range(256))*4096); print(len(open(\'/root/Files/big.bin\',\'rb\').read()))"']]]) {
             postMessage({ log: 'running ' + name });
             R[name] = await run(deb, args);
         }

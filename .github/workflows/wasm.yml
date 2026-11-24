@@ -86,6 +86,7 @@ jobs:
           xcrun simctl launch "$UDID" com.heyobi.lxweb
           for i in $(seq 1 300); do [ -f "$D/Documents/result.json" ] && break; sleep 2; done
           cat "$D/Documents/result.json" | head -c 3000 || echo "no second result"
+          echo "== the shared folder as the app sees it (Documents/Files)"; ls -laR "$D/Documents/Files" 2>/dev/null | head -n 20
           echo; echo "== terminal transcript ($(cat "$D/Documents/tty-requests.txt" 2>/dev/null) bridge requests)"
           cat -v "$D/Documents/tty.txt" 2>/dev/null | head -c 4000 || echo "no transcript"
       - uses: actions/upload-artifact@v4

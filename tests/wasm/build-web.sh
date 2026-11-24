@@ -10,5 +10,5 @@ CORE="core/jit.c core/elf.c core/scan.c core/vm.c core/cpu.c core/simd.c core/li
 emcc -O2 -std=gnu11 -w \
     -sENVIRONMENT=worker -sMODULARIZE=1 -sEXPORT_NAME=createLx -sINVOKE_RUN=0 -sFORCE_FILESYSTEM=1 \
     -sEXPORTED_RUNTIME_METHODS=FS,callMain,ENV -sALLOW_MEMORY_GROWTH=1 -sALLOW_TABLE_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB \
-    -sEXIT_RUNTIME=1 --post-js tests/wasm/web/netbridge.js -o build/web/lxweb.js tools/lxrun.c $CORE
+    -sEXIT_RUNTIME=1 --post-js tests/wasm/web/netbridge.js --post-js tests/wasm/web/filesbridge.js -o build/web/lxweb.js tools/lxrun.c $CORE
 ls -la build/web

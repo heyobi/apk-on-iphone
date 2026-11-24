@@ -140,6 +140,75 @@ final class Net {
     }
 }
 
+/// The folder shared with the Files app (tests/wasm/web/filesbridge.js): Documents/Files,
+/// the guest's /root/Files. Paths stay inside it.
+final class SharedFiles {
+    static let shared = SharedFiles()
+    let root: URL = {
+        let u = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Files", isDirectory: true)
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        return u
+    }()
+
+    private func url(_ p: String) -> URL? {
+        let parts = p.split(separator: "/").map(String.init)
+        if parts.contains("..") || parts.contains(".") { return nil }
+        return parts.reduce(root) { $0.appendingPathComponent($1) }
+    }
+
+    func handle(_ u: URL, body: Data?) -> (String, Data) {
+        let q = URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func arg(_ n: String) -> String? { q.first { $0.name == n }?.value }
+        guard let path = arg("p"), let f = url(path) else { return ("inval", Data()) }
+        let fm = FileManager.default
+        func errno2() -> String {
+            switch errno { case ENOENT: return "noent"; case EEXIST: return "exist"; case ENOTDIR: return "notdir"
+            case EISDIR: return "isdir"; case ENOTEMPTY: return "notempty"; case EACCES, EPERM: return "acces"; default: return "io" }
+        }
+        switch u.path {
+        case "/fs/stat":
+            var st = stat()
+            if lstat(f.path, &st) != 0 { return (errno2(), Data()) }
+            let json = "{\"mode\":\(st.st_mode),\"size\":\(st.st_size),\"mtime\":\(st.st_mtimespec.tv_sec)}"
+            return ("ok", Data(json.utf8))
+        case "/fs/readdir":
+            guard let names = try? fm.contentsOfDirectory(atPath: f.path) else { return ("noent", Data()) }
+            return ("ok", Data(names.joined(separator: "\n").utf8))
+        case "/fs/read":
+            let off = UInt64(arg("off") ?? "0") ?? 0, len = Int(arg("len") ?? "0") ?? 0
+            guard let h = try? FileHandle(forReadingFrom: f) else { return (errno2(), Data()) }
+            defer { try? h.close() }
+            try? h.seek(toOffset: off)
+            return ("ok", (try? h.read(upToCount: min(len, 1 << 20))) ?? Data())
+        case "/fs/write":
+            let off = UInt64(arg("off") ?? "0") ?? 0
+            if !fm.fileExists(atPath: f.path) { fm.createFile(atPath: f.path, contents: nil) }
+            guard let h = try? FileHandle(forWritingTo: f) else { return (errno2(), Data()) }
+            defer { try? h.close() }
+            try? h.seek(toOffset: off)
+            try? h.write(contentsOf: body ?? Data())
+            return ("ok", Data())
+        case "/fs/create":
+            if !fm.fileExists(atPath: f.path) { fm.createFile(atPath: f.path, contents: nil) }
+            return ("ok", Data())
+        case "/fs/truncate":
+            let size = Int64(arg("size") ?? "0") ?? 0
+            return truncate(f.path, off_t(size)) == 0 ? ("ok", Data()) : (errno2(), Data())
+        case "/fs/mkdir":
+            return mkdir(f.path, 0o755) == 0 ? ("ok", Data()) : (errno2(), Data())
+        case "/fs/unlink":
+            return unlink(f.path) == 0 ? ("ok", Data()) : (errno2(), Data())
+        case "/fs/rmdir":
+            return rmdir(f.path) == 0 ? ("ok", Data()) : (errno2(), Data())
+        case "/fs/rename":
+            guard let to = arg("to"), let t = url(to) else { return ("inval", Data()) }
+            return rename(f.path, t.path) == 0 ? ("ok", Data()) : (errno2(), Data())
+        default:
+            return ("inval", Data())
+        }
+    }
+}
+
 final class Scheme: NSObject, WKURLSchemeHandler {
     /// A request's body: WebKit hands it over as data or as a stream
     static func body(of r: URLRequest) -> Data? {
@@ -153,6 +222,14 @@ final class Scheme: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else { return }
+        if url.path.hasPrefix("/fs/") {
+            let (status, data) = SharedFiles.shared.handle(url, body: Scheme.body(of: task.request))
+            task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                            headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(data.count)", "X-Lx": status, "Cache-Control": "no-store"])!)
+            task.didReceive(data)
+            task.didFinish()
+            return
+        }
         if url.path.hasPrefix("/net/") {
             Net.shared.handle(url, body: Scheme.body(of: task.request)) { status, data in
                 task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
