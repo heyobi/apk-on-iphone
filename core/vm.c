@@ -1,6 +1,7 @@
 #define _GNU_SOURCE                 /* pread, MAP_ANONYMOUS */
 #define _DARWIN_C_SOURCE
 #include "vm.h"
+#include "jit.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -40,8 +41,27 @@ const char *aoi_vm_init(struct aoi_vm *vm, uint64_t size)
     return NULL;
 }
 
+
+/* The accelerator keeps translations of guest code (core/jit.c): a change to pages that
+ * hold code (executable) must drop them. Data mappings coming and going (malloc's mmap
+ * and munmap) keep them. */
+static void jit_check(struct aoi_vm *vm, uint64_t addr, uint64_t len)
+{
+#ifdef AOI_JIT
+    uint64_t pg, end;
+    if (len > (64u << 20)) { aoi_jit_flush(); return; }
+    end = addr + len;
+    if (end > vm->size || end < addr) end = vm->size;
+    for (pg = addr / AOI_VM_PAGE; pg < (end + AOI_VM_PAGE - 1) / AOI_VM_PAGE; pg++)
+        if (vm->prot[pg] & AOI_PROT_X) { aoi_jit_flush(); return; }
+#else
+    (void)vm; (void)addr; (void)len;
+#endif
+}
+
 void aoi_vm_free(struct aoi_vm *vm)
 {
+    aoi_jit_flush();                                               /* (its address may be reused) */
     uint64_t i;
     if (vm->chunk)
         for (i = 0; i < CI(vm->size); i++)
@@ -153,6 +173,7 @@ static int back(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot)
 
 uint64_t aoi_vm_map(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot, int fixed)
 {
+    if (addr < vm->size) jit_check(vm, addr, len);
     uint64_t n, a, e;
     if (!len) return (uint64_t)-EINVAL;
     len = up(len, AOI_VM_PAGE);
@@ -193,6 +214,7 @@ uint64_t aoi_vm_map(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot, in
 
 int aoi_vm_unmap(struct aoi_vm *vm, uint64_t addr, uint64_t len)
 {
+    if (addr < vm->size) jit_check(vm, addr, len);
     uint64_t c;
     if (addr % AOI_VM_PAGE || !len) return -EINVAL;
     len = up(len, AOI_VM_PAGE);
@@ -204,6 +226,7 @@ int aoi_vm_unmap(struct aoi_vm *vm, uint64_t addr, uint64_t len)
 
 int aoi_vm_protect(struct aoi_vm *vm, uint64_t addr, uint64_t len, int prot)
 {
+    if (addr < vm->size) jit_check(vm, addr, len);
     uint64_t p;
     if (addr % AOI_VM_PAGE) return -EINVAL;
     len = up(len, AOI_VM_PAGE);
@@ -277,6 +300,7 @@ uint64_t aoi_vm_mapped_bytes, aoi_vm_copied_bytes;     /* statistics: file pages
 
 int aoi_vm_map_file(struct aoi_vm *vm, uint64_t addr, uint64_t len, int fd, uint64_t off, uint64_t fsize, int shared)
 {
+    if (addr < vm->size) jit_check(vm, addr, len);
     uint64_t o = 0;
     int direct = (addr - off) % HOST_PAGE == 0;
     if (!range_ok(vm, addr, len)) return -EINVAL;
@@ -343,6 +367,7 @@ void aoi_vm_set_missing(struct aoi_vm *vm, uint64_t addr, uint64_t len, int on)
 
 void aoi_vm_move(struct aoi_vm *vm, uint64_t dst, uint64_t src, uint64_t len)
 {
+    jit_check(vm, src, len); jit_check(vm, dst, len);
     uint64_t o = 0, n;
     uint8_t buf[AOI_VM_PAGE];
     if (!range_ok(vm, dst, len) || !range_ok(vm, src, len)) return;

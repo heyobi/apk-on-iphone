@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "cpu_impl.h"
+#include "jit.h"
 #include "hle.h"
 
 #ifdef AOI_DEBUG
@@ -191,6 +192,9 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
     void (*const trace)(struct aoi_cpu *, int) = c->trace;
     const uint8_t *cpage = NULL;
     uint64_t cpage_va = 1;                                         /* no page: never matches an aligned pc */
+#ifdef AOI_JIT
+    int bs = 1;                                                    /* at a block start: ask the accelerator */
+#endif
     c->stop = AOI_RUN;
     while (c->stop == AOI_RUN) {
         uint32_t insn;
@@ -208,6 +212,18 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             c->pc = c->x[30];
             continue;
         }
+#ifdef AOI_JIT
+        if (bs && !trace) {
+            aoi_jit_fn f = aoi_jit_find(c, c->pc);
+            bs = 0;
+            if (f) {
+                c->steps += (uint64_t)f(c);
+                bs = 1;
+                if (c->stop != AOI_RUN) break;
+                continue;
+            }
+        }
+#endif
 #ifdef AOI_DEBUG
         if (aoi_pcring) aoi_pcring[c->steps & 1023] = c->pc;
 #endif
@@ -791,7 +807,12 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             c->fault_insn = insn;
             break;
         }
-        if (c->stop == AOI_RUN) c->pc = next;
+        if (c->stop == AOI_RUN) {
+#ifdef AOI_JIT
+            bs = next != c->pc + 4;                                /* a taken branch starts a block */
+#endif
+            c->pc = next;
+        }
         if (trace) trace(c, 1);
     }
     return c->stop;

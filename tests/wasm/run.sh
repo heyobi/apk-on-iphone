@@ -23,7 +23,9 @@ check "sh builtins"       "42"        60  /bin/busybox sh -c 'echo $((6*7))'
 mkdir -p "$R/accel"
 gcc -O2 -static -nostdlib -fno-builtin -mgeneral-regs-only -fno-pic -no-pie -mbranch-protection=none \
     -o "$R/accel/bench" "$DIR/tests/accel/bench.c"
-check "accel bench (wasm interpreter)" "b73dbdcb3015bb01" 600 /accel/bench
+check "accel bench (accelerator on)" "b73dbdcb3015bb01" 600 /accel/bench
+export AOI_JIT=0; check "accel bench (interpreter only)" "b73dbdcb3015bb01" 600 /accel/bench
+unset AOI_JIT
 # several guest processes on the one host thread (fork/vfork, exec, pipes, wait)
 check "sh: external command"  "etc"      60  /bin/busybox sh -c '/bin/ls /'
 check "sh: pipeline"          "OK 3"     60  /bin/busybox sh -c 'n=$(printf "a

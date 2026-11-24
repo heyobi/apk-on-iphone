@@ -13,6 +13,7 @@
  * -i: the guest gets a terminal (core/tty.c, as the iOS app's view): the host's own
  * terminal in raw mode, or, with LXRUN_KEYS, typed keys from a script: C escapes
  * (\r Enter, \x03 Ctrl-C, \e Esc, \t) and \w for a one-second pause. */
+#include "../core/jit.h"
 #include "../core/proc.h"
 #include "../core/tty.h"
 
@@ -137,6 +138,9 @@ int main(int argc, char **argv)
     const char *envp[80], *cwd = "/root", *err;
     char term[64];
     int ne = 0, a = 1, trace = 0, quiet = getenv("LXRUN_QUIET") != NULL, use_tty = 0;
+#ifdef AOI_JIT
+    if (getenv("AOI_JIT") && !atoi(getenv("AOI_JIT"))) aoi_jit_enabled = 0;   /* AOI_JIT=0: interpreter only */
+#endif
     enum aoi_stop st;
     double t0, t1;
     while (base_env[ne]) { envp[ne] = base_env[ne]; ne++; }
@@ -214,6 +218,12 @@ int main(int argc, char **argv)
         if (!quiet || getenv("LXRUN_STATS"))
             fprintf(stderr, "[lxrun] exit %d, %" PRIu64 " instructions, %.2f s, peak RSS %ld MiB, %" PRIu64 " syscalls (all processes)\n",
                     proc.cpu.exit_code, proc.cpu.steps, t1 - t0, peak_rss_mib(), aoi_syscall_count);
+#ifdef AOI_JIT
+        if (!quiet || getenv("LXRUN_STATS"))
+            fprintf(stderr, "[lxrun] accelerator: %" PRIu64 " blocks translated, %" PRIu64 " refused by the engine, %" PRIu64 " block runs
+",
+                    aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs);
+#endif
         return proc.cpu.exit_code & 0xff;
     }
     {
