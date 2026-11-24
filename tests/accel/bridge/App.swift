@@ -56,31 +56,26 @@ final class Bridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandlerWith
     }
 }
 
-final class ViewController: UIViewController {
-    let bridge = Bridge()
-    var web: WKWebView!
-    override func viewDidLoad() {
-        super.viewDidLoad()
+import SwiftUI
+
+struct Web: UIViewRepresentable {
+    let bridge: Bridge
+    func makeUIView(context: Context) -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.setURLSchemeHandler(Scheme(), forURLScheme: "lx")
         cfg.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "sys")
         cfg.userContentController.add(bridge, name: "done")
-        web = WKWebView(frame: view.bounds, configuration: cfg)
+        let web = WKWebView(frame: .zero, configuration: cfg)
         web.uiDelegate = bridge
-        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         if #available(iOS 16.4, *) { web.isInspectable = true }
-        view.addSubview(web)
         web.load(URLRequest(url: URL(string: "lx://host/index.html")!))
+        return web
     }
+    func updateUIView(_ v: WKWebView, context: Context) {}
 }
 
 @main
-final class AppDelegate: UIResponder, UIApplicationDelegate {
-    var window: UIWindow?
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions o: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        window = UIWindow(frame: UIScreen.main.bounds)
-        window?.rootViewController = ViewController()
-        window?.makeKeyAndVisible()
-        return true
-    }
+struct BridgeBenchApp: App {
+    let bridge = Bridge()
+    var body: some Scene { WindowGroup { Web(bridge: bridge).ignoresSafeArea() } }
 }
