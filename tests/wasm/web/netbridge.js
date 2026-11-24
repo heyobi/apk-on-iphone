@@ -62,7 +62,16 @@
             if (r.status === 'err') m |= 8 | 16;                   /* POLLERR */
             return m;
         },
-        ioctl: function (sock, request, arg) { return 0; },
+        ioctl: function (sock, request, arg) {
+            if (request === 21531) {                               /* FIONREAD: glibc's resolver sizes its buffer with it */
+                var n = 0;
+                if (sock.lxDns) n = sock.lxQ.length ? sock.lxQ[0].length : 0;
+                else if (sock.lxId !== undefined) { var r = call('avail?id=' + sock.lxId); n = parseInt(new TextDecoder().decode(r.data) || '0', 10) || 0; }
+                HEAP32[arg >> 2] = n;
+                return 0;
+            }
+            return 0;
+        },
         close: function (sock) { if (sock.lxId !== undefined) call('close?id=' + sock.lxId); sock.lxId = undefined; return 0; },
         bind: function () { fail(58); },                            /* ENOTSUP: no listening sockets through the bridge yet */
         listen: function () { fail(58); },
