@@ -1,5 +1,35 @@
 # Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
 
+## Accelerator prototype: guest code as WebAssembly (2026-11-24, `tests/accel`)
+
+The route in RESEARCH.md ("WebKit JIT": translate guest code to WebAssembly and let the
+JavaScript engine compile it, the only JIT iOS gives ordinary apps) was measured with a
+prototype. `tests/accel/a64wasm.py` translates a static AArch64 program (integer
+subset: data processing, loads/stores, branches, svc) into one Wasm function: a
+dispatch loop with one labelled section per basic block, x0-x30/sp/NZCV as locals,
+guest memory as Wasm memory. `tests/accel/bench.c` is compile-like work (tokenizer,
+hash table with string compares, recursive quicksort; 2.2 G guest instructions).
+All runs print the same checksum. CI: `.github/workflows/accel.yml`.
+
+| Run | Linux arm64 runner | Mac (M1, virtual) |
+|---|---|---|
+| native | 0.29 s | |
+| interpreter (`build/lxrun`) | 13.2 s | 19.9 s |
+| Wasm in V8 (optimizing tier) | 0.99 s (**13×** the interpreter) | |
+| Wasm in V8 (default tiering) | 2.1 s | |
+| Wasm in JavaScriptCore (WebKit, default tiering) | | 1.88 s (**10.6×** the interpreter) |
+
+So translated code runs about 3.4× slower than native, against 46× for the
+interpreter. The translator is naive (flags computed eagerly, every block goes back
+through the dispatch `br_table`), so 20× or more should be reachable.
+
+Not done (what the app route needs): the JIT exists only in WKWebView's separate
+WebContent process, which cannot see the app's memory. The engine (core, guest
+memory) would have to run inside the web view as Wasm, translate hot blocks at run
+time (in C/JS, not Python), and send syscalls to the app through script messages. The
+cost of that bridge per syscall is unmeasured; syscall-heavy work (apt, file
+handling) would gain less than compute (compilers, Python).
+
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
 The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
