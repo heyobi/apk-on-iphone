@@ -19,7 +19,7 @@ async function main() {
     R.message_reply_us = us(t, 2000); show();
 
     const w = new Worker('worker.js');
-    const sab = self.crossOriginIsolated ? new SharedArrayBuffer(8) : null;
+    const sab = self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined' ? new SharedArrayBuffer(8) : null;
     const flag = sab && new Int32Array(sab);
     const result = new Promise(res => {
         w.onmessage = e => {

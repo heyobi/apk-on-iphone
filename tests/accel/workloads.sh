@@ -7,7 +7,7 @@ DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 R=$1
 L="$DIR/build/lxrun"
 cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
-LXRUN_QUIET=1 "$L" "$R" /bin/sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 gcc libc6-dev git >/dev/null 2>&1; echo installed: $(command -v python3 gcc git)'
+LXRUN_QUIET=1 timeout 1500 "$L" "$R" /bin/sh -c 'apt-get update -qq; for p in python3 git gcc; do apt-get install -y -qq --no-install-recommends $p > /tmp/apt-$p.log 2>&1 || { echo "install $p failed:"; tail -n 12 /tmp/apt-$p.log; }; done; echo installed: $(command -v python3 gcc git)'
 cp "$DIR/tests/accel/bench.c" "$R/tmp/bench.c"
 run() {   # run NAME COMMAND
     name=$1; shift
