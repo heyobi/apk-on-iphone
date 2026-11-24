@@ -34,6 +34,7 @@ jobs:
             ${{ runner.temp }}/accel/bench.mem
             ${{ runner.temp }}/accel/run.js
             ${{ runner.temp }}/accel/mnemonics.txt
+            ${{ runner.temp }}/accel/root/bench
           retention-days: 5
 
   jsc:
@@ -41,6 +42,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: accel
@@ -50,4 +52,12 @@ jobs:
           J=/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc
           [ -x "$J" ] || J=$(find /System/Library/Frameworks/JavaScriptCore.framework -name jsc -type f | head -n 1)
           echo "jsc: $J"; sw_vers; sysctl -n machdep.cpu.brand_string
-          "$J" accel/run.js -- accel
+          echo "== jsc default tiering"; "$J" accel/run.js -- accel
+          echo "== jsc optimizing tier only"; "$J" --useWasmLLInt=false --useBBQJIT=false accel/run.js -- accel || true
+      - name: interpreter on the same Mac (lxrun, Darwin host as on iOS)
+        continue-on-error: true
+        run: |
+          make build/lxrun
+          mkdir -p r && cp accel/root/bench r/bench && chmod +x r/bench
+          s=$(date +%s); ./build/lxrun r /bench; echo "time: $(( $(date +%s) - s )) s (whole seconds)"
+          /usr/bin/time -p ./build/lxrun r /bench
