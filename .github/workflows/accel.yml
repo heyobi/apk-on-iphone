@@ -1,0 +1,53 @@
+# Accelerator prototype (tests/accel): how much faster guest code runs when translated
+# to WebAssembly and compiled by a JavaScript engine's JIT, vs the interpreter.
+name: Accelerator prototype
+
+on:
+  push:
+    branches: [ linux-userland ]
+    paths: [ "tests/accel/**", ".github/workflows/accel.yml" ]
+  workflow_dispatch:
+
+concurrency:
+  group: accel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc gcc wabt nodejs > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: Measure
+        run: sh tests/accel/run.sh "$RUNNER_TEMP/accel"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: accel
+          path: |
+            ${{ runner.temp }}/accel/bench.wasm
+            ${{ runner.temp }}/accel/bench.json
+            ${{ runner.temp }}/accel/bench.mem
+            ${{ runner.temp }}/accel/run.js
+            ${{ runner.temp }}/accel/mnemonics.txt
+          retention-days: 5
+
+  jsc:
+    needs: linux
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: accel
+          path: accel
+      - name: wasm, JavaScriptCore (WebKit's engine)
+        run: |
+          J=/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc
+          [ -x "$J" ] || J=$(find /System/Library/Frameworks/JavaScriptCore.framework -name jsc -type f | head -n 1)
+          echo "jsc: $J"; sw_vers; sysctl -n machdep.cpu.brand_string
+          "$J" accel/run.js -- accel
