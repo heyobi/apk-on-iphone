@@ -208,6 +208,9 @@ void aoi_proc_free(struct aoi_proc *p);
 /* Linux userland mode, right after aoi_proc_exec: root (uid 0), starting directory `cwd`,
  * fork/execve/process groups/signals between processes, /proc for every process. */
 void aoi_proc_linux(struct aoi_proc *p, const char *cwd);
+/* Every process: the guest directory `guest` (e.g. /root/Files) is the host directory `host`
+ * (e.g. the app's folder shared with the Files app), not the one inside the root. */
+void aoi_proc_bind(const char *guest, const char *host);
 
 /* Linux mode: sends sig to every process of group pgid (the terminal's Ctrl-C), from any
  * host thread. Returns how many got it. */

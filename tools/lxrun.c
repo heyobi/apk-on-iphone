@@ -151,6 +151,12 @@ int main(int argc, char **argv)
 #ifdef AOI_JIT
     if (getenv("AOI_JIT") && !atoi(getenv("AOI_JIT"))) aoi_jit_enabled = 0;   /* AOI_JIT=0: interpreter only */
     if (getenv("AOI_JIT_HOT")) aoi_jit_hot = atoi(getenv("AOI_JIT_HOT"));
+    if (getenv("LXRUN_BIND") && strchr(getenv("LXRUN_BIND"), '=')) {   /* GUEST=HOST: a host directory in the guest */
+        char b[1024], *eq;
+        snprintf(b, sizeof b, "%s", getenv("LXRUN_BIND"));
+        eq = strchr(b, '='); *eq = 0;
+        aoi_proc_bind(b, eq + 1);
+    }
 #endif
     enum aoi_stop st;
     double t0, t1;

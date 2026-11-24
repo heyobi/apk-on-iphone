@@ -38,6 +38,12 @@ check "dpkg -l"          "ii  bash"        60  /usr/bin/dpkg -l bash
 check "apt --version"    "apt"             30  /usr/bin/apt-get --version
 check "sort | uniq"      "2 b"             30  /bin/bash -c 'printf "a\nb\nb\n" | sort | uniq -c | sed "s/^ *//" | grep b'
 check "date"             "20"              30  /bin/date -u +%Y
+H=$(mktemp -d); mkdir -p "$R/root/Files"; echo from-host > "$H/in.txt"
+export LXRUN_BIND="/root/Files=$H"
+check "bind: /root/Files is a host folder" "from-host bind-ok" 60 /bin/bash -c 'cd /root/Files && echo bind-ok > out.txt && mkdir -p d && mv out.txt d/ && cat in.txt d/out.txt | paste -sd " "; ls /root | grep -q Files'
+unset LXRUN_BIND
+if [ "$(cat "$H/d/out.txt" 2>/dev/null)" = bind-ok ]; then echo "OK   debian: bind: the host sees the guest's file"; else echo "FAIL debian: bind: host side"; ls -laR "$H"; fail=1; fi
+rm -rf "$H"
 check "perl"             "perl ok"         30  /usr/bin/perl -e 'print "perl ok\n"'
 check "SIGPIPE: ls | head"  "SIGPIPE-OK 141"  60  /bin/bash -c 'e=$( { ls -l /usr/bin | head -n 1 >/dev/null; } 2>&1 ); yes | head -n 1 >/dev/null; s=${PIPESTATUS[0]}; [ -z "$e" ] && echo "SIGPIPE-OK $s" || echo "BAD: $e $s"'
 check "rm -rf / refused"  "dangerous"      30  /bin/sh -c 'rm -rf / 2>&1; true'

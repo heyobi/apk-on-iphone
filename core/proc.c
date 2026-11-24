@@ -260,8 +260,23 @@ static int join(char *dst, size_t n, const char *a, const char *b)
     return 1;
 }
 
+/* One guest directory backed by a host directory outside the root (aoi_proc_bind). */
+static char bind_g[AOI_PATH], bind_h[AOI_PATH];
+static size_t bind_gl;
+
+void aoi_proc_bind(const char *guest, const char *host)
+{
+    snprintf(bind_g, sizeof bind_g, "%s", guest ? guest : "");
+    snprintf(bind_h, sizeof bind_h, "%s", host ? host : "");
+    bind_gl = guest && host && *host ? strlen(bind_g) : 0;
+}
+
 static void host_path(struct aoi_proc *p, const char *guest, char *out)
 {
+    if (bind_gl && !strncmp(guest, bind_g, bind_gl) && (!guest[bind_gl] || guest[bind_gl] == '/')) {
+        if (!join(out, AOI_PATH, bind_h, guest + bind_gl)) out[0] = 0;
+        return;
+    }
     if (p->data[0] && !strncmp(guest, "/data", 5) && (!guest[5] || guest[5] == '/')) {
         if (!join(out, AOI_PATH, p->data, guest + 5)) out[0] = 0;
         return;
