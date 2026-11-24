@@ -24,6 +24,8 @@ check "apt-get --version" "apt"         60  /usr/bin/apt-get --version
 check "id"               "uid=0(root)"  60  /usr/bin/id
 check "Ctrl-less job"    "jobs-ok"      60  /bin/bash -c 'sleep 0.2 & wait $!; echo jobs-ok'
 if [ -x "$R/usr/bin/python3" ]; then
+    mkdir -p "$R/accel"
+    gcc -O2 -static -nostdlib -fno-builtin -mgeneral-regs-only -fno-pic -no-pie -mbranch-protection=none         -o "$R/accel/bench" "$DIR/tests/accel/bench.c"
     check "python3 -c pass (accelerator on)"   "ok"            120 /usr/bin/python3 -c 'print("ok")'
     check "python3 1M loop (accelerator on)"   "499999500000"  600 /usr/bin/python3 -c 'print(sum(i for i in range(1000000)))'
     check "python3 json+re (accelerator on)"   "done"          600 /usr/bin/python3 -c 'import json,re
@@ -35,6 +37,15 @@ s=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n
 d=[{"k":i,"v":str(i)*3} for i in range(20000)]
 s=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n)'
     unset AOI_JIT
+    for hot in 3000 20000 100000; do
+        export AOI_JIT_HOT=$hot
+        check "python3 1M loop (accelerator, hot $hot)" "499999500000" 600 /usr/bin/python3 -c 'print(sum(i for i in range(1000000)))'
+        check "python3 json+re (accelerator, hot $hot)" "done"        600 /usr/bin/python3 -c 'import json,re
+d=[{"k":i,"v":str(i)*3} for i in range(20000)]
+s=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n)'
+        check "accel bench (accelerator, hot $hot)" "b73dbdcb3015bb01" 600 /accel/bench
+    done
+    unset AOI_JIT_HOT
     export NODEFLAGS="--no-liftoff --no-wasm-lazy-compilation"
     check "python3 1M loop (accelerator on, V8 optimizing only)" "499999500000" 600 /usr/bin/python3 -c 'print(sum(i for i in range(1000000)))'
     check "python3 json+re (accelerator on, V8 optimizing only)" "done"        600 /usr/bin/python3 -c 'import json,re

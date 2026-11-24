@@ -25,7 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define JIT_HOT 600                  /* block entries into a page before it is translated */
+int aoi_jit_hot = 600;               /* block entries into a page before it is translated (AOI_JIT_HOT) */
+#define JIT_HOT aoi_jit_hot
 #define JIT_MISS 16                  /* new distinct starts seen before the page is translated again */
 #define JIT_BUDGET 200000         /* guest instructions per call before going back to the interpreter */
 #define JIT_SLOTS (1u << 14)

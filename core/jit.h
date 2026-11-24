@@ -19,7 +19,7 @@ aoi_jit_fn aoi_jit_find(struct aoi_cpu *c, uint64_t pc);
 void aoi_jit_miss(struct aoi_cpu *c, uint64_t pc);
 /* Forget every translation (code was unmapped or changed protection, an address space ended). */
 void aoi_jit_flush(void);
-extern int aoi_jit_enabled;
+extern int aoi_jit_enabled, aoi_jit_hot;
 #include <stdio.h>
 void aoi_jit_report(FILE *f);                 /* how much ran translated, what was refused */
 int aoi_jit_compile_ms(void);                 /* time the JavaScript engine spent compiling */

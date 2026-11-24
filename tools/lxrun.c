@@ -140,6 +140,7 @@ int main(int argc, char **argv)
     int ne = 0, a = 1, trace = 0, quiet = getenv("LXRUN_QUIET") != NULL, use_tty = 0;
 #ifdef AOI_JIT
     if (getenv("AOI_JIT") && !atoi(getenv("AOI_JIT"))) aoi_jit_enabled = 0;   /* AOI_JIT=0: interpreter only */
+    if (getenv("AOI_JIT_HOT")) aoi_jit_hot = atoi(getenv("AOI_JIT_HOT"));
 #endif
     enum aoi_stop st;
     double t0, t1;
