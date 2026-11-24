@@ -114,9 +114,15 @@ web view. The worker gunzips Alpine's root (9 MB, 0.19 s with DecompressionStrea
 unpacks it into the in-memory file system (0.02-0.07 s) and calls lxrun's main: busybox
 echo, ls, cat, sha256sum, a three-stage pipeline, a background job with wait, a
 subshell's exit code and SIGPIPE all give the right output; the benchmark takes 25.6 s
-(the native interpreter on the same Mac: 19.9 s), before the translator. Next: keep the
-root in OPFS between launches, Debian's bash, and the terminal (keys in, output out)
-through the bridge.
+(the native interpreter on the same Mac: 19.9 s), before the translator. 
+Debian 13 and persistence (2026-11-24): under node, glibc's loader, bash, a pipeline,
+sort/uniq/sed, perl, dpkg -l, apt-get --version, id and a background job all pass in the
+wasm core. In WKWebView the Debian root (103 MB unpacked, gunzip 0.45 s, into MEMFS
+0.13-0.26 s) runs bash, perl, dpkg and apt. After a file is written in Debian the whole
+root goes to OPFS as an uncompressed tar (107 MB: 0.26 s to build, 0.43 s to write); on
+the next launch it comes back from OPFS (read 0.13 s, unpack 0.22 s) with the file in it.
+The benchmark: 21.6 s. Next: the terminal (keys in, output out) through the bridge; a
+real block-level root in OPFS instead of whole-root snapshots.
 
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 

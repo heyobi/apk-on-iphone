@@ -5420,6 +5420,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         r = block_and_retry(p, 10000000);                          /* (lx_take and kill set pending meanwhile) */
         break;
     }
+    case 293:                                                      /* rseq: glibc probes it and does without */
+        r = err(L_ENOSYS);
+        break;
     case 136: {                                                    /* rt_sigpending: nothing pending */
         uint64_t z = 0;
         r = put(p, a0, &z, a1 < 8 ? a1 : 8) ? 0 : err(L_EFAULT);
