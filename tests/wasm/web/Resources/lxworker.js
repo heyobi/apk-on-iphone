@@ -187,6 +187,10 @@ onmessage = async e => {
         const py = 'print(sum(i for i in range(1000000)))';
         const pj = 'import json,re\nd=[{"k":i,"v":str(i)*3} for i in range(20000)]\ns=json.dumps(d); x=json.loads(s); n=len(re.findall(r"[0-9]+",s)); print("done",n)';
         for (const [name, args, env] of [
+            ['py_start_jit', ['/usr/bin/python3', '-c', 'pass'], null], ['py_start_interp', ['/usr/bin/python3', '-c', 'pass'], { AOI_JIT: '0' }],
+            ['py_start_hot200k', ['/usr/bin/python3', '-c', 'pass'], { AOI_JIT_HOT: '200000' }], ['py_start_hot1m', ['/usr/bin/python3', '-c', 'pass'], { AOI_JIT_HOT: '1000000' }],
+            ['ls_jit', ['/bin/ls', '-la', '/usr/bin'], null], ['ls_interp', ['/bin/ls', '-la', '/usr/bin'], { AOI_JIT: '0' }],
+            ['py_loop_hot200k', ['/usr/bin/python3', '-c', py], { AOI_JIT_HOT: '200000' }],
             ['py_loop_jit', ['/usr/bin/python3', '-c', py], null], ['py_loop_interp', ['/usr/bin/python3', '-c', py], { AOI_JIT: '0' }],
             ['py_json_jit', ['/usr/bin/python3', '-c', pj], null], ['py_json_interp', ['/usr/bin/python3', '-c', pj], { AOI_JIT: '0' }]]) {
             postMessage({ log: 'running ' + name });
