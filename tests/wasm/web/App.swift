@@ -105,6 +105,27 @@ final class Net {
             else if k == 0 { reply("eof", Data()) }
             else if errno == EAGAIN || errno == EWOULDBLOCK { reply("again", Data()) }
             else { reply("err", Data()) }
+        case "/net/resolve":
+            let host = arg("host") ?? "", v6 = arg("type") == "AAAA"
+            DispatchQueue.global().async {
+                var hints = addrinfo(ai_flags: 0, ai_family: v6 ? AF_INET6 : AF_INET, ai_socktype: SOCK_STREAM, ai_protocol: 0,
+                                     ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+                var res: UnsafeMutablePointer<addrinfo>?
+                var lines: [String] = []
+                if getaddrinfo(host, nil, &hints, &res) == 0, let first = res {
+                    var ai: UnsafeMutablePointer<addrinfo>? = first
+                    while let a = ai {
+                        var buf = [CChar](repeating: 0, count: 64)
+                        if v6 { var sin = a.pointee.ai_addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }; inet_ntop(AF_INET6, &sin, &buf, 64) }
+                        else { var sin = a.pointee.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }; inet_ntop(AF_INET, &sin, &buf, 64) }
+                        let ip = String(cString: buf)
+                        if !lines.contains(ip) { lines.append(ip) }
+                        ai = a.pointee.ai_next
+                    }
+                    freeaddrinfo(first)
+                }
+                DispatchQueue.main.async { reply("ok", Data(lines.joined(separator: "\n").utf8)) }
+            }
         case "/net/close":
             if let fd = conns.removeValue(forKey: id) { close(fd) }
             reply("ok", Data())

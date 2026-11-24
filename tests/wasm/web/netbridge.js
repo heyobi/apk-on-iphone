@@ -16,8 +16,40 @@
         return { status: x.getResponseHeader('X-Lx') || 'err', data: r };
     }
     function fail(errno) { throw new FS.ErrnoError(errno); }
+    /* DNS over UDP (glibc's resolver talks to the nameserver itself): the query's name is
+     * resolved by the app (its getaddrinfo: the phone's DNS and VPN settings) and the answer
+     * built here as a DNS message. */
+    function dnsAnswer(q) {
+        if (q.length < 12) return null;
+        var i = 12, labels = [];
+        while (i < q.length && q[i]) { labels.push(new TextDecoder().decode(q.subarray(i + 1, i + 1 + q[i]))); i += q[i] + 1; }
+        var qend = i + 5;                                          /* the 0 label, type, class */
+        if (qend > q.length) return null;
+        var qtype = (q[i + 1] << 8) | q[i + 2];
+        var ips = [];
+        if (qtype === 1 || qtype === 28) {
+            var r = call('resolve?host=' + encodeURIComponent(labels.join('.')) + '&type=' + (qtype === 1 ? 'A' : 'AAAA'));
+            if (r.status === 'ok') ips = new TextDecoder().decode(r.data).split('\n').filter(Boolean);
+        }
+        var parts = [];
+        ips.forEach(function (ip) {
+            var raw = [];
+            if (qtype === 1) raw = ip.split('.').map(Number);
+            else {
+                var h = ip.split('::'), a = h[0] ? h[0].split(':') : [], b = h.length > 1 && h[1] ? h[1].split(':') : [];
+                var groups = a.concat(new Array(8 - a.length - b.length).fill('0'), b);
+                groups.forEach(function (g) { var v = parseInt(g || '0', 16); raw.push(v >> 8, v & 255); });
+            }
+            parts.push([0xc0, 12, qtype >> 8, qtype & 255, 0, 1, 0, 0, 0, 60, 0, raw.length].concat(raw));
+        });
+        var out = [q[0], q[1], 0x81, ips.length || qtype === 28 ? 0x80 : 0x83, 0, 1, 0, ips.length, 0, 0, 0, 0];
+        for (var k = 12; k < qend; k++) out.push(q[k]);
+        parts.forEach(function (p) { out = out.concat(p); });
+        return new Uint8Array(out);
+    }
     var ops = {
         poll: function (sock) {
+            if (sock.lxDns) return 4 | (sock.lxQ.length ? 1 : 0);
             if (sock.lxId === undefined) return 0;
             var r = call('poll?id=' + sock.lxId);
             var m = 4;                                             /* POLLOUT: writes are queued by the app */
@@ -32,7 +64,12 @@
         listen: function () { fail(58); },
         accept: function () { fail(58); },
         connect: function (sock, addr, port) {
-            if (sock.type !== 1) fail(5);                          /* TCP only: EAFNOSUPPORT */
+            if (sock.type === 2) {                                 /* UDP: only DNS (port 53), answered here */
+                if (port !== 53) fail(5);
+                sock.lxDns = true; sock.lxQ = sock.lxQ || []; sock.daddr = addr; sock.dport = port;
+                return;
+            }
+            if (sock.type !== 1) fail(5);
             var host = DNS.lookup_addr(addr) || addr;
             var r = call('connect?host=' + encodeURIComponent(host) + '&port=' + port);
             if (r.status !== 'ok') fail(r.status === 'refused' ? 14 : r.status === 'timeout' ? 73 : 23);   /* ECONNREFUSED, ETIMEDOUT, EHOSTUNREACH (WASI numbers) */
@@ -42,13 +79,24 @@
         getname: function (sock, peer) {
             return peer ? { addr: sock.daddr || '0.0.0.0', port: sock.dport || 0 } : { addr: '0.0.0.0', port: 0 };
         },
-        sendmsg: function (sock, buffer, offset, length) {
+        sendmsg: function (sock, buffer, offset, length, addr, port) {
+            if (sock.type === 2) {
+                if (port !== undefined && port !== 53) fail(5);
+                if (!sock.lxQ) { sock.lxQ = []; sock.lxDns = true; sock.daddr = addr; sock.dport = 53; }
+                var ans = dnsAnswer(buffer.slice(offset, offset + length));
+                if (ans) sock.lxQ.push(ans);
+                return length;
+            }
             if (sock.lxId === undefined) fail(53);                 /* ENOTCONN */
             var r = call('send?id=' + sock.lxId, buffer.slice(offset, offset + length));
             if (r.status !== 'ok') fail(64);                       /* EPIPE */
             return length;
         },
         recvmsg: function (sock, length) {
+            if (sock.lxDns) {
+                if (!sock.lxQ.length) fail(6);
+                return { buffer: sock.lxQ.shift(), addr: sock.daddr, port: 53 };
+            }
             if (sock.lxId === undefined) fail(53);
             var r = call('recv?id=' + sock.lxId + '&max=' + length);
             if (r.status === 'data') return { buffer: r.data, addr: sock.daddr, port: sock.dport };
