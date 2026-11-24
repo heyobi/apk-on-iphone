@@ -93,6 +93,13 @@ jobs:
           python3 -m json.tool "$D/Documents/result.json" || cat "$D/Documents/result.json" || echo "no result"
           [ -f "$D/Documents/result.json" ] || { ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | tail -n 5; f=$(ls -t ~/Library/Logs/DiagnosticReports/BridgeBench* 2>/dev/null | head -n 1); [ -n "$f" ] && head -c 3000 "$f"; xcrun simctl spawn "$UDID" log show --last 3m --style compact --predicate 'process == "BridgeBench" OR eventMessage CONTAINS "BridgeBench"' 2>/dev/null | tail -n 60; }
           xcrun simctl io "$UDID" screenshot shot.png || true
+          echo "== second launch (does the OPFS image persist?)"
+          rm -f "$D/Documents/result.json"
+          xcrun simctl terminate "$UDID" com.heyobi.bridgebench || true
+          sleep 2
+          xcrun simctl launch "$UDID" com.heyobi.bridgebench
+          for i in $(seq 1 300); do [ -f "$D/Documents/result.json" ] && break; sleep 2; done
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print({k:v for k,v in d.items() if k.startswith('opfs') or k in ('jspi','atomics_waitAsync','bench_run_s')})" "$D/Documents/result.json" || echo "no second result"
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: bridge, path: tests/accel/bridge/shot.png, retention-days: 5 }

@@ -38,6 +38,44 @@ async function bench(R) {
     R.bench_output = out.trim();
 }
 
+// The guest's root as one disk image in the Origin Private File System: opening a file there
+// is asynchronous, but reads and writes through a sync access handle are not, so an engine
+// can open the image once and serve every file syscall synchronously from it.
+async function opfs(R) {
+    R.jspi = typeof WebAssembly.Suspending;
+    R.atomics_waitAsync = typeof Atomics.waitAsync;
+    if (!navigator.storage || !navigator.storage.getDirectory) { R.opfs = 'missing'; return; }
+    const est = await navigator.storage.estimate();
+    R.opfs_quota_mb = Math.round(est.quota / 1e6);
+    R.opfs_persisted = navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a';
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle('disk.img', { create: true });
+    if (!fh.createSyncAccessHandle) { R.opfs = 'no sync access handle'; return; }
+    const h = await fh.createSyncAccessHandle();
+    R.opfs_size_at_start_mb = Math.round(h.getSize() / 1e6);    // > 0 on a second launch: it persisted
+    const SZ = 256 * 1024 * 1024, MB = new Uint8Array(1 << 20);
+    let t = performance.now();
+    for (let off = 0; off < SZ; off += MB.length) { MB[0] = off >>> 20; h.write(MB, { at: off }); }
+    h.flush();
+    R.opfs_write_256mb_s = +((performance.now() - t) / 1000).toFixed(2);
+    const blk = new Uint8Array(4096), nblk = SZ / 4096;
+    let seed = 1;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) % nblk;
+    t = performance.now();
+    for (let i = 0; i < 20000; i++) h.read(blk, { at: rnd() * 4096 });
+    R.opfs_read4k_random_us = us(t, 20000);
+    t = performance.now();
+    for (let i = 0; i < 20000; i++) h.write(blk, { at: rnd() * 4096 });
+    R.opfs_write4k_random_us = us(t, 20000);
+    t = performance.now();
+    h.flush();
+    R.opfs_flush_ms = +(performance.now() - t).toFixed(1);
+    t = performance.now();
+    for (let i = 0; i < 20000; i++) h.read(new Uint8Array(blk.buffer, 0, 64), { at: rnd() * 4096 });
+    R.opfs_read64b_random_us = us(t, 20000);
+    h.close();
+}
+
 onmessage = async e => {
     if (!e.data.go) return;
     const R = {};
@@ -55,6 +93,7 @@ onmessage = async e => {
         R.sync_xhr_4k_post_us = us(t, 300);
     } catch (err) { R.xhr_error = String(err); }
     try { await bench(R); } catch (err) { R.bench_error = String(err); }
+    try { await opfs(R); } catch (err) { R.opfs_error = String(err); }
     if (e.data.sab) {
         const flag = new Int32Array(e.data.sab);
         const t = performance.now();
