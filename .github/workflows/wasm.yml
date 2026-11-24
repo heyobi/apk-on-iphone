@@ -1,0 +1,31 @@
+# Accelerator, stage 1: the core built for WebAssembly (Emscripten, wasm32) and run under
+# Node with the host's files (NODERAWFS): single-process programs first (busybox applets,
+# the accelerator benchmark), to check the core on a 32-bit Wasm host and its speed there.
+name: Core on WebAssembly
+
+on:
+  push:
+    branches: [ linux-userland ]
+    paths: [ "core/**", "tools/lxrun.c", "tests/wasm/**", ".github/workflows/wasm.yml" ]
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with: { version: latest }
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc gcc > /dev/null
+      - name: Build the core for wasm32 (Emscripten)
+        run: sh tests/wasm/build.sh
+      - name: Alpine minirootfs (official mirror, SHA-256 checked)
+        run: sh tests/linux/fetch-alpine.sh "$RUNNER_TEMP/alpine"
+      - name: Run single-process programs
+        run: sh tests/wasm/run.sh "$RUNNER_TEMP/alpine"
