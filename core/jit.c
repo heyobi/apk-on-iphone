@@ -893,6 +893,27 @@ static int insn(struct jit *j, uint32_t w)
         }
         return 0;
     }
+    if ((w & 0x7ffff000u) == 0x5ac00000u && ((w >> 10) & 3) <= 3 && (w32 ? ((w >> 10) & 3) != 3 : 1)) {   /* rbit, rev16, rev32/rev (w), rev */
+        /* swaps of ever larger groups: bits 1, 2, 4 (rbit only), then bytes 8, 16, 32 */
+        static const uint64_t m[6] = { 0x5555555555555555ull, 0x3333333333333333ull, 0x0f0f0f0f0f0f0f0full,
+                                       0x00ff00ff00ff00ffull, 0x0000ffff0000ffffull, 0x00000000ffffffffull };
+        int opc = (w >> 10) & 3, A = w32 ? L_UA : L_TA, k, lo, hi;
+        lo = opc == 0 ? 0 : 3;
+        hi = opc == 0 ? (w32 ? 4 : 5) : opc == 1 ? 3 : opc == 2 ? (w32 ? 4 : 4) : 5;   /* rev16: bytes; rev32/rev w: +16; rev x: +32 */
+        if (w32) reg_get32(j, rn, 0); else reg_get(j, rn, 0);
+        lset(j, A);
+        for (k = lo; k <= hi; k++) {
+            int sh = 1 << k;
+            lget(j, A); if (w32) { i32c(j, sh); op(j, I32_SHRU); i32c(j, (int32_t)(uint32_t)m[k]); op(j, I32_AND); }
+                        else { i64c(j, sh); op(j, I64_SHRU); i64c(j, (int64_t)m[k]); op(j, I64_AND); }
+            lget(j, A); if (w32) { i32c(j, (int32_t)(uint32_t)m[k]); op(j, I32_AND); i32c(j, sh); op(j, I32_SHL); op(j, I32_OR); }
+                        else { i64c(j, (int64_t)m[k]); op(j, I64_AND); i64c(j, sh); op(j, I64_SHL); op(j, I64_OR); }
+            lset(j, A);
+        }
+        lget(j, A);
+        reg_set(j, rd, 0, w32);
+        return 1;
+    }
     if ((w & 0x7ffffc00u) == 0x5ac01000u) {                       /* clz */
         if (w32) { reg_get32(j, rn, 0); op(j, I32_CLZ); } else { reg_get(j, rn, 0); op(j, I64_CLZ); }
         reg_set(j, rd, 0, w32);

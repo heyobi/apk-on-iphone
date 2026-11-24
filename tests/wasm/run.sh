@@ -26,6 +26,14 @@ gcc -O2 -static -nostdlib -fno-builtin -mgeneral-regs-only -fno-pic -no-pie -mbr
 check "accel bench (accelerator on)" "b73dbdcb3015bb01" 600 /accel/bench
 export AOI_JIT=0; check "accel bench (interpreter only)" "b73dbdcb3015bb01" 600 /accel/bench
 unset AOI_JIT
+# bit and byte reversal: translated (low threshold) and interpreted give the same checksum
+gcc -O2 -static -nostdlib -fno-builtin -mgeneral-regs-only -fno-pic -no-pie -mbranch-protection=none \
+    -o "$R/accel/bits" "$DIR/tests/accel/bits.c"
+want=$(AOI_JIT=0 LXRUN_QUIET=1 node "$DIR/build/lxrun.js" "$R" /accel/bits 2>/dev/null | head -n 1)
+echo "     bits (interpreter): $want"
+[ -n "$want" ] || { echo "FAIL wasm: bits gave no checksum"; fail=1; want=none; }
+export AOI_JIT_HOT=200; check "accel bits: rbit/rev translated" "$want" 120 /accel/bits
+unset AOI_JIT_HOT
 # several guest processes on the one host thread (fork/vfork, exec, pipes, wait)
 check "sh: external command"  "etc"      60  /bin/busybox sh -c '/bin/ls /'
 check "sh: pipeline"          "OK 3"     60  /bin/busybox sh -c 'n=$(printf "a
