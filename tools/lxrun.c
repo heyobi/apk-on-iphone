@@ -222,6 +222,7 @@ int main(int argc, char **argv)
         if (!quiet || getenv("LXRUN_STATS"))
             fprintf(stderr, "[lxrun] accelerator: %" PRIu64 " blocks translated, %" PRIu64 " refused by the engine, %" PRIu64 " reused, %" PRIu64 " region runs, %d KiB compiled in %d ms\n",
                     aoi_jit_blocks, aoi_jit_failed, aoi_jit_reused, aoi_jit_runs, aoi_jit_kbytes(), aoi_jit_compile_ms());
+        if (getenv("LXRUN_STATS")) aoi_jit_report(stderr);
 #endif
         return proc.cpu.exit_code & 0xff;
     }

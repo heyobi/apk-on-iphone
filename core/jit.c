@@ -21,6 +21,7 @@
 #include "cpu_impl.h"
 #include <emscripten.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,7 +34,36 @@
 struct jit_slot { uint64_t base; const void *vm; int32_t fn; int32_t count; int32_t need, redo; uint32_t roots[AOI_VM_PAGE / 4 / 32]; };
 static struct jit_slot slots[JIT_SLOTS];
 static unsigned slot_used;
-uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs;
+uint64_t aoi_jit_blocks, aoi_jit_failed, aoi_jit_runs, aoi_jit_insns;
+/* instructions that ended a block because the translator does not do them: by encoding
+ * class (top 10 bits), to see what to add next (AOI_JIT_STATS) */
+static uint32_t refused_key[64], refused_n[64];
+static void note_refused(uint32_t w)
+{
+    uint32_t k = w >> 22;
+    int i, low = 0;
+    for (i = 0; i < 64; i++) {
+        if (refused_n[i] && refused_key[i] == k) { refused_n[i]++; return; }
+        if (refused_n[i] < refused_n[low]) low = i;
+    }
+    refused_key[low] = k; refused_n[low] = 1;
+}
+void aoi_jit_report(FILE *f)
+{
+    int i, j, best;
+    uint32_t used[64] = { 0 };
+    fprintf(f, "[jit] %llu of the instructions ran translated; refused (class: top 10 bits, count):",
+            (unsigned long long)aoi_jit_insns);
+    for (j = 0; j < 12; j++) {
+        best = -1;
+        for (i = 0; i < 64; i++) if (refused_n[i] && !used[i] && (best < 0 || refused_n[i] > refused_n[best])) best = i;
+        if (best < 0) break;
+        used[best] = 1;
+        fprintf(f, " %08x:%u", refused_key[best] << 22, refused_n[best]);
+    }
+    fprintf(f, "
+");
+}
 int aoi_jit_enabled = 1;
 
 EM_JS(int, jit_install, (const uint8_t *code, int len), {
@@ -785,6 +815,7 @@ static int32_t translate(struct aoi_cpu *c, uint64_t base, const uint32_t *roots
             before = j.b.n; rm0 = j.rd_mask; wm0 = j.wr_mask; fr0 = j.flags_rd; fw0 = j.flags_wr; fk0 = j.flags_known; mem0 = j.mem;
             r = insn(&j, words[si]);
             if (!r) {                                              /* the interpreter goes on from here */
+                note_refused(words[si]);
                 j.b.n = before; j.rd_mask = rm0; j.wr_mask = wm0; j.flags_rd = fr0; j.flags_wr = fw0; j.flags_known = fk0; j.mem = mem0;
                 i64c(&j, (int64_t)j.pc); lset(&j, L_NPC); cnt_add(&j, j.ninsn); put(&j.b, BR); putu(&j.b, (unsigned)j.d_out);
                 break;

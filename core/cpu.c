@@ -220,6 +220,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                 int n = f(c);
                 if (n) {
                     c->steps += (uint64_t)n;
+                    aoi_jit_insns += (uint64_t)n;
                     bs = 1;
                     if (c->stop != AOI_RUN) break;
                     continue;
