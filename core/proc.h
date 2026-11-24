@@ -155,6 +155,7 @@ struct aoi_proc {
     int nshm;
     volatile int stop_request;      /* set from another host thread: aoi_proc_run returns AOI_RUN */
     int one_resched;                /* one-thread build: its last turn ended with every thread waiting */
+    unsigned wake_seen;             /* the aoi_wake_seq this process last saw */
     uint32_t uid;                   /* getuid & co. and every file's owner: an app's (10100), or root */
     volatile int pause_request;     /* set from another host thread: it waits between time slices */
     char snap_path[AOI_PATH];       /* if set: where the guest's open("/dev/aoi_snapshot") saves a snapshot */
@@ -284,5 +285,6 @@ void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len);
 
 /* One-thread (WebAssembly) builds: the host's turn while guest processes wait or run (core/proc.c). */
 extern void (*aoi_host_poll)(int64_t wait_ns);
+extern volatile unsigned aoi_wake_seq;
 
 #endif

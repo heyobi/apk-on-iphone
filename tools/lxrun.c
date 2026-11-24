@@ -53,7 +53,7 @@ static void web_poll(int64_t wait_ns)
 {
     char b[4096];
     int n = js_tty_poll(b, (int)sizeof b, (int)(wait_ns / 1000000));
-    if (n > 0) aoi_tty_input(aoi_console, b, (size_t)n);
+    if (n > 0) { aoi_tty_input(aoi_console, b, (size_t)n); aoi_wake_seq++; }
 }
 #endif
 

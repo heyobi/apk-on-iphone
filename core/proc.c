@@ -1015,6 +1015,9 @@ static int sig_fault(struct aoi_proc *p)
  * bridge). Called when every process waits, with how long it may block, and every ~20 ms
  * while they run (0: just look). */
 void (*aoi_host_poll)(int64_t wait_ns);
+/* Bumped by the host when keys arrive: threads sleeping in a retried syscall (a terminal
+ * read) try again at once instead of at their deadline. */
+volatile unsigned aoi_wake_seq;
 #ifdef AOI_ONE_THREAD
 #define ONE_MAX 512
 struct aoi_child;
@@ -1081,6 +1084,11 @@ static int schedule(struct aoi_proc *p)
         if (p->linux_mode && (p->stop_request || (p->xsig && !lx_take(p)))) return -2;   /* killed while all wait */
         if (p->af) aoi_af_tick(p);                                 /* (it may wake a writer) */
         now = now_ns();
+        if (p->wake_seen != aoi_wake_seq) {                        /* keys arrived: retried reads look again now */
+            p->wake_seen = aoi_wake_seq;
+            for (i = 0; i < AOI_PROC_THREADS; i++)
+                if (p->th[i].state == AOI_T_SLEEP && p->th[i].restart) p->th[i].deadline = now;
+        }
         soonest = p->af ? aoi_af_next(p) : 0;
         for (i = 0; i < AOI_PROC_THREADS; i++) {
             struct aoi_thread *t = &p->th[i];
@@ -1109,7 +1117,11 @@ static int schedule(struct aoi_proc *p)
             int64_t d = !soonest ? 10000000 : soonest > now ? soonest - now : 0;
             if (p->linux_mode && d > 10000000) d = 10000000;
 #ifdef AOI_ONE_THREAD
-            if (aoi_host_poll && one_depth == 1) { aoi_host_poll(d); continue; }   /* waits for keys up to d */
+            if (aoi_host_poll && one_depth == 1) {                 /* wait for keys: up to the next deadline, 100 ms at most */
+                int64_t w = !soonest ? 100000000 : soonest > now ? soonest - now : 0;
+                aoi_host_poll(w > 100000000 ? 100000000 : w);
+                continue;
+            }
             if (d > 1000000) d = 1000000;                          /* the other processes' turns */
 #endif
             struct timespec ts;
@@ -1857,7 +1869,11 @@ static uint64_t tty_read(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t buf
     if (!t || !n) return 0;
     k = m ? aoi_tty_master_read(t, b, n < sizeof b ? n : sizeof b) : aoi_tty_read(t, b, n < sizeof b ? n : sizeof b);
     if (k < 0 && m && aoi_tty_hungup(t)) return err(L_EIO);       /* the slave side is gone */
+#ifdef AOI_ONE_THREAD
+    if (k < 0) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 100000000);   /* aoi_wake_seq wakes it */
+#else
     if (k < 0) return f->nonblock ? err(L_EAGAIN) : block_and_retry(p, 5000000);
+#endif
     return put(p, buf, b, (uint64_t)k) ? (uint64_t)k : err(L_EFAULT);
 }
 
