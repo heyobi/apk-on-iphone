@@ -94,7 +94,7 @@ final class Net {
                     ok = false; break
                 }
             }
-            reply(ok ? "ok" : "err", Data())
+            reply(ok && sent == data.count && sent > 0 ? "ok" : "err", Data(String(sent).utf8))
         case "/net/recv", "/net/poll":
             guard let fd = conns[id] else { reply("err", Data()); return }
             let peek = url.path == "/net/poll"
@@ -141,10 +141,20 @@ final class Net {
 }
 
 final class Scheme: NSObject, WKURLSchemeHandler {
+    /// A request's body: WebKit hands it over as data or as a stream
+    static func body(of r: URLRequest) -> Data? {
+        if let b = r.httpBody { return b }
+        guard let st = r.httpBodyStream else { return nil }
+        var out = Data(), buf = [UInt8](repeating: 0, count: 65536)
+        st.open(); defer { st.close() }
+        while true { let k = st.read(&buf, maxLength: buf.count); if k <= 0 { break }; out.append(buf, count: k) }
+        return out
+    }
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else { return }
         if url.path.hasPrefix("/net/") {
-            Net.shared.handle(url, body: task.request.httpBody) { status, data in
+            Net.shared.handle(url, body: Scheme.body(of: task.request)) { status, data in
                 task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
                                                 headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(data.count)", "X-Lx": status])!)
                 task.didReceive(data)
@@ -155,7 +165,7 @@ final class Scheme: NSObject, WKURLSchemeHandler {
         if url.path == "/tty" {
             let term = Terminal.shared
             term.requests += 1
-            if let b = task.request.httpBody, !b.isEmpty { term.transcript.append(b) }
+            if let b = Scheme.body(of: task.request), !b.isEmpty { term.transcript.append(b) }
             term.save()
             let wait = Double(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "wait" }?.value ?? "0") ?? 0
             let reply = {

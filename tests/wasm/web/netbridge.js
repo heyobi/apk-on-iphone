@@ -106,7 +106,7 @@
             }
             if (sock.lxId === undefined) fail(53);                 /* ENOTCONN */
             var r = call('send?id=' + sock.lxId, new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length).slice());
-            log('tcp send ' + sock.lxId + ' ' + length + ' -> ' + r.status);
+            log('tcp send ' + sock.lxId + ' ' + length + ' -> ' + r.status + ' ' + new TextDecoder().decode(r.data));
             if (r.status !== 'ok') fail(64);                       /* EPIPE */
             return length;
         },
