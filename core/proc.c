@@ -1002,6 +1002,25 @@ static int sig_fault(struct aoi_proc *p)
     return 1;
 }
 
+/* ---------- one host thread for every process (WebAssembly in a web view) ----------
+ * The web view gives WebAssembly no threads, so instead of a host thread per guest process
+ * (spawn_thread) every process takes turns on the one thread: after each time slice, and
+ * whenever all of a process's threads wait, the outermost aoi_proc_run gives every other
+ * process one turn (child_turn). A nested turn that finds nothing to run hands the thread
+ * back at once; the host sleeps only when no process ran an instruction. */
+#ifdef __EMSCRIPTEN__
+#define AOI_ONE_THREAD 1
+#endif
+#ifdef AOI_ONE_THREAD
+#define ONE_MAX 512
+struct aoi_child;
+static struct aoi_child *one_run[ONE_MAX];
+static unsigned char one_busy[ONE_MAX];
+static int one_n, one_depth;
+static int child_turn(struct aoi_child *ch, uint64_t steps);
+static int one_others(struct aoi_proc *self);
+#endif
+
 /* ---------- green threads ---------- */
 
 static int64_t now_ns(void);
@@ -1077,10 +1096,17 @@ static int schedule(struct aoi_proc *p)
         }
         if (next >= 0) break;
         if (!soonest && !p->linux_mode) return -1;
+#ifdef AOI_ONE_THREAD
+        if (one_depth > 1) return -3;                              /* a nested turn: give the thread back */
+        if (one_others(p)) continue;                               /* another process ran: look again */
+#endif
         {   /* Linux mode: never longer than 10 ms, so a signal from another process (Ctrl-C,
              * SIGCHLD) is seen; every thread waiting with no deadline is a wait for one */
             int64_t d = !soonest ? 10000000 : soonest > now ? soonest - now : 0;
             if (p->linux_mode && d > 10000000) d = 10000000;
+#ifdef AOI_ONE_THREAD
+            if (d > 1000000) d = 1000000;                          /* the other processes' turns */
+#endif
             struct timespec ts;
             if (p->trace) {
                 fprintf(p->trace, "[sched] idle %.3f ms:", (double)d / 1e6);
@@ -1125,10 +1151,37 @@ static void thread_end(struct aoi_proc *p)
     t->state = AOI_T_FREE;
 }
 
+static enum aoi_stop proc_run(struct aoi_proc *p, uint64_t max_steps);
+
 enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
+{
+#ifdef AOI_ONE_THREAD
+    enum aoi_stop st;
+    one_depth++;
+    st = proc_run(p, max_steps);
+    one_depth--;
+    return st;
+#else
+    return proc_run(p, max_steps);
+#endif
+}
+
+static enum aoi_stop proc_run(struct aoi_proc *p, uint64_t max_steps)
 {
     int k;
     if (!p->linux_mode) det_steps = &p->cpu.steps;                 /* (one process at a time there) */
+#ifdef AOI_ONE_THREAD
+    if (p->one_resched) {                                          /* its last turn ended with every thread waiting */
+        p->one_resched = 0;
+        if ((k = schedule(p)) == -3) { p->one_resched = 1; return AOI_RUN; }
+        if (k == -2) {
+            if (!p->term_sig && !p->stop_request) p->term_sig = 9;
+            p->cpu.exit_code = 128 + p->term_sig;
+            p->cpu.stop = AOI_STOP_EXIT;
+            return AOI_STOP_EXIT;
+        }
+    }
+#endif
     for (;;) {
         uint64_t end = p->cpu.steps + SLICE;
         enum aoi_stop st;
@@ -1168,7 +1221,13 @@ enum aoi_stop aoi_proc_run(struct aoi_proc *p, uint64_t max_steps)
             return st;                                             /* exit_group, fault, undef */
         }
         p->cpu.stop = AOI_RUN;
+#ifdef AOI_ONE_THREAD
+        if (one_depth == 1) one_others(p);                         /* everyone gets a slice */
+        if ((k = schedule(p)) == -3) { p->one_resched = 1; return AOI_RUN; }
+        if (k == -2) {
+#else
         if ((k = schedule(p)) == -2) {                             /* Linux mode: killed while waiting */
+#endif
             if (!p->term_sig && !p->stop_request) p->term_sig = 9;
             p->cpu.exit_code = 128 + p->term_sig;
             p->cpu.stop = AOI_STOP_EXIT;
@@ -2628,25 +2687,27 @@ static struct aoi_child *child_new(struct aoi_proc *p)
 
 static void lx_post_pid(int pid, int sig);
 
-static void *child_main(void *arg)
+/* One turn of a child process: up to `steps` guest instructions. Returns 1 when it has
+ * ended (everything below done: freed, status for wait4, SIGCHLD), else 0. */
+static int child_turn(struct aoi_child *ch, uint64_t steps)
 {
-    struct aoi_child *ch = arg;
     struct aoi_proc *c = ch->proc;
     int i, status, ppid = 0, linux_mode = 0;
-    for (;;) {
-        enum aoi_stop st = aoi_proc_run(c, c->cpu.steps + 50000000);
-        if (c->stop_request) { status = 9; break; }                /* killed (SIGKILL's status) */
-        if (st == AOI_RUN) continue;
-        status = st == AOI_STOP_EXIT ? (c->term_sig ? c->term_sig : (c->cpu.exit_code & 0xff) << 8)
-                                     : 11;                         /* a fault: as SIGSEGV */
-        if (st == AOI_STOP_UNDEF) status = 4;                      /* SIGILL */
-        if (st != AOI_STOP_EXIT && c->trace) {
-            char w1[256], w2[256];
-            fprintf(c->trace, "[proc] %d stopped (%d) at pc %s, lr %s, fault %#llx insn %#x\n", ch->pid, (int)st,
-                    aoi_proc_where(c, c->cpu.pc, w1, sizeof w1), aoi_proc_where(c, c->cpu.x[30], w2, sizeof w2),
-                    (unsigned long long)c->cpu.fault_addr, c->cpu.fault_insn);
+    {
+        enum aoi_stop st = aoi_proc_run(c, c->cpu.steps + steps);
+        if (c->stop_request) status = 9;                           /* killed (SIGKILL's status) */
+        else {
+            if (st == AOI_RUN) return 0;
+            status = st == AOI_STOP_EXIT ? (c->term_sig ? c->term_sig : (c->cpu.exit_code & 0xff) << 8)
+                                         : 11;                     /* a fault: as SIGSEGV */
+            if (st == AOI_STOP_UNDEF) status = 4;                  /* SIGILL */
+            if (st != AOI_STOP_EXIT && c->trace) {
+                char w1[256], w2[256];
+                fprintf(c->trace, "[proc] %d stopped (%d) at pc %s, lr %s, fault %#llx insn %#x\n", ch->pid, (int)st,
+                        aoi_proc_where(c, c->cpu.pc, w1, sizeof w1), aoi_proc_where(c, c->cpu.x[30], w2, sizeof w2),
+                        (unsigned long long)c->cpu.fault_addr, c->cpu.fault_insn);
+            }
         }
-        break;
     }
     ppid = c->ppid;
     linux_mode = c->linux_mode;
@@ -2666,12 +2727,43 @@ static void *child_main(void *arg)
         if (orphan) free(ch);
         else if (linux_mode && ppid) lx_post_pid(ppid, 17);       /* SIGCHLD, once wait4 can see it */
     }
+    return 1;
+}
+
+static void *child_main(void *arg)
+{
+    while (!child_turn(arg, 50000000)) {}
     return NULL;
 }
+
+#ifdef AOI_ONE_THREAD
+/* Gives every other runnable process one turn; 1 if any of them ran instructions or ended. */
+static int one_others(struct aoi_proc *self)
+{
+    int i, ran = 0;
+    for (i = 0; i < one_n; i++) {
+        struct aoi_child *ch = one_run[i];
+        uint64_t s0;
+        if (!ch || one_busy[i] || ch->proc == self) continue;
+        s0 = ch->proc->cpu.steps;
+        one_busy[i] = 1;
+        if (child_turn(ch, SLICE)) { one_run[i] = NULL; ran = 1; }   /* (ch may be freed now) */
+        else if (ch->proc->cpu.steps != s0) ran = 1;
+        one_busy[i] = 0;
+    }
+    return ran;
+}
+#endif
 
 /* A guest process on a host thread of its own (a big stack: iOS gives others 512 KB). */
 static int spawn_thread(struct aoi_child *ch)
 {
+#ifdef AOI_ONE_THREAD
+    int i;
+    for (i = 0; i < ONE_MAX; i++)
+        if (!one_run[i] && !one_busy[i]) { one_run[i] = ch; if (i >= one_n) one_n = i + 1; return 0; }
+    return EAGAIN;
+#endif
     pthread_t th;
     pthread_attr_t at;
     int e;

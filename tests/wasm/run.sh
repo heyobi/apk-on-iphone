@@ -24,8 +24,17 @@ mkdir -p "$R/accel"
 gcc -O2 -static -nostdlib -fno-builtin -mgeneral-regs-only -fno-pic -no-pie -mbranch-protection=none \
     -o "$R/accel/bench" "$DIR/tests/accel/bench.c"
 check "accel bench (wasm interpreter)" "b73dbdcb3015bb01" 600 /accel/bench
-# multi-process (fork/exec, pipes): guest processes run on host threads today, which the
-# web view does not have; informational until the single-thread scheduler exists
-LXRUN_QUIET=1 timeout 60 node "$DIR/build/lxrun.js" "$R" /bin/busybox sh -c 'ls / | wc -l' > /tmp/mp.txt 2>&1; echo "INFO wasm: sh pipeline (fork) rc=$?: $(head -c 300 /tmp/mp.txt | tr '
-' ' ')"
+# several guest processes on the one host thread (fork/vfork, exec, pipes, wait)
+check "sh: external command"  "etc"      60  /bin/busybox sh -c '/bin/ls /'
+check "sh: pipeline"          "OK 3"     60  /bin/busybox sh -c 'n=$(printf "a
+b
+c
+" | wc -l); echo OK $n'
+check "sh: 3-stage pipeline"  "z"        60  /bin/busybox sh -c 'printf "b
+z
+a
+" | sort | tail -n 1'
+check "sh: background + wait" "bg-ok"    60  /bin/busybox sh -c 'sleep 0.2 & wait; echo bg-ok'
+check "sh: subshell exit code" "rc=3"    60  /bin/busybox sh -c '(exit 3); echo rc=$?'
+check "sh: SIGPIPE"           "done"     60  /bin/busybox sh -c 'yes | head -n 2 >/dev/null; echo done'
 exit $fail
