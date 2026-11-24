@@ -108,6 +108,16 @@ passing: an external command from sh, two- and three-stage pipelines, a backgrou
 with wait, a subshell's exit code, SIGPIPE (`yes | head`). Native builds keep a host
 thread per process (Debian, Alpine, make test and difftest unchanged).
 
+In WKWebView (2026-11-24, `tests/wasm/web`, LxWeb test app, simulator): the core built for a
+web worker (`tests/wasm/build-web.sh`: Emscripten, MEMFS) runs Linux programs inside the
+web view. The worker gunzips Alpine's root (9 MB, 0.19 s with DecompressionStream),
+unpacks it into the in-memory file system (0.02-0.07 s) and calls lxrun's main: busybox
+echo, ls, cat, sha256sum, a three-stage pipeline, a background job with wait, a
+subshell's exit code and SIGPIPE all give the right output; the benchmark takes 25.6 s
+(the native interpreter on the same Mac: 19.9 s), before the translator. Next: keep the
+root in OPFS between launches, Debian's bash, and the terminal (keys in, output out)
+through the bridge.
+
 ## Linux userland mode (2026-11-23, branch `linux-userland`)
 
 The same core (cpu, simd, vm, proc, ELF loader, snapshots) now also runs an ordinary
