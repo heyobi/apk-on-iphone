@@ -89,6 +89,7 @@ function tarFS(FS, root) {
 // The terminal bridge (lxrun -i in the wasm build calls this from the scheduler's host turn):
 // the guest's output goes to the app in the body of a synchronous request, the typed keys
 // come back in the answer; the app may hold the answer up to waitMs when no key is due.
+var ttySeq = 0;
 function lxPoll(out, waitMs) {
     let total = 0;
     for (const c of out) total += c.length;
@@ -96,7 +97,7 @@ function lxPoll(out, waitMs) {
     let o = 0;
     for (const c of out) { body.set(c, o); o += c.length; }
     const x = new XMLHttpRequest();
-    x.open('POST', 'lx://host/tty?wait=' + waitMs, false);
+    x.open('POST', 'lx://host/tty?wait=' + waitMs + '&n=' + (++ttySeq), false);
     x.overrideMimeType('text/plain; charset=x-user-defined');
     x.send(body);
     const s = x.responseText;

@@ -156,7 +156,7 @@ final class Scheme: NSObject, WKURLSchemeHandler {
         if url.path.hasPrefix("/net/") {
             Net.shared.handle(url, body: Scheme.body(of: task.request)) { status, data in
                 task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
-                                                headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(data.count)", "X-Lx": status])!)
+                                                headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(data.count)", "X-Lx": status, "Cache-Control": "no-store"])!)
                 task.didReceive(data)
                 task.didFinish()
             }
@@ -171,7 +171,7 @@ final class Scheme: NSObject, WKURLSchemeHandler {
             let reply = {
                 let keys = term.due()
                 task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
-                                                headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(keys.count)"])!)
+                                                headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(keys.count)", "Cache-Control": "no-store"])!)
                 task.didReceive(keys)
                 task.didFinish()
             }

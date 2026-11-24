@@ -6,9 +6,11 @@
 // the app resolves it. TLS stays in the guest (curl, apt, pip use their own OpenSSL).
 (function () {
     if (typeof SOCKFS === 'undefined') return;
+    var seq = 0;
     function call(path, body) {
         var x = new XMLHttpRequest();
-        x.open(body ? 'POST' : 'GET', 'lx://host/net/' + path, false);
+        seq++;                                                     /* never the same URL twice: WebKit may answer a repeated GET from its cache */
+        x.open(body ? 'POST' : 'GET', 'lx://host/net/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'n=' + seq, false);
         x.overrideMimeType('text/plain; charset=x-user-defined');
         x.send(body || null);
         var s = x.responseText, r = new Uint8Array(s.length);
