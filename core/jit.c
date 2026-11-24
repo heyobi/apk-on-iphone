@@ -36,11 +36,13 @@ int aoi_jit_enabled = 1;
 
 EM_JS(int, jit_install, (const uint8_t *code, int len), {
     try {
+        var tbl = typeof wasmTable != 'undefined' ? wasmTable : wasmExports['__indirect_function_table'];
+        var mem = typeof wasmMemory != 'undefined' ? wasmMemory : wasmExports['memory'];
         var mod = new WebAssembly.Module(HEAPU8.slice(code, code + len));
-        var inst = new WebAssembly.Instance(mod, { env: { mem: wasmMemory, tbl: wasmTable } });
-        var idx = wasmTable.length;
-        wasmTable.grow(1);
-        wasmTable.set(idx, inst.exports.f);
+        var inst = new WebAssembly.Instance(mod, { env: { mem: mem, tbl: tbl } });
+        var idx = tbl.length;
+        tbl.grow(1);
+        tbl.set(idx, inst.exports.f);
         return idx;
     } catch (e) {
         if (!Module.jitErrors) Module.jitErrors = 0;
