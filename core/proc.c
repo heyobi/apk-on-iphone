@@ -1011,6 +1011,10 @@ static int sig_fault(struct aoi_proc *p)
 #ifdef __EMSCRIPTEN__
 #define AOI_ONE_THREAD 1
 #endif
+/* One-thread builds: the host's turn (the terminal's keys and output, through the web view's
+ * bridge). Called when every process waits, with how long it may block, and every ~20 ms
+ * while they run (0: just look). */
+void (*aoi_host_poll)(int64_t wait_ns);
 #ifdef AOI_ONE_THREAD
 #define ONE_MAX 512
 struct aoi_child;
@@ -1105,6 +1109,7 @@ static int schedule(struct aoi_proc *p)
             int64_t d = !soonest ? 10000000 : soonest > now ? soonest - now : 0;
             if (p->linux_mode && d > 10000000) d = 10000000;
 #ifdef AOI_ONE_THREAD
+            if (aoi_host_poll && one_depth == 1) { aoi_host_poll(d); continue; }   /* waits for keys up to d */
             if (d > 1000000) d = 1000000;                          /* the other processes' turns */
 #endif
             struct timespec ts;
@@ -1222,7 +1227,12 @@ static enum aoi_stop proc_run(struct aoi_proc *p, uint64_t max_steps)
         }
         p->cpu.stop = AOI_RUN;
 #ifdef AOI_ONE_THREAD
-        if (one_depth == 1) one_others(p);                         /* everyone gets a slice */
+        if (one_depth == 1) {
+            static int64_t last_poll;
+            int64_t t = now_ns();
+            one_others(p);                                         /* everyone gets a slice */
+            if (aoi_host_poll && t - last_poll > 20000000) { last_poll = t; aoi_host_poll(0); }
+        }
         if ((k = schedule(p)) == -3) { p->one_resched = 1; return AOI_RUN; }
         if (k == -2) {
 #else

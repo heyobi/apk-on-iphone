@@ -86,6 +86,36 @@ function tarFS(FS, root) {
     return out;
 }
 
+// The terminal bridge (lxrun -i in the wasm build calls this from the scheduler's host turn):
+// the guest's output goes to the app in the body of a synchronous request, the typed keys
+// come back in the answer; the app may hold the answer up to waitMs when no key is due.
+function lxPoll(out, waitMs) {
+    let total = 0;
+    for (const c of out) total += c.length;
+    const body = new Uint8Array(total);
+    let o = 0;
+    for (const c of out) { body.set(c, o); o += c.length; }
+    const x = new XMLHttpRequest();
+    x.open('POST', 'lx://host/tty?wait=' + waitMs, false);
+    x.overrideMimeType('text/plain; charset=x-user-defined');
+    x.send(body);
+    const s = x.responseText;
+    if (!s.length) return null;
+    const r = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) r[i] = s.charCodeAt(i) & 255;
+    return r;
+}
+
+async function interactive(tar, args) {
+    let log = '';
+    const M = await createLx({ print: s => { log += s + '\n'; }, printErr: s => { log += s + '\n'; }, lxPoll });
+    untar(M.FS, tar, '/r');
+    const t0 = performance.now();
+    let rc;
+    try { rc = M.callMain(['-i', '/r'].concat(args)); } catch (e) { rc = e && e.status !== undefined ? e.status : String(e); }
+    return { rc, run_s: +((performance.now() - t0) / 1000).toFixed(1), log: log.slice(-800) };
+}
+
 async function opfsFile(create) {
     const dir = await navigator.storage.getDirectory();
     const fh = await dir.getFileHandle('root.tar', { create });
@@ -118,6 +148,8 @@ onmessage = async e => {
             R.opfs_root_mb = +(buf.length / 1e6).toFixed(1);
             R.opfs_read_s = +((performance.now() - t) / 1000).toFixed(2);
             R.persisted = await run(buf, ['/bin/bash', '-c', 'cat /root/persist.txt; echo bash ${BASH_VERSINFO[0]} from OPFS']);
+            postMessage({ log: 'interactive bash' });
+            R.interactive = await interactive(buf, ['/bin/bash', '-i']);
             postMessage(R);
             return;
         }

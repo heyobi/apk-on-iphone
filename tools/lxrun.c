@@ -31,9 +31,39 @@ static struct aoi_proc proc;
 static struct termios saved_tio;
 static int raw_tty;
 
+#ifdef __EMSCRIPTEN__
+/* In a web view (tests/wasm/web): the terminal's output collects in JavaScript and the
+ * scheduler's host turn (aoi_host_poll) sends it to the app and brings back the keys. */
+#include <emscripten.h>
+EM_JS(void, js_tty_out, (const char *s, int n), {
+    if (!Module.lxOut) Module.lxOut = [];
+    Module.lxOut.push(HEAPU8.slice(s, s + n));
+});
+EM_JS(int, js_tty_poll, (char *buf, int max, int wait_ms), {
+    if (!Module.lxPoll) return 0;
+    var out = Module.lxOut || [];
+    Module.lxOut = [];
+    var r = Module.lxPoll(out, wait_ms);
+    if (!r || !r.length) return 0;
+    var n = Math.min(r.length, max);
+    HEAPU8.set(r.subarray(0, n), buf);
+    return n;
+});
+static void web_poll(int64_t wait_ns)
+{
+    char b[4096];
+    int n = js_tty_poll(b, (int)sizeof b, (int)(wait_ns / 1000000));
+    if (n > 0) aoi_tty_input(aoi_console, b, (size_t)n);
+}
+#endif
+
 static void tty_out(void *ctx, const char *s, size_t n)
 {
     (void)ctx;
+#ifdef __EMSCRIPTEN__
+    js_tty_out(s, (int)n);
+    return;
+#endif
     while (n) {
         ssize_t k = write(1, s, n);
         if (k <= 0) break;
@@ -146,6 +176,14 @@ int main(int argc, char **argv)
             setrlimit(RLIMIT_NOFILE, &rl);
         }
     }
+#ifdef __EMSCRIPTEN__
+    if (use_tty) {                                   /* no host terminal or threads: the host turn */
+        aoi_tty_new(tty_out, NULL, 80, 24);
+        aoi_proc_attach_tty(&proc);
+        aoi_host_poll = web_poll;
+        use_tty = 0;
+    }
+#endif
     if (use_tty) {
         pthread_t th;
         int cols = 80, rows = 24;
@@ -168,6 +206,9 @@ int main(int argc, char **argv)
     t0 = now_s();
     st = aoi_proc_run(&proc, 0);
     t1 = now_s();
+#ifdef __EMSCRIPTEN__
+    if (aoi_host_poll) aoi_host_poll(0);             /* the last output */
+#endif
     fflush(stdout);
     if (st == AOI_STOP_EXIT) {
         if (!quiet || getenv("LXRUN_STATS"))

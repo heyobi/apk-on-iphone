@@ -282,4 +282,7 @@ int aoi_proc_pair(struct aoi_proc *p, int a, int b, int ptype);
 uint64_t aoi_proc_map_anon(struct aoi_proc *p, uint64_t len, const char *name);
 void aoi_proc_unmap_anon(struct aoi_proc *p, uint64_t addr, uint64_t len);
 
+/* One-thread (WebAssembly) builds: the host's turn while guest processes wait or run (core/proc.c). */
+extern void (*aoi_host_poll)(int64_t wait_ns);
+
 #endif

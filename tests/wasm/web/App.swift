@@ -3,9 +3,55 @@
 import UIKit
 import WebKit
 
+/// The terminal's side in this test: the guest's output arrives in the body of each /tty
+/// request (written to Documents/tty.txt); the answer carries keys from a script, typed at
+/// fixed times. With no key due the answer waits (up to ?wait= ms), so an idle guest costs
+/// no busy polling.
+final class Terminal {
+    static let shared = Terminal()
+    let start = Date()
+    var transcript = Data()
+    var requests = 0
+    var script: [(Double, String)] = [
+        (2, "echo hi from bash in WKWebView\r"), (4, "ls / | head -n 3\r"),
+        (6, "sleep 30\r"), (8, "\u{03}"), (9.5, "echo after-ctrl-c $?\r"),
+        (11, "for i in 1 2 3; do echo line $i; done | tac\r"), (13, "exit\r"),
+    ]
+    func due() -> Data {
+        let t = Date().timeIntervalSince(start)
+        var out = Data()
+        while let first = script.first, first.0 <= t { out.append(first.1.data(using: .utf8)!); script.removeFirst() }
+        return out
+    }
+    func nextIn() -> Double? { script.first.map { max(0, $0.0 - Date().timeIntervalSince(start)) } }
+    func save() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        try? transcript.write(to: docs.appendingPathComponent("tty.txt"))
+        try? "\(requests)".write(to: docs.appendingPathComponent("tty-requests.txt"), atomically: true, encoding: .utf8)
+    }
+}
+
 final class Scheme: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else { return }
+        if url.path == "/tty" {
+            let term = Terminal.shared
+            term.requests += 1
+            if let b = task.request.httpBody, !b.isEmpty { term.transcript.append(b) }
+            term.save()
+            let wait = Double(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "wait" }?.value ?? "0") ?? 0
+            let reply = {
+                let keys = term.due()
+                task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                                headerFields: ["Content-Type": "application/octet-stream", "Content-Length": "\(keys.count)"])!)
+                task.didReceive(keys)
+                task.didFinish()
+            }
+            if wait <= 0 || (term.nextIn() ?? 1) <= 0 { reply(); return }
+            let delay = min(wait / 1000, term.nextIn() ?? wait / 1000)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: reply)
+            return
+        }
         var data = Data()
         var type = "application/octet-stream"
         if url.path == "/sys" {
