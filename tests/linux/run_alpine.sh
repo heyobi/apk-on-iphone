@@ -26,6 +26,7 @@ check() {   # check NAME EXPECTED-SUBSTRING TIMEOUT PROGRAM ARGS...
 }
 check "busybox echo"   "hello"             20  /bin/busybox echo hello
 check "sh arithmetic"  "42"                20  /bin/sh -c 'echo $((6*7))'
+check "SIGPIPE: yes | head" "SIGPIPE-OK"     30  /bin/sh -c 'e=$( { ls -l /bin | head -n 1 >/dev/null; } 2>&1 ); yes | head -n 1 >/dev/null; [ -z "$e" ] && echo SIGPIPE-OK || echo "BAD: $e"'
 check "ls /"           "etc"               20  /bin/ls /
 check "cat"            "3."                20  /bin/cat /etc/alpine-release
 check "uname -a"       "aarch64"           20  /bin/uname -a

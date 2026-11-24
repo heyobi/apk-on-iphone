@@ -5398,6 +5398,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     if ((int64_t)r >= 0 && c->stop == AOI_RUN) note_cloexec(p, nr, a0, a1, a2, a3, r);
+    /* Writing to a pipe or socket whose reader is gone: Linux sends SIGPIPE to the writer as
+     * well as returning EPIPE (`ls | head` ends quietly). The host ignores SIGPIPE, so raise it
+     * in the guest here; send/sendto/sendmsg with MSG_NOSIGNAL (0x4000) do not. */
+    if (p->linux_mode && r == err(L_EPIPE) && c->stop == AOI_RUN &&
+        (nr == NR_write || nr == NR_pwrite64 || nr == NR_writev ||
+         (nr == NR_sendto && !(a3 & 0x4000)) || (nr == NR_sendmsg && !(a2 & 0x4000))))
+        sig_send(p, p->cur, 13);
     if (c->stop != AOI_STOP_RESTART) trace_sys(p, nr, r);       /* a blocked retry is not a result */
     return r;
 }
