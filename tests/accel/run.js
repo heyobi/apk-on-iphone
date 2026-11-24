@@ -16,7 +16,7 @@ if (isNode) {
     readText = p => read(p);
     out = s => print(s);
     now = () => (typeof preciseTime === 'function' ? preciseTime() * 1000 : Date.now());
-    args = scriptArgs;
+    args = typeof scriptArgs !== 'undefined' ? scriptArgs : arguments;
 }
 const dir = args[0];
 const meta = JSON.parse(readText(dir + '/bench.json'));
