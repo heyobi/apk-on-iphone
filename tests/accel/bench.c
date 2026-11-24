@@ -107,7 +107,7 @@ void _start(void)
 {
     u64 sum = 0;
     int round;
-    for (round = 0; round < 3; round++) {
+    for (round = 0; round < 30; round++) {
         u32 n = gen(), d, i, k = 0;
         for (i = 0; i < TAB; i++) tab[i].count = 0;
         d = count_idents(n);
