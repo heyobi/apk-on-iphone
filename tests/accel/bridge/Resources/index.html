@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<body style="font:13px ui-monospace,monospace">
+<pre id="o">running…</pre>
+<script>
+const R = {};
+const show = () => { document.getElementById('o').textContent = JSON.stringify(R, null, 1); };
+const us = (t0, n) => +((performance.now() - t0) * 1000 / n).toFixed(1);
+async function main() {
+    R.crossOriginIsolated = self.crossOriginIsolated;
+    R.sharedArrayBuffer = typeof SharedArrayBuffer;
+    R.userAgent = navigator.userAgent;
+    let t = performance.now();
+    for (let i = 0; i < 2000; i++) prompt('sys', '1');
+    R.prompt_us = us(t, 2000); show();
+    t = performance.now();
+    for (let i = 0; i < 2000; i++) await webkit.messageHandlers.sys.postMessage(i);
+    R.message_reply_us = us(t, 2000); show();
+
+    const w = new Worker('worker.js');
+    const sab = self.crossOriginIsolated ? new SharedArrayBuffer(8) : null;
+    const flag = sab && new Int32Array(sab);
+    const result = new Promise(res => {
+        w.onmessage = e => {
+            if (e.data.call !== undefined) {               // the worker waits on the flag; answer through the app
+                webkit.messageHandlers.sys.postMessage(e.data.call).then(() => { Atomics.store(flag, 0, 1); Atomics.notify(flag, 0); });
+            } else res(e.data);
+        };
+        w.onerror = e => res({ worker_error: e.message });
+    });
+    w.postMessage({ sab, go: true });
+    Object.assign(R, await result);
+    show();
+    webkit.messageHandlers.done.postMessage(JSON.stringify(R));
+}
+main().catch(e => { R.error = String(e); show(); webkit.messageHandlers.done.postMessage(JSON.stringify(R)); });
+</script>
