@@ -25,7 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-int aoi_jit_hot = 20000;              /* block entries into a page before it is translated (AOI_JIT_HOT) */
+int aoi_jit_hot = 200000;             /* block entries into a page before it is translated (AOI_JIT_HOT): JavaScriptCore
+                                         compiles a page in ~11 ms, so only pages that run long pay off */
 #define JIT_HOT aoi_jit_hot
 #define JIT_MISS 16                  /* new distinct starts seen before the page is translated again */
 #define JIT_BUDGET 200000         /* guest instructions per call before going back to the interpreter */

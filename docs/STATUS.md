@@ -1,5 +1,15 @@
 # Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
 
+## Accelerator threshold for JavaScriptCore (2026-11-24)
+
+On a real iPhone (LxTerm build 19) the accelerated engine ran a Python loop 3.2x faster
+than the native interpreter (3.94 s vs 12.79 s) but started `python3 -c exit` 3.5x slower
+(1.70 s vs 0.48 s). The WebView check showed why: at the old threshold (20,000 entries)
+Python's start-up translated 66 pages, 2.4 MB of WebAssembly that JavaScriptCore took
+741 ms to compile (start-up 1.35 s; interpreter only 0.71 s). The default is now 200,000:
+start-up 0.76 s (3 pages, 7 ms), and the 1M-iteration loop is faster too (1.80 s vs 2.34 s
+at 20,000; interpreter only 4.36 s), since cold pages no longer cost compile time.
+
 ## Accelerator prototype: guest code as WebAssembly (2026-11-24, `tests/accel`)
 
 The route in RESEARCH.md ("WebKit JIT": translate guest code to WebAssembly and let the
