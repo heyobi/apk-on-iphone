@@ -28,9 +28,14 @@ check "uname -m"         "aarch64"        30  /bin/bash -c 'uname -m'
 check "id"               "uid=0(root)"    30  /bin/bash -c id
 check "pipeline"         "3"              30  /bin/bash -c 'ls /etc | head -n 3 | wc -l'
 check "login shell"      "login-ok"       60  /bin/bash -l -c 'echo login-ok'
-if [ $fail -ne 0 ]; then                                          # where a login shell (LxTerm's tab) waits
-    echo "== the login shell's last syscalls"
-    LXRUN_QUIET=1 timeout 40 "$L" -t "$R" /bin/bash -l -c 'echo login-ok' 2>&1 | grep -E "^\[sys\]|exec|open " | tail -n 40
+# a tab: an interactive login shell on a terminal
+out="$(LXRUN_QUIET=1 LXRUN_KEYS='echo tty-$((40+2))\r\wexit\r' timeout 60 "$L" -i "$R" /bin/bash -l 2>&1)"; rc=$?
+if printf '%s\n' "$out" | grep -q "tty-42"; then echo "OK   $N: interactive login shell on a terminal"
+else
+    echo "FAIL $N: interactive login shell on a terminal (rc=$rc)"; fail=1
+    printf '%s\n' "$out" | tail -n 8 | sed 's/^/     | /'
+    echo "== where it waits"
+    LXRUN_QUIET=1 LXRUN_KEYS='echo tty-$((40+2))\r\wexit\r' timeout 40 "$L" -t -i "$R" /bin/bash -l 2>&1 | grep -E "^\[sys\]|exec|open |\[proc\]|\[tty\]" | tail -n 50
 fi
 check "rpm -q bash"      "bash-"          60  /usr/bin/rpm -q bash
 check "rpm -qa count"    "pkgs"           120 /bin/bash -c 'echo "$(rpm -qa | wc -l) pkgs"'
