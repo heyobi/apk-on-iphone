@@ -3530,6 +3530,40 @@ int aoi_proc_kill_session(int sid, int sig)
     return n;
 }
 
+/* Which program listens on a TCP port (the app's Ports list): noted at listen(), by port. */
+#define LISTENERS 64
+static struct { int port; char name[40]; } listeners[LISTENERS];
+static int listener_next;
+static pthread_mutex_t listener_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void note_listener(struct aoi_proc *p, int host)
+{
+    struct sockaddr_storage sa;
+    socklen_t sl = sizeof sa;
+    const char *b = strrchr(p->exe, '/');
+    int port = 0, i;
+    if (getsockname(host, (struct sockaddr *)&sa, &sl)) return;
+    if (sa.ss_family == AF_INET) port = ntohs(((struct sockaddr_in *)&sa)->sin_port);
+    else if (sa.ss_family == AF_INET6) port = ntohs(((struct sockaddr_in6 *)&sa)->sin6_port);
+    if (!port) return;
+    pthread_mutex_lock(&listener_mu);
+    for (i = 0; i < LISTENERS && listeners[i].port != port; i++) {}
+    if (i == LISTENERS) { i = listener_next; listener_next = (listener_next + 1) % LISTENERS; }
+    listeners[i].port = port;
+    snprintf(listeners[i].name, sizeof listeners[i].name, "%s", b ? b + 1 : p->exe);
+    pthread_mutex_unlock(&listener_mu);
+}
+
+int aoi_proc_listener_name(int port, char *out, size_t n)
+{
+    int i, found = -1;
+    pthread_mutex_lock(&listener_mu);
+    for (i = 0; i < LISTENERS; i++)
+        if (listeners[i].port == port) { snprintf(out, n, "%s", listeners[i].name); found = 0; break; }
+    pthread_mutex_unlock(&listener_mu);
+    return found;
+}
+
 int aoi_proc_name_of_pgrp(int pgrp, char *out, size_t n)
 {
     int i, found = 0;
@@ -4591,7 +4625,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (f->kind != AOI_FD_INET) { r = err(L_ENOSYS); break; }  /* other AF_UNIX: as before */
         memset(&sa, 0, sizeof sa);
         if (nr == NR_bind) r = get_sa(p, a1, a2, &sa, &sl, f->v4) ? err(L_EINVAL) : bind(f->host, (struct sockaddr *)&sa, sl) ? herr() : 0;
-        else if (nr == NR_listen) r = listen(f->host, (int)a1) ? herr() : 0;
+        else if (nr == NR_listen) { r = listen(f->host, (int)a1) ? herr() : 0; if (!r) note_listener(p, f->host); }
         else if (nr == NR_shutdown) r = shutdown(f->host, (int)a1) ? herr() : 0;
         else if (nr == NR_accept || nr == NR_accept4) r = net_accept(p, f, a1, a2, nr == NR_accept4 ? a3 : 0);
         else if (nr == NR_sendmsg || nr == NR_recvmsg) r = net_msg(p, f, a1, a2, nr == NR_recvmsg);

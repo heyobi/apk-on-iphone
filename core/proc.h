@@ -234,6 +234,8 @@ void aoi_proc_linux_resume(struct aoi_proc *p);
 int aoi_proc_children(struct aoi_proc *p);
 int aoi_proc_kill_session(int sid, int sig);
 int aoi_proc_name_of_pgrp(int pgrp, char *out, size_t n);
+/* The program that last started listening on TCP `port` (0), or -1 if none was noted. */
+int aoi_proc_listener_name(int port, char *out, size_t n);
 /* Linux mode: the terminal's foreground process group (TIOCSPGRP), or 0. */
 extern volatile int aoi_tty_pgrp;
 
