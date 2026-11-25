@@ -5292,7 +5292,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_statfs: case NR_fstatfs: {                              /* every guest file system looks like ext4 */
         uint64_t sf[15];
-        if (nr == NR_fstatfs && !fd_get(p, a0)) { r = err(L_EBADF); break; }
+        const char *gp = g;
+        g[0] = 0;
+        if (nr == NR_fstatfs && !(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+        if (nr == NR_fstatfs) gp = f->path;
         if (nr == NR_statfs) {
             if ((rc = at_path(p, -100, a0, 1, g))) { r = err(rc); break; }
             to_host(p, g, h);
@@ -5308,6 +5311,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                 sf[2] = vs.f_blocks; sf[3] = vs.f_bfree; sf[4] = vs.f_bavail;
                 sf[5] = vs.f_files; sf[6] = vs.f_ffree;
             }
+        }
+        if (p->linux_mode) {                                       /* the synthetic mounts as what they are (systemd checks) */
+            if (!strcmp(gp, "/proc") || !strncmp(gp, "/proc/", 6)) sf[0] = 0x9fa0;          /* PROC_SUPER_MAGIC */
+            else if (!strcmp(gp, "/sys") || !strncmp(gp, "/sys/", 5)) sf[0] = 0x62656572;  /* SYSFS_MAGIC */
+            else if (!strcmp(gp, "/dev/pts") || !strncmp(gp, "/dev/pts/", 9)) sf[0] = 0x1cd1;   /* DEVPTS */
+            else if (!strcmp(gp, "/dev") || !strcmp(gp, "/dev/shm")) sf[0] = 0x01021994;    /* TMPFS (devtmpfs) */
         }
         r = put(p, a1, sf, 120) ? 0 : err(L_EFAULT);
         break;
