@@ -16,7 +16,10 @@ check() {   # check NAME EXPECTED-SUBSTRING TIMEOUT PROGRAM ARGS...
     printf '%s\n' "$out" | head -n 4 | sed 's/^/     > /'
 }
 cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
-sed -i 's/^#\?Server = .*mirror.archlinuxarm.org.*/Server = http:\/\/mirror.archlinuxarm.org\/$arch\/$repo/' "$R/etc/pacman.d/mirrorlist"
+printf 'Server = https://de3.mirror.archlinuxarm.org/$arch/$repo
+Server = https://fl.us.mirror.archlinuxarm.org/$arch/$repo
+Server = https://ca.us.mirror.archlinuxarm.org/$arch/$repo
+' > "$R/etc/pacman.d/mirrorlist"
 check "bash"                 "bash 5"     30   /bin/bash -c 'echo bash ${BASH_VERSINFO[0]}; cat /etc/os-release | head -n 2'
 check "pacman --version"     "Pacman v"   30   /bin/bash -c 'pacman --version'
 check "pacman-key --init"    "keyring-ok" 900  /bin/bash -c 'pacman-key --init 2>&1 | tail -n 3 && echo keyring-ok'

@@ -6,18 +6,26 @@ them with its signature checks (tests/linux/run_pacman.sh).
 usage: tests/linux/fetch-alarm.py ROOT [PACKAGE...]"""
 import hashlib, io, os, re, sys, tarfile, urllib.request
 
-MIRROR = "https://mirror.archlinuxarm.org/aarch64"
+# official mirrors whose HTTPS certificates are valid (mirror.archlinuxarm.org's redirector's is not)
+MIRRORS = ["https://de3.mirror.archlinuxarm.org/aarch64", "https://fl.us.mirror.archlinuxarm.org/aarch64",
+           "https://ca.us.mirror.archlinuxarm.org/aarch64"]
 REPOS = ["core", "extra", "alarm"]
 WANT = ["filesystem", "bash", "coreutils", "pacman", "pacman-mirrorlist", "archlinuxarm-keyring",
         "ca-certificates", "sed", "grep", "gawk", "findutils", "tar", "gzip", "xz", "which", "less"]
 
-def get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "lxterm-ci"}), timeout=300) as r:
-        return r.read()
+def get(path):
+    err = None
+    for m in MIRRORS:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{m}/{path}", headers={"User-Agent": "lxterm-ci"}), timeout=300) as r:
+                return r.read()
+        except Exception as e:
+            err = e
+    raise err
 
 def parse_db(repo):
     pkgs = {}
-    t = tarfile.open(fileobj=io.BytesIO(get(f"{MIRROR}/{repo}/{repo}.db")))
+    t = tarfile.open(fileobj=io.BytesIO(get(f"{repo}/{repo}.db")))
     for m in t.getmembers():
         if not m.name.endswith("/desc"):
             continue
@@ -63,7 +71,7 @@ def main():
     for n in done:
         f = db[n]
         fn = f["FILENAME"][0]
-        data = get(f"{MIRROR}/{f['REPO']}/{fn}")
+        data = get(f"{f['REPO']}/{fn}")
         got = hashlib.sha256(data).hexdigest()
         if got != f["SHA256SUM"][0]:
             sys.exit(f"SHA-256 mismatch for {fn}: {got}")
