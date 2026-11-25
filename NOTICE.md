@@ -10,22 +10,6 @@ the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the impl
 warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See `LICENSE` for the
 full text (SPDX: `GPL-3.0-or-later`).
 
-## Additional permission: app stores (GPL-3.0 section 7)
-
-As an additional permission under section 7 of the GNU General Public License,
-version 3, the copyright holders of LiquidAPK give you permission to convey this
-program, or a work based on it, through an application store (such as Apple's App
-Store) whose terms of service or usage rules impose restrictions beyond those of the
-GPL (for example, limits on the devices a downloaded copy may run on, or on copying
-it), provided that the complete Corresponding Source of the conveyed version is
-available to its recipients free of charge under the GPL, together with this
-permission.
-
-If you modify this program, you may extend this permission to your version, but you
-are not obliged to do so. If you do not wish to do so, delete this permission
-statement from your version. Every contribution to this repository is accepted under
-this permission (`CONTRIBUTING.md`).
-
 LiquidAPK is not affiliated with or endorsed by Google, Apple, or the makers of the
 Android apps it is tested with. Android is a trademark of Google LLC; iPhone and iOS
 are trademarks of Apple Inc. Users run APKs they are entitled to use.
