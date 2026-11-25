@@ -25,7 +25,7 @@ check "pacman --version"     "Pacman v"   30   /bin/bash -c 'pacman --version'
 # no Landlock or seccomp here (as in WSL1 and many containers): pacman's documented setting for that
 grep -q '^DisableSandbox' "$R/etc/pacman.conf" || sed -i '/^\[options\]/a DisableSandbox' "$R/etc/pacman.conf"
 grep -n '^\[' "$R/etc/pacman.conf" | sed 's/^/     repos: /'
-check "systemd-sysusers"     "alpm:"      120  /bin/bash -c 'systemd-sysusers 2>&1 | tail -n 3; getent passwd alpm; ls -la /etc/os-release /usr/lib/os-release 2>&1'
+check "systemd-sysusers"     "alpm:"      120  /bin/bash -c 'systemd-sysusers > /tmp/su.log 2>&1; tail -n 3 /tmp/su.log; getent passwd alpm; ls -la /usr/lib/os-release 2>&1; true'
 check "update-ca-trust"      "ca-ok"      300  /bin/bash -c 'update-ca-trust 2>&1 | tail -n 3; test -s /etc/ssl/certs/ca-certificates.crt && echo ca-ok'
 check "pacman-key --init"    "keyring-ok" 900  /bin/bash -c 'pacman-key --init 2>&1 | tail -n 3 && echo keyring-ok'
 check "pacman-key --populate" "keyring-ok" 900 /bin/bash -c 'pacman-key --populate archlinuxarm 2>&1 | tail -n 3 && echo keyring-ok'

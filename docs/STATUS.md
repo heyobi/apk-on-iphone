@@ -1,5 +1,30 @@
 # Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
 
+## Eight distributions, ports, Jupyter (2026-11-25)
+
+LxTerm 1.0.1 runs Debian (bundled) and, downloaded on demand, Ubuntu 26.04, Alpine,
+Fedora, AlmaLinux 10, Rocky Linux 10, openSUSE Tumbleweed (official Docker Hub images,
+digests checked) and Arch Linux ARM (its repositories, pacstrap-style, then pacman -U
+--dbonly with signatures). CI (`linux-userland.yml`) runs every one: apt, dnf, zypper,
+pacman install real packages. Core changes that made them work:
+
+- unpacked roots writable by their owner (Fedora's 0555 `/usr/bin`, `/usr/lib`);
+- `statx`: a mount id (`STATX_MNT_ID`) and the known attributes, `MOUNT_ROOT` on `/`
+  (systemd took their absence for an old kernel: EUNATCH); `fchmodat2` with
+  `AT_EMPTY_PATH`;
+- `access()` for a uid other than root uses any of the mode's bits (chown is not kept:
+  Ubuntu's apt runs gpgv as `_apt` on files chowned to it);
+- `/proc/self/mounts` (Arch's `/etc/mtab`, pacman's disk check); `statfs` types for
+  `/proc`, `/sys`, `/dev/pts`, `/dev`;
+- `ioctl` FIONBIO/FIONREAD/FIOCLEX on pipes, socketpairs and AF_UNIX sockets (Python's
+  asyncio self-pipe: Jupyter Notebook now serves its page, `tests/linux/run_jupyter.sh`);
+- the machine is `iphone` in Linux mode (`uname`, `/proc/sys/kernel/hostname`);
+- listening ports noted with their program (`aoi_proc_listener_name`) for the app's Ports list.
+
+pacman 7 needs Landlock for its download sandbox: Arch's documented `DisableSandbox` is set
+by the setup (as on WSL1 and many containers). Known: `systemd-sysusers` exits 2 for a few
+users it cannot fully create (the users pacman needs, `alpm` among them, are made).
+
 ## Tabs, servers and shared folders (2026-11-25)
 
 - **Several terminals in one wasm core** (LxTerm's ⚡ tabs): `lxrun -i` with `LXRUN_MULTI`
