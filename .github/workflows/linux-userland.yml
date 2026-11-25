@@ -86,6 +86,20 @@ jobs:
       - name: Ubuntu checks
         run: sh tests/linux/run_apt.sh "$RUNNER_TEMP/root" ubuntu
 
+  pacman:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: Arch Linux ARM root (its repositories, SHA-256 checked)
+        run: python3 tests/linux/fetch-alarm.py "$RUNNER_TEMP/root"
+      - name: Arch Linux ARM checks
+        run: sh tests/linux/run_pacman.sh "$RUNNER_TEMP/root"
+
   regress:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
