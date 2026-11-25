@@ -39,4 +39,7 @@ for L in $LAYERS; do
     echo "verified $IMG:$TAG arm64 manifest $MD layer $L"
     tar -xf "$TMP/layer" -C "$DIR" --no-same-owner --exclude='dev/*'
 done
+# root writes into read-only folders (Fedora's /usr/bin, /usr/lib are 0555); this user cannot:
+# the owner may write everything, as LxTerm's own unpacker does (lxios/LxTerm/untar.c)
+chmod -R u+rwX "$DIR"
 echo "$IMG:$TAG $MD" > "$DIR/.lxrun-image"
