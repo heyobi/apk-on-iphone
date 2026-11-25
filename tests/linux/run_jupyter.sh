@@ -15,7 +15,12 @@ out="$(LXRUN_QUIET=1 timeout 900 "$L" "$R" /bin/bash -c '
     for i in $(seq 1 120); do c=$(curl -s -o /tmp/page -w "%{http_code}" "http://127.0.0.1:8888/tree?token=lx"); [ "$c" = 200 ] && break; sleep 3; done
     echo "http $c"; grep -o "<title>[^<]*</title>" /tmp/page | head -n 1
     k=$(curl -s -X POST -H "Authorization: token lx" http://127.0.0.1:8888/api/kernels); echo "kernel: $(echo "$k" | head -c 120)"
-    tail -n 5 /tmp/jup.log; kill %1' 2>&1)"
+    head -n 60 /tmp/jup.log; kill %1' 2>&1)"
 echo "$out" | sed 's/^/     | /'
 echo "server: $(( $(date +%s) - t0 ))s"
-echo "$out" | grep -q "http 200" && echo "OK   jupyter: notebook page over localhost" || { echo "FAIL jupyter"; exit 1; }
+echo "$out" | grep -q "http 200" && echo "OK   jupyter: notebook page over localhost" && exit 0
+echo "FAIL jupyter"
+echo "== failing syscalls of a jupyter start"
+LXRUN_QUIET=1 timeout 300 "$L" -t "$R" /bin/bash -c 'timeout 120 jupyter notebook --no-browser --allow-root --ip=127.0.0.1 --port=8889 > /dev/null 2>&1' 2>&1 |
+    grep -E "= -[0-9]+$|not impl" | grep -vE "= -(11|2|25|115)$" | sed 's/(0x[0-9a-f]*,.*) =/ =/' | sort | uniq -c | sort -rn | head -n 40
+exit 1

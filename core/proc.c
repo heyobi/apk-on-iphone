@@ -3256,7 +3256,7 @@ static void rmtree(const char *dir)
 }
 
 static const char *const lx_pid_files[] = { "stat", "status", "cmdline", "comm", "environ", "statm", "maps",
-                                            "io", "limits", "oom_score_adj", "cgroup", "mountinfo", NULL };
+                                            "io", "limits", "oom_score_adj", "cgroup", "mountinfo", "mounts", NULL };
 
 static void lx_piddir(const char *base, const char *name)
 {
@@ -3417,6 +3417,9 @@ static int lx_proc_file(struct aoi_proc *p, const char *g, FILE *t)
         else if (!strcmp(f, "comm")) fprintf(t, "%s\n", o.comm);
         else if (!strcmp(f, "statm")) fprintf(t, "%llu %llu 0 0 0 0 0\n", (unsigned long long)(o.vsize / 4096), (unsigned long long)(o.rss / 4096));
         else if (!strcmp(f, "environ") || !strcmp(f, "mountinfo")) {}
+        else if (!strcmp(f, "mounts"))                             /* (/etc/mtab: pacman's disk space check) */
+            fprintf(t, "rootfs / ext4 rw,relatime 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\n"
+                       "devpts /dev/pts devpts rw,nosuid,noexec 0 0\ntmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n");
         else if (!strcmp(f, "io")) fprintf(t, "rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\n");
         else if (!strcmp(f, "oom_score_adj")) fprintf(t, "0\n");
         else if (!strcmp(f, "cgroup")) fprintf(t, "0::/\n");
