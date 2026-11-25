@@ -22,6 +22,7 @@ Server = https://ca.us.mirror.archlinuxarm.org/$arch/$repo
 ' > "$R/etc/pacman.d/mirrorlist"
 check "bash"                 "bash 5"     30   /bin/bash -c 'echo bash ${BASH_VERSINFO[0]}; cat /etc/os-release | head -n 2'
 check "pacman --version"     "Pacman v"   30   /bin/bash -c 'pacman --version'
+check "systemd-sysusers"     "alpm:"      120  /bin/bash -c 'systemd-sysusers 2>&1 | tail -n 3; getent passwd alpm; ls -la /etc/os-release /usr/lib/os-release 2>&1'
 check "pacman-key --init"    "keyring-ok" 900  /bin/bash -c 'pacman-key --init 2>&1 | tail -n 3 && echo keyring-ok'
 check "pacman-key --populate" "keyring-ok" 900 /bin/bash -c 'pacman-key --populate archlinuxarm 2>&1 | tail -n 3 && echo keyring-ok'
 check "pacman -Sy"           "synced"     900  /bin/bash -c 'pacman -Sy --noconfirm 2>&1 | tail -n 5 && echo synced'
