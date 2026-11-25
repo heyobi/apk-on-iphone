@@ -11,7 +11,7 @@ LXRUN_QUIET=1 timeout 3000 "$L" "$R" /bin/sh -c 'apt-get update -qq && DEBIAN_FR
 echo "install: $(( $(date +%s) - t0 ))s"
 t0=$(date +%s)
 out="$(LXRUN_QUIET=1 timeout 900 "$L" "$R" /bin/bash -c '
-    jupyter notebook --no-browser --allow-root --ip=127.0.0.1 --port=8888 --IdentityProvider.token=lx > /tmp/jup.log 2>&1 &
+    jupyter notebook --no-browser --allow-root --ip=127.0.0.1 --port=8888 --NotebookApp.token=lx --IdentityProvider.token=lx > /tmp/jup.log 2>&1 &
     for i in $(seq 1 120); do c=$(curl -s -o /tmp/page -w "%{http_code}" "http://127.0.0.1:8888/tree?token=lx"); [ "$c" = 200 ] && break; sleep 3; done
     echo "http $c"; grep -o "<title>[^<]*</title>" /tmp/page | head -n 1
     k=$(curl -s -X POST -H "Authorization: token lx" http://127.0.0.1:8888/api/kernels); echo "kernel: $(echo "$k" | head -c 120)"
