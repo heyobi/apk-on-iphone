@@ -4285,7 +4285,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (p->linux_mode) {
             /* Linux mode: Linux's rules on the guest's modes, not the host's access(): an iOS
              * app's files are never executable for iOS (debconf's `test -x frontend`). Every
-             * file is root's, so another uid gets the "other" bits. */
+             * file is root's, and chown is not kept: a file chowned to another uid (apt's
+             * _apt, its partial downloads and gpgv's keyrings) would deny it what open() then
+             * allows, so another uid is taken for the owner too and gets the owner's bits. */
             int want = (int)a2 & 7;
             uint32_t uid = nr == NR_faccessat2 && (a3 & 0x200) ? p->cred[1] : p->cred[0];   /* AT_EACCESS */
             if (is_tty_path(g)) { r = 0; break; }
@@ -4294,8 +4296,8 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = 0;
             if (uid == 0) {
                 if ((want & 1) && !S_ISDIR(st.st_mode) && !(st.st_mode & 0111)) r = err(L_EACCES);
-            } else if (((want & 4) && !(st.st_mode & 04)) || ((want & 2) && !(st.st_mode & 02)) ||
-                       ((want & 1) && !(st.st_mode & 01))) r = err(L_EACCES);
+            } else if (((want & 4) && !(st.st_mode & 0444)) || ((want & 2) && !(st.st_mode & 0222)) ||
+                       ((want & 1) && !(st.st_mode & 0111))) r = err(L_EACCES);
             break;
         }
         to_host(p, g, h);
