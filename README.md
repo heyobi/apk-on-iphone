@@ -19,25 +19,18 @@ interpreter runs like any other.
 
 ## Screenshots
 
-On an iPhone 16 Pro: the app's list (each APK compiled ahead of time in the background)
-and cube.run, a libGDX game, on the iPhone's GPU (OpenGL ES through ANGLE on Metal):
+On an iPhone 16 Pro, the app's list (each APK compiled ahead of time in the background); on
+the host test (`build/iostest-gpu`, the phone's code path), Cromite (Chromium 153) rendering
+a page with CSS, JavaScript and a canvas, and Qalculate!:
 
 <p>
-<img src="docs/screenshots/iphone-home.jpg" width="240" alt="LiquidAPK's app list on an iPhone">
-<img src="docs/screenshots/iphone-cuberun.jpg" width="240" alt="cube.run's menu on an iPhone">
-<img src="docs/screenshots/iphone-cuberun-score.jpg" width="240" alt="cube.run's score screen on an iPhone">
+<img src="docs/screenshots/iphone-home.jpg" width="200" alt="LiquidAPK's app list on an iPhone">
+<img src="docs/screenshots/host-cromite-page.jpg" width="200" alt="Cromite rendering a test page">
+<img src="docs/screenshots/host-qalculate.jpg" width="200" alt="Qalculate! calculator">
 </p>
 
-From the host test (`build/iostest-gpu`: the phone's code path, Mesa as the GPU), version
-0.73-0.74: Cromite (Chromium 153) rendering a page with CSS, JavaScript and a canvas,
-and its chrome://version; Molly (Signal) and Qalculate!:
-
-<p>
-<img src="docs/screenshots/host-cromite-page.jpg" width="180" alt="Cromite rendering a test page">
-<img src="docs/screenshots/host-cromite-version.jpg" width="180" alt="Cromite's chrome://version">
-<img src="docs/screenshots/host-molly.jpg" width="180" alt="Molly's setup screen">
-<img src="docs/screenshots/host-qalculate.jpg" width="180" alt="Qalculate! calculator">
-</p>
+More, with a libGDX game on the iPhone's GPU, Molly (Signal) and Chromium's version page:
+[docs/screenshots.md](docs/screenshots.md).
 
 ## What runs today (app 0.74)
 
