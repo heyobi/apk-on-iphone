@@ -491,6 +491,14 @@ static int host_oflags(uint64_t f)
     if (f & 040000) h |= O_DIRECTORY;
     if (f & 0100000) h |= O_NOFOLLOW;
     if (f & 02000000) h |= O_CLOEXEC;
+    if (f & 010000000) {                                           /* O_PATH: a handle on the name itself */
+        h &= ~(O_CREAT | O_EXCL | O_TRUNC | O_APPEND | 3);
+#ifdef O_PATH
+        h |= O_PATH;
+#elif defined(O_SYMLINK)
+        if (h & O_NOFOLLOW) h = (h & ~O_NOFOLLOW) | O_SYMLINK;   /* (with NOFOLLOW: the symlink, not ELOOP: systemd) */
+#endif
+    }
     return h;
 }
 

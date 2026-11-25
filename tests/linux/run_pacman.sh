@@ -31,6 +31,8 @@ check "pacman-key --init"    "keyring-ok" 900  /bin/bash -c 'pacman-key --init 2
 check "pacman-key --populate" "keyring-ok" 900 /bin/bash -c 'pacman-key --populate archlinuxarm 2>&1 | tail -n 3 && echo keyring-ok'
 check "pacman -Sy"           "synced"     900  /bin/bash -c 'pacman -Sy --noconfirm > /tmp/sy.log 2>&1; r=$?; tail -n 5 /tmp/sy.log; [ $r = 0 ] && echo synced'
 check "reinstall, signed"    "base-ok"    2400 /bin/bash -c 'pacman -S --noconfirm --overwrite "*" $(sed -n "s/^archlinuxarm //p" /.lxrun-image) 2>&1 | tail -n 8; pacman -Qk pacman 2>&1 | tail -n 1; pacman -Q | wc -l; echo base-ok'
+check "symlinks by O_PATH"   "links-ok"   120  /bin/bash -c 'systemd-tmpfiles --create > /tmp/tf.log 2>&1; grep -c "Too many levels" /tmp/tf.log; grep -q "Too many levels" /tmp/tf.log || echo links-ok'
+check "terminfo"             "tput-ok"    30   /bin/bash -c 'TERM=xterm-256color tput clear > /dev/null && echo tput-ok; ls -la /usr/share/terminfo/x/xterm-256color'
 check "pacman -S python"     "499999500000" 2400 /bin/bash -c 'pacman -S --noconfirm python 2>&1 | tail -n 4; python -c "print(sum(range(10**6)))"'
 check "pacman -S tmux"       "tmux "      2400 /bin/bash -c 'pacman -S --noconfirm tmux 2>&1 | tail -n 3; tmux -V'
 if [ $fail -ne 0 ]; then
