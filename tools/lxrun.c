@@ -240,7 +240,7 @@ extern uint64_t aoi_syscall_count;
 int main(int argc, char **argv)
 {
     static const char *base_env[] = {
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games",
         "HOME=/root", "USER=root", "LOGNAME=root", "SHELL=/bin/sh", "LANG=C.UTF-8", NULL };
     const char *envp[80], *cwd = "/root", *err;
     char term[64];

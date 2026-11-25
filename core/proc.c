@@ -1870,6 +1870,10 @@ static void statx_from_stat(const uint8_t *s, uint8_t *x)
     v = (uint32_t)((rdev & 0xff) | ((rdev >> 12) & 0xfff00)); memcpy(x + 132, &v, 4);
     v = (uint32_t)((dev >> 8) & 0xfff); memcpy(x + 136, &v, 4);
     v = (uint32_t)((dev & 0xff) | ((dev >> 12) & 0xfff00)); memcpy(x + 140, &v, 4);
+    /* systemd needs a mount id (STATX_MNT_ID) and which attributes are known (it takes
+     * a missing one for an old kernel, -EUNATCH): one mount per device number */
+    v = 0x7ff | 0x1000; memcpy(x, &v, 4);
+    { uint64_t am = 0x2000 | 0x4 | 0x10 | 0x20 | 0x40, mnt = (dev & 0xffffff) + 21; memcpy(x + 56, &am, 8); memcpy(x + 144, &mnt, 8); }
 }
 
 static struct aoi_tty *fd_tty(struct aoi_proc_fd *f, int *master)
@@ -4246,6 +4250,9 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (tty == 1) tty_stat_fd(f, sbuf);
         else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
         statx_from_stat(sbuf, sx);
+        if (!strcmp(g, "/") || !strcmp(g, "/proc") || !strcmp(g, "/dev") || !strcmp(g, "/dev/pts")) {
+            uint64_t at = 0x2000; memcpy(sx + 8, &at, 8);              /* STATX_ATTR_MOUNT_ROOT */
+        }
         r = put(p, a4, sx, sizeof sx) ? 0 : err(L_EFAULT);
         break;
     }
@@ -4478,12 +4485,19 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = nr <= 7 || nr >= 14 ? 0 : nr <= 10 ? err(L_ENODATA) : 0;   /* none to get, an empty list */
         else r = err(L_ENOTSUP);                                   /* *xattr: no extended attributes */
         break;
-    case 452:                                                      /* fchmodat2(dirfd, path, mode, flags) */
+    case 452: {                                                    /* fchmodat2(dirfd, path, mode, flags) */
+        char e0[2];
+        if ((a3 & 0x1000) && gstr(p, a1, e0, 2) && !e0[0]) {       /* AT_EMPTY_PATH: the fd itself (systemd) */
+            if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+            r = fchmod(f->host, lx_mode(p, f->host, NULL, (mode_t)a2 & 07777)) ? herr() : 0;
+            break;
+        }
         if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
         to_host(p, g, h);
         if ((a3 & 0x100) && !lstat(h, &st) && S_ISLNK(st.st_mode)) { r = err(L_ENOTSUP); break; }
         r = chmod(h, lx_mode(p, -1, h, (mode_t)a2 & 07777)) ? herr() : 0;
         break;
+    }
     case 228: case 229: case 230: case 231: case 284:              /* mlock, munlock, mlockall, munlockall, mlock2 */
         r = 0;
         break;

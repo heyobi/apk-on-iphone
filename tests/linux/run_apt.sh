@@ -19,6 +19,9 @@ check "gpgv keyring"    "gpgv"        60   /bin/bash -c 'gpgv --keyring /usr/sha
 check "apt-get update"  "Reading"     1200 /bin/bash -c 'apt-get update 2>&1 | tail -n 6; apt-get update 2>&1 | grep -q "^[EW]:" && exit 1; echo Reading'
 check "apt-get install" "Hello"       1200 /bin/bash -c 'apt-get install -y hello 2>&1 | tail -n 3; hello'
 if [ $fail -ne 0 ]; then
+    echo "== EPERM/EACCES in apt-get update (with the call before)"
+    LXRUN_QUIET=1 timeout 600 "$L" -t "$R" /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update -o Acquire::Languages=none' 2>&1 |
+        grep -B3 -E "= -(1|13)$" | tail -n 80
     echo "== failing syscalls of gpgv"
     LXRUN_QUIET=1 timeout 120 "$L" -t "$R" /bin/bash -c 'mkdir -p /tmp/g && gpgv --homedir /tmp/g --keyring /usr/share/keyrings/ubuntu-archive-keyring.gpg /dev/null' 2>&1 |
         grep -E "= -[0-9]+|not impl" | grep -v "= -11$" | tail -n 60
