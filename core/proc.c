@@ -3462,7 +3462,7 @@ static int lx_proc_file(struct aoi_proc *p, const char *g, FILE *t)
     } else if (!strcmp(g, "/proc/sys/kernel/pid_max")) fprintf(t, "4194304\n");
     else if (!strcmp(g, "/proc/sys/kernel/osrelease")) fprintf(t, "6.1.0-aoi\n");
     else if (!strcmp(g, "/proc/sys/kernel/ostype")) fprintf(t, "Linux\n");
-    else if (!strcmp(g, "/proc/sys/kernel/hostname")) fprintf(t, "localhost\n");
+    else if (!strcmp(g, "/proc/sys/kernel/hostname")) fprintf(t, "%s\n", p->linux_mode ? "iphone" : "localhost");
     else if (!strcmp(g, "/proc/sys/kernel/ngroups_max")) fprintf(t, "65536\n");
     else if (!strcmp(g, "/proc/sys/kernel/cap_last_cap")) fprintf(t, "40\n");
     else if (!strcmp(g, "/proc/sys/fs/nr_open") || !strcmp(g, "/proc/sys/fs/file-max")) fprintf(t, "1048576\n");
@@ -5221,7 +5221,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_uname: {
         uint8_t u[390];
         memset(u, 0, sizeof u);
-        strcpy((char *)u, "Linux"); strcpy((char *)u + 65, "localhost"); strcpy((char *)u + 130, "6.1.0-aoi");
+        strcpy((char *)u, "Linux"); strcpy((char *)u + 65, p->linux_mode ? "iphone" : "localhost");   /* (Linux mode: every distribution's prompt says iphone) */ strcpy((char *)u + 130, "6.1.0-aoi");
         strcpy((char *)u + 195, "#1 SMP"); strcpy((char *)u + 260, "aarch64");
         r = put(p, a0, u, sizeof u) ? 0 : err(L_EFAULT);
         break;
