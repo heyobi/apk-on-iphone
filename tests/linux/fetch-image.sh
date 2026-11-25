@@ -8,10 +8,11 @@ set -eu
 DIR=$1
 TAG=${2:-trixie-slim}
 IMG=${3:-debian}
-REG=https://registry-1.docker.io/v2/library/$IMG
+case $IMG in */*) REPO=$IMG ;; *) REPO=library/$IMG ;; esac    # (rockylinux/rockylinux, opensuse/tumbleweed)
+REG=https://registry-1.docker.io/v2/$REPO
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-TOKEN=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/$IMG:pull" |
+TOKEN=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$REPO:pull" |
         python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 H="Authorization: Bearer $TOKEN"
 curl -fsSL -H "$H" -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \

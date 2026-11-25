@@ -29,6 +29,16 @@ check "id"               "uid=0(root)"    30  /bin/bash -c id
 check "pipeline"         "3"              30  /bin/bash -c 'ls /etc | head -n 3 | wc -l'
 check "rpm -q bash"      "bash-"          60  /usr/bin/rpm -q bash
 check "rpm -qa count"    "pkgs"           120 /bin/bash -c 'echo "$(rpm -qa | wc -l) pkgs"'
+if [ -x "$R/usr/bin/zypper" ]; then                               # openSUSE
+check "zypper --version" "zypper"         120 /bin/bash -c 'zypper --version 2>&1 | head -n 2; echo zypper'
+if [ "${3:-}" = net ]; then
+    cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
+    check "zypper refresh"       "repositor"      2400 /bin/bash -c 'zypper --non-interactive refresh 2>&1 | tail -n 6'
+    check "zypper install tmux"  "tmux "          2400 /bin/bash -c 'zypper --non-interactive install --no-recommends tmux 2>&1 | tail -n 6; tmux -V'
+    check "zypper install python3" "499999500000" 2400 /bin/bash -c 'zypper --non-interactive install --no-recommends python3 2>&1 | tail -n 4; python3 -c "print(sum(range(10**6)))"'
+fi
+exit $fail
+fi
 check "dnf --version"    "dnf"            120 /bin/bash -c 'dnf --version 2>&1 | head -n 3; echo dnf'
 if [ "${3:-}" = net ]; then
     cp /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null || echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf"
@@ -37,5 +47,11 @@ if [ "${3:-}" = net ]; then
     check "dnf install python3"  "Complete"       2400 /bin/bash -c 'dnf -y install --setopt=install_weak_deps=False python3 2>&1 | tail -n 12; command -v python3 && echo Complete'
     check "dnf install tmux"     "tmux "         2400 /bin/bash -c 'dnf -y install --setopt=install_weak_deps=False tmux 2>&1 | tail -n 6; tmux -V'
     check "python3"              "499999500000"   120  /bin/bash -c 'python3 -c "print(sum(range(10**6)))"'
+    if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
+        check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
+        echo "== failing syscalls of systemd-sysusers"
+        LXRUN_QUIET=1 timeout 120 "$L" -t "$R" /bin/bash -c 'printf "u lxtest2 - \"t\" /tmp\n" | systemd-sysusers -' 2>&1 |
+            grep -E "= -[0-9]+|not impl" | grep -v "= -11$" | tail -n 50
+    fi
 fi
 exit $fail

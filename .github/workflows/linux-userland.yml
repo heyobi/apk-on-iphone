@@ -59,6 +59,8 @@ jobs:
         include:
           - { image: fedora, tag: latest }
           - { image: almalinux, tag: latest }
+          - { image: rockylinux/rockylinux, tag: "10" }
+          - { image: opensuse/tumbleweed, tag: latest }
     steps:
       - uses: actions/checkout@v4
       - name: Tools
@@ -69,6 +71,20 @@ jobs:
         run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" ${{ matrix.tag }} ${{ matrix.image }}
       - name: ${{ matrix.image }} checks
         run: sh tests/linux/run_rpm.sh "$RUNNER_TEMP/root" ${{ matrix.image }} net
+
+  apt:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: Ubuntu arm64 rootfs (official image, digests checked)
+        run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" 26.04 ubuntu
+      - name: Ubuntu checks
+        run: sh tests/linux/run_apt.sh "$RUNNER_TEMP/root" ubuntu
 
   regress:
     runs-on: ubuntu-24.04
