@@ -168,8 +168,8 @@ the workflow and by `tools/fetch-android.sh`.
 ## License and credits
 
 LiquidAPK is free software under the **GNU General Public License v3.0 or later**
-(`LICENSE`), with an additional permission for app stores (`NOTICE.md`); contributions are
-accepted on the terms in [`CONTRIBUTING.md`](CONTRIBUTING.md). The IPA also carries AOSP 14 (mostly Apache-2.0), ANGLE (BSD-3-Clause) and
+(`LICENSE`); contributions are accepted on the terms in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). The IPA also carries AOSP 14 (mostly Apache-2.0), ANGLE (BSD-3-Clause) and
 the other components listed, with their sources, licenses and the projects this one
 learned from, in [`NOTICE.md`](NOTICE.md); in the app: Geliştirici › Lisanslar.
 Android is a trademark of Google LLC; this project is not affiliated with Google or Apple.
