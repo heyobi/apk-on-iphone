@@ -4787,6 +4787,18 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_ioctl:
+        if (p->linux_mode && (f = fd_get(p, a0)) && f->kind != AOI_FD_TTY && f->kind != AOI_FD_PTM && f->kind != AOI_FD_INET) {
+            /* any other fd (pipes, socketpairs, AF_UNIX, files): FIONBIO as fcntl's O_NONBLOCK
+             * (Python's asyncio sets its self-pipe socketpair so: Jupyter), FIONREAD from the
+             * host, FIOCLEX/FIONCLEX */
+            int v = 0;
+            if (a1 == 0x5421) { r = get(p, a2, &v, 4) ? (f->nonblock = v != 0, 0) : err(L_EFAULT); break; }
+            if (a1 == 0x5451 || a1 == 0x5450) { f->cloexec = a1 == 0x5451; r = 0; break; }
+            if (a1 == 0x541b && (f->kind == AOI_FD_PIPE || f->kind == AOI_FD_SOCKET)) {
+                r = ioctl(f->host, FIONREAD, &v) ? herr() : put(p, a2, &v, 4) ? 0 : err(L_EFAULT);
+                break;
+            }
+        }
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_INET && (a1 == 0x541b || a1 == 0x5421)) {   /* FIONREAD, FIONBIO */
             int v = 0;
             if (a1 == 0x5421) { r = get(p, a2, &v, 4) ? (f->nonblock = v != 0, 0) : err(L_EFAULT); break; }
