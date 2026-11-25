@@ -26,17 +26,20 @@ def get(path):
 def parse_db(repo):
     pkgs = {}
     t = tarfile.open(fileobj=io.BytesIO(get(f"{repo}/{repo}.db")))
+    entries = {}                                   # NAME-VERSION/desc and (older format) /depends
     for m in t.getmembers():
-        if not m.name.endswith("/desc"):
+        if not m.isfile() or "/" not in m.name:
             continue
-        fields, key = {}, None
+        fields, key = entries.setdefault(m.name.split("/")[0], {}), None
         for line in t.extractfile(m).read().decode().splitlines():
             if line.startswith("%") and line.endswith("%"):
-                key = line.strip("%"); fields[key] = []
+                key = line.strip("%"); fields.setdefault(key, [])
             elif line and key:
                 fields[key].append(line)
-        fields["REPO"] = repo
-        pkgs[fields["NAME"][0]] = fields
+    for fields in entries.values():
+        if "NAME" in fields:
+            fields["REPO"] = repo
+            pkgs[fields["NAME"][0]] = fields
     return pkgs
 
 def main():
