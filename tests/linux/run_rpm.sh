@@ -27,6 +27,11 @@ check "ls -la /"         "etc"            30  /bin/bash -c 'ls -la /'
 check "uname -m"         "aarch64"        30  /bin/bash -c 'uname -m'
 check "id"               "uid=0(root)"    30  /bin/bash -c id
 check "pipeline"         "3"              30  /bin/bash -c 'ls /etc | head -n 3 | wc -l'
+check "login shell"      "login-ok"       60  /bin/bash -l -c 'echo login-ok'
+if [ $fail -ne 0 ]; then                                          # where a login shell (LxTerm's tab) waits
+    echo "== the login shell's last syscalls"
+    LXRUN_QUIET=1 timeout 40 "$L" -t "$R" /bin/bash -l -c 'echo login-ok' 2>&1 | grep -E "^\[sys\]|exec|open " | tail -n 40
+fi
 check "rpm -q bash"      "bash-"          60  /usr/bin/rpm -q bash
 check "rpm -qa count"    "pkgs"           120 /bin/bash -c 'echo "$(rpm -qa | wc -l) pkgs"'
 if [ -x "$R/usr/bin/zypper" ]; then                               # openSUSE
