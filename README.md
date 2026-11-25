@@ -12,6 +12,11 @@ is no writable-executable memory. Android's own ART may still JIT-compile hot Ja
 methods inside the guest, but what it produces is AArch64 guest code that the
 interpreter runs like any other.
 
+> **The same core runs Linux on the App Store.** Its Linux userland mode powers
+> [LxTerm](https://github.com/heyobi/lxterm) ([App Store](https://apps.apple.com/app/id6838355342)):
+> eight unmodified distributions (Debian, Ubuntu, Alpine, Fedora, AlmaLinux, Rocky Linux,
+> openSUSE, Arch Linux ARM) with their real package managers, on a stock iPhone.
+
 ## Screenshots
 
 On an iPhone 16 Pro: the app's list (each APK compiled ahead of time in the background)
@@ -116,6 +121,20 @@ on an app then only loads the app (about 8 s less: NewPipe 38 s -> 30 s on the h
 More in `docs/IOS.md`.
 
 ## How it works
+
+```mermaid
+flowchart TD
+    APK["APK: dex + arm64 .so"] --> ART["ART: AOT code from dex2oat, else its interpreter"]
+    ART --> FW["Android framework: framework.jar, HWUI, libgui"]
+    FW --> SVC["In-process system services (java/src/aoi): PackageManager, ActivityManager, WindowManager, Keystore, WebView"]
+    FW --> BIONIC["bionic libc, linker64"]
+    BIONIC --> CORE["core/: AArch64 interpreter, Linux syscalls, binder, SurfaceFlinger, snapshots"]
+    SVC --> CORE
+    CORE --> GPU["gpu/: OpenGL ES to ANGLE on Metal"]
+    CORE --> IOS["ios/: UIKit app, launcher, input, keyboard"]
+```
+
+In more detail:
 
 ```
 APK (dex + arm64 .so) ── ART (AOT code from dex2oat, else its interpreter)
