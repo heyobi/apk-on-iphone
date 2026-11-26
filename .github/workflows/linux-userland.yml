@@ -90,6 +90,26 @@ jobs:
           name: bench-almalinux
           path: bench-almalinux.json
 
+  profile-almalinux:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc strace > /dev/null
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" > /dev/null || echo "no perf for $(uname -r)"
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: AlmaLinux arm64 rootfs (official image, digests checked)
+        run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" latest almalinux
+      - name: Where dnf's time goes
+        run: sudo -E sh tests/linux/profile_dnf.sh "$RUNNER_TEMP/root" 2>&1 | tee profile-almalinux.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: profile-almalinux
+          path: profile-almalinux.txt
+
   apt:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
