@@ -289,6 +289,17 @@ const char *aoi_snap_save(struct aoi_proc *p, const char *path);
 const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data);
 /* 1 if the snapshot at path was saved by this build (aoi_snap_load would take it). */
 int aoi_snap_this_build(const char *path);
+/* Only the snapshot's memory and registers into p (for an exec from a saved process,
+ * "zygote"): no fds, not registered as a process, the guest clock untouched. */
+const char *aoi_snap_load_image(struct aoi_proc *p, const char *path, const char *root);
+/* Fast start for an interpreted program (Linux mode): exec of EXE (guest path, as resolved)
+ * runs INTERP SCRIPT GIVEN ARGS...; SCRIPT imports what the program needs and opens
+ * /dev/aoi_snapshot, which saves the process under ROOT/var/cache/lxzygote/; later execs of
+ * EXE resume that snapshot instead, while WATCH (a guest file: the package database) and
+ * SCRIPT are unchanged. The script reads its arguments from /proc/self/cmdline (INTERP
+ * SCRIPT [--env=FILE] GIVEN ARGS...) and, when given, the environment from FILE.
+ * Off when exe is NULL. AOI_ZYGOTE=0 in the host's environment turns every rule off. */
+void aoi_proc_zygote(const char *exe, const char *interp, const char *script, const char *watch);
 
 /* Gives guest fds a and b (ends 0 and 1 of one host pair of type ptype) a new pair id,
  * so a snapshot can rebuild the pair. Returns the id. */

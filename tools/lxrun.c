@@ -10,6 +10,7 @@
  * -C sets the starting directory (a guest path, default /root).
  * AOI_SNAPSHOT_SAVE=file saves the process when it opens /dev/aoi_snapshot;
  * AOI_SNAPSHOT_LOAD=file resumes one instead of starting PROGRAM.
+ * AOI_ZYGOTE_RULE=EXE:INTERP:SCRIPT:WATCH starts EXE from a saved process (aoi_proc_zygote).
  * -i: the guest gets a terminal (core/tty.c, as the iOS app's view): the host's own
  * terminal in raw mode, or, with LXRUN_KEYS, typed keys from a script: C escapes
  * (\r Enter, \x03 Ctrl-C, \e Esc, \t) and \w for a one-second pause. */
@@ -409,6 +410,13 @@ int main(int argc, char **argv)
         pthread_detach(th);
     }
     if (getenv("AOI_SNAPSHOT_SAVE")) snprintf(proc.snap_path, sizeof proc.snap_path, "%s", getenv("AOI_SNAPSHOT_SAVE"));
+    if (getenv("AOI_ZYGOTE_RULE")) {                 /* EXE:INTERP:SCRIPT:WATCH (aoi_proc_zygote) */
+        char rule[4 * AOI_PATH], *f[4] = { 0 }, *q;
+        int k = 0;
+        snprintf(rule, sizeof rule, "%s", getenv("AOI_ZYGOTE_RULE"));
+        for (q = strtok(rule, ":"); q && k < 4; q = strtok(NULL, ":")) f[k++] = q;
+        if (k == 4) aoi_proc_zygote(f[0], f[1], f[2], f[3]);
+    }
     if (trace) proc.trace = stderr;
     proc.log = quiet ? NULL : stderr;
     t0 = now_s();

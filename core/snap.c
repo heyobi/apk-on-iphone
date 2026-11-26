@@ -462,7 +462,9 @@ int aoi_snap_this_build(const char *path)
     return ok;
 }
 
-const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data)
+/* image: only the memory and registers, for a process that execs into the snapshot
+ * (aoi_snap_load_image): no fds, no service state, not registered, the clock untouched. */
+static const char *snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data, int image)
 {
     FILE *f = fopen(path, "rb");
     char magic[8], build[sizeof AOI_SNAP_BUILD];
@@ -511,6 +513,13 @@ const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root
             eps[epi[i]]->refs++;
         }
     if ((e = load_data(p, f)) || (e = load_memory(p, f))) goto fail;
+    if (image) {
+        for (i = 0; i < AOI_PROC_FDS; i++) { p->fd[i].used = 0; p->fd[i].ep = NULL; }   /* (the exec-ing process keeps its own) */
+        fclose(f);
+        for (j = 0; j < nep; j++) { free(eps[j]->e); free(eps[j]); }
+        free(eps);
+        return NULL;
+    }
     reopen_fds(p, off);
     fds_ok = 1;
     if (aoi_gralloc_snap(p, f, 0) || aoi_sf_snap(p, f, 0) || aoi_af_snap(p, f, 0) || aoi_binder_snap(p, f, 0)) { e = "service state"; goto fail; }
@@ -529,4 +538,14 @@ fail:
     if (eps) for (j = 0; j < nep; j++) if (eps[j] && !eps[j]->refs) { free(eps[j]->e); free(eps[j]); }
     free(eps);
     return e;
+}
+
+const char *aoi_snap_load(struct aoi_proc *p, const char *path, const char *root, const char *data)
+{
+    return snap_load(p, path, root, data, 0);
+}
+
+const char *aoi_snap_load_image(struct aoi_proc *p, const char *path, const char *root)
+{
+    return snap_load(p, path, root, NULL, 1);
 }

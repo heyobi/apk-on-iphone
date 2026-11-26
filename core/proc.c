@@ -2906,6 +2906,109 @@ int aoi_proc_turn_others(void)
 #endif
 }
 
+/* ---------- fast start ("zygote", aoi_proc_zygote) ---------- */
+
+static struct { int on; char exe[AOI_PATH], interp[AOI_PATH], script[AOI_PATH], watch[AOI_PATH]; } zyg;
+
+void aoi_proc_zygote(const char *exe, const char *interp, const char *script, const char *watch)
+{
+    const char *e = getenv("AOI_ZYGOTE");
+    zyg.on = exe && exe[0] && interp && script && watch && !(e && e[0] == '0');
+    if (!zyg.on) return;
+    snprintf(zyg.exe, sizeof zyg.exe, "%s", exe);
+    snprintf(zyg.interp, sizeof zyg.interp, "%s", interp);
+    snprintf(zyg.script, sizeof zyg.script, "%s", script);
+    snprintf(zyg.watch, sizeof zyg.watch, "%s", watch);
+}
+
+/* What a snapshot depends on: the watched file (the package database: any install or
+ * update changes it) and the script. */
+static void zyg_stamp(struct aoi_proc *p, char *out, size_t n)
+{
+    char h[AOI_PATH];
+    struct stat a, b;
+    memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
+    to_host(p, zyg.watch, h); stat(h, &a);
+    to_host(p, zyg.script, h); stat(h, &b);
+    snprintf(out, n, "%lld %lld %lld %lld %lld\n", (long long)a.st_ino, (long long)a.st_size, (long long)a.st_mtime,
+             (long long)b.st_size, (long long)b.st_mtime);
+}
+
+/* Translated libraries for a process that came from a snapshot (their tables hold this run's
+ * addresses, so a snapshot does not carry them). */
+static void zyg_aot(struct aoi_proc *np)
+{
+    int i;
+    for (i = 0; i < np->nmaps && i < AOI_PROC_MAPS; i++) {
+        struct aoi_proc_map *m = &np->maps[i];
+        char h[AOI_PATH];
+        int fd;
+        if (m->path[0] != '/') continue;
+        to_host(np, m->path, h);
+        if ((fd = open(h, O_RDONLY | O_CLOEXEC)) < 0) continue;
+        aoi_aot_mapped(np, m->start, m->len, m->off, fd);
+        close(fd);
+    }
+}
+
+/* exec of the zygote's program (argv: INTERP [ARG] GIVEN ARGS..., GIVEN at gi): resumes the
+ * snapshot (*done set) or puts SCRIPT before GIVEN so that this run saves a new one. */
+static uint64_t zyg_exec(struct aoi_proc *p, struct aoi_cpu *c, int *argc, const char **argv, int gi, const char *const *envp, int *done)
+{
+    char dir[AOI_PATH], snap[AOI_PATH + 64], stampf[AOI_PATH + 80], want[256], have[256] = "";
+    const char *base = strrchr(zyg.exe, '/') ? strrchr(zyg.exe, '/') + 1 : zyg.exe;
+    FILE *f;
+    int i;
+    *done = 0;
+    to_host(p, "/var/cache/lxzygote", dir);
+    mkdir(dir, 0755);
+    snprintf(snap, sizeof snap, "%s/%s.snap", dir, base);
+    snprintf(stampf, sizeof stampf, "%s/%s.stamp", dir, base);
+    zyg_stamp(p, want, sizeof want);
+    if ((f = fopen(stampf, "r"))) { if (!fgets(have, sizeof have, f)) have[0] = 0; fclose(f); }
+    if (!strcmp(have, want) && aoi_snap_this_build(snap)) {
+        struct aoi_proc *np = calloc(1, sizeof *np);
+        if (np && !aoi_snap_load_image(np, snap, p->root)) {
+            char eg[64], eh[AOI_PATH], envarg[96], *o = np->cmdline;
+            size_t left = sizeof np->cmdline, l;
+            const char *parts[4];
+            int fd;
+            snprintf(eg, sizeof eg, "/tmp/.lxzygote-env-%d", PID(p));   /* (the script reads and removes it) */
+            to_host(p, eg, eh);
+            if ((fd = open(eh, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600)) >= 0) {
+                for (i = 0; envp[i]; i++) if (write(fd, envp[i], strlen(envp[i]) + 1) < 0) break;
+                close(fd);
+            }
+            snprintf(envarg, sizeof envarg, "--env=%s", eg);
+            parts[0] = zyg.interp; parts[1] = zyg.script; parts[2] = envarg; parts[3] = NULL;
+            np->cmdline_len = 0;
+            for (i = 0; parts[i]; i++) {
+                l = strlen(parts[i]) + 1;
+                if (l > left) break;
+                memcpy(o, parts[i], l); o += l; left -= l; np->cmdline_len += l;
+            }
+            for (i = gi; i < *argc; i++) {                         /* GIVEN ARGS... */
+                l = strlen(argv[i]) + 1;
+                if (l > left) break;
+                memcpy(o, argv[i], l); o += l; left -= l; np->cmdline_len += l;
+            }
+            zyg_aot(np);
+            if (p->trace) fprintf(p->trace, "[proc] %d exec %s from %s\n", PID(p), zyg.exe, snap);
+            *done = 1;
+            return exec_replace(p, c, np);
+        }
+        if (np) { aoi_proc_free(np); free(np); }
+    }
+    unlink(snap);                                                  /* this run saves a new one */
+    if ((f = fopen(stampf, "w"))) { fputs(want, f); fclose(f); }
+    snprintf(p->snap_path, sizeof p->snap_path, "%s", snap);
+    if (*argc > AOI_ARGS - 3) return 0;
+    memmove(argv + gi + 1, argv + gi, sizeof *argv * (size_t)(*argc - gi + 1));   /* ... SCRIPT GIVEN ARGS... */
+    argv[gi] = zyg.script;
+    (*argc)++;
+    return 0;
+}
+
 /* The vfork child's execve: path, argv and envp from guest memory; a "#!" script runs
  * its interpreter. Errors return to the child (it reports them and exits); success
  * ends the vfork. */
@@ -2966,6 +3069,12 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         argv[iarg[0] ? 2 : 1] = p->linux_mode ? given : g;         /* as Linux: addgroup -> adduser keeps "addgroup" */
         argc += iarg[0] ? 2 : 1;
     } else if (k < 4 || memcmp(head, "\177ELF", 4)) return err(L_ENOEXEC);
+    if (zyg.on && p->linux_mode && (!p->vf || p->cur != p->vf->thread) && interp[0] &&
+        !strcmp(g, zyg.exe) && !strcmp(interp, zyg.interp)) {    /* fast start (aoi_proc_zygote) */
+        int done;
+        uint64_t rv = zyg_exec(p, c, &argc, argv, iarg[0] ? 2 : 1, (const char *const *)envp, &done);
+        if (done) return rv;
+    }
     if (!(np = calloc(1, sizeof *np))) return err(L_ENOMEM);
     if ((e = aoi_proc_exec(np, p->root, interp[0] ? interp : g, argc, argv, envp))) {
         if (p->log) fprintf(p->log, "I/aoi: exec %s: %s\n", g, e);
