@@ -54,8 +54,7 @@ run() {   # run NAME SECONDS COMMAND
     cat /tmp/tr.log /tmp/ct.log 2>/dev/null > /tmp/all.log
     echo "   failing system calls (count, call -> -errno):"
     names /tmp/all.log
+    if grep -q "= -12$" /tmp/all.log; then echo "   ENOMEM calls, in context:"; grep -B3 "= -12$" /tmp/all.log | head -n 24 | sed 's/^/   ! /'; fi
 }
-run httpd 40 '/usr/sbin/httpd -DFOREGROUND & sleep 12; curl -s -o /dev/null -w "httpd http %{http_code}\n" --max-time 10 http://127.0.0.1:8080/; kill %1; tail -n 8 /var/log/httpd/error_log'
-run nginx 40 '/usr/sbin/nginx -g "daemon off;" & sleep 10; curl -s -o /dev/null -w "nginx http %{http_code}\n" --max-time 10 http://127.0.0.1:8081/; kill %1; tail -n 8 /var/log/nginx/error.log'
 run mariadb-install-db 400 'mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /tmp/mi.log 2>&1; echo rc=$?; grep -iE "error|fail|warn|\[" /tmp/mi.log | head -n 25'
 run mariadbd 120 '/usr/libexec/mariadbd --user=mysql --basedir=/usr --datadir=/var/lib/mysql > /tmp/md.log 2>&1 & sleep 40; mariadb -e "select 6*7" 2>&1; head -n 30 /tmp/md.log'
