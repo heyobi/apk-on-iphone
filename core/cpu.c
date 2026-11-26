@@ -208,6 +208,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             r = c->host_call(c, slot);
             cpage_va = 1;                                          /* it may have mapped memory */
             if (c->stop != AOI_RUN) break;
+            if (c->thunk_redirect) { c->pc = c->thunk_redirect; c->thunk_redirect = 0; continue; }
             c->x[0] = r;
             c->pc = c->x[30];
             continue;

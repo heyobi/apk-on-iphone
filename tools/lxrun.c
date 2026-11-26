@@ -16,6 +16,7 @@
 #include "../core/jit.h"
 #include "../core/proc.h"
 #include "../core/tty.h"
+#include "../core/lxfast.h"
 
 #include <pthread.h>
 #include <termios.h>
@@ -427,6 +428,9 @@ int main(int argc, char **argv)
         if (!quiet || getenv("LXRUN_STATS"))
             fprintf(stderr, "[lxrun] exit %d, %" PRIu64 " instructions, %.2f s, peak RSS %ld MiB, %" PRIu64 " syscalls (all processes)\n",
                     proc.cpu.exit_code, proc.cpu.steps, t1 - t0, peak_rss_mib(), aoi_syscall_count);
+        if (getenv("LXRUN_STATS"))
+            fprintf(stderr, "[lxrun] libc on the host: %" PRIu64 " calls, %" PRIu64 " handed back to the guest's code (all processes)\n",
+                    aoi_lxfast_hits, aoi_lxfast_declined);
 #ifdef AOI_JIT
         if (!quiet || getenv("LXRUN_STATS"))
             fprintf(stderr, "[lxrun] accelerator: %" PRIu64 " blocks translated, %" PRIu64 " refused by the engine, %" PRIu64 " reused, %" PRIu64 " region runs, %d KiB compiled in %d ms\n",

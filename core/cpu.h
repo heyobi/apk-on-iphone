@@ -77,6 +77,10 @@ struct aoi_cpu {
     void *trace_ctx;
     uint64_t wlog_addr[4];
     int wlog_len[4], nwlog;
+
+    /* Set by a host_call that hands the call back to guest code (core/lxfast.c): run
+     * from there with the registers as they were, instead of returning to x30. */
+    uint64_t thunk_redirect;
 };
 
 /* Guest memory access. Returns NULL (and sets a fault) if [addr, addr+len) is unmapped. */

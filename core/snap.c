@@ -20,6 +20,7 @@
 #define _DARWIN_C_SOURCE
 #include "binder.h"
 #include "hle.h"
+#include "lxfast.h"
 #include "proc.h"
 
 #include <dirent.h>
@@ -377,7 +378,8 @@ static void fix_cpu(struct aoi_proc *p, struct aoi_cpu *c)
     c->mem = &p->mem;
     c->syscall = aoi_proc_syscall;
     c->host_ctx = p;
-    c->host_call = NULL;
+    c->host_call = p->linux_mode && c->thunk_slots ? aoi_lxfast_call : NULL;   /* (its page came back with the memory) */
+    c->thunk_redirect = 0;
     c->trace = NULL; c->trace_ctx = NULL;
     c->stop_name = NULL;
     aoi_hle_attach(c, c->hle_base);                          /* this build's stand-ins (core/hle.c) */

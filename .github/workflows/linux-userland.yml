@@ -43,6 +43,8 @@ jobs:
         run: sh tests/linux/fetch-debian.sh "$RUNNER_TEMP/debian"
       - name: Debian checks
         run: sh tests/linux/run_debian.sh "$RUNNER_TEMP/debian" net
+      - name: glibc's string functions on the host (core/lxfast.c)
+        run: sh tests/linux/run_libcfast.sh "$RUNNER_TEMP/debian"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -83,6 +85,8 @@ jobs:
         run: make build/lxrun
       - name: AlmaLinux arm64 rootfs (official image, digests checked)
         run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" latest almalinux
+      - name: glibc's string functions on the host (core/lxfast.c)
+        run: sh tests/linux/run_libcfast.sh "$RUNNER_TEMP/root"
       - name: Benchmarks, native and LxTerm engine
         run: sudo -E sh tests/linux/bench_dnf.sh "$RUNNER_TEMP/root" almalinux bench-almalinux.json
       - uses: actions/upload-artifact@v4
