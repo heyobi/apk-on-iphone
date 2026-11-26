@@ -52,6 +52,21 @@ libraries, 24 MB of objects; outputs identical to the interpreter's on every com
 Next: smaller code (memory helpers out of line), per-build tables generated in CI for the
 app's AlmaLinux image, then the app.
 
+**Fast start ("zygote", `aoi_proc_zygote`)**: exec of a registered interpreted program
+(dnf: `/usr/bin/dnf-3`) resumes a process that `tests/linux/zygote-dnf.py` saved right after
+dnf's imports (`/dev/aoi_snapshot`), loading only its memory and registers
+(`aoi_snap_load_image`) into the exec-ing process, which keeps its pid, fds and cwd; the
+arguments come in `/proc/self/cmdline`, the environment in a file, translated libraries are
+registered again. No valid snapshot (none yet, another build, the package database or the
+script changed): that run saves one on the way. Snapshots in `ROOT/var/cache/lxzygote`
+(21 MB). `AOI_ZYGOTE=0` turns it off; lxrun: `AOI_ZYGOTE_RULE`. CI runner, interpreted, outputs
+identical (`tools/explore/zygote2.sh`): `dnf --version` 4.84 → 1.45 s (0.55 s of it is lxrun
+and bash starting; resumed alone 0.9 s), `dnf -C search nginx` 8.97 → 5.63 s, `yum -C list
+--installed bash` 6.15 → 2.80 s; after an install the next run saves again (4.99 s), then fast.
+The ⚡ engine on the same commands (`tools/explore/accel_alma.sh`, Node): the wasm interpreter
+is ~2x slower than the native one and the translator brings hot loops back to native speed,
+so for dnf native + AOT + fast start is the way.
+
 Server programs through LxTerm's systemctl (lxterm `lxios/LxTerm/systemctl.sh`, CI there):
 httpd and nginx start, serve, reload and stop. Core changes they needed:
 
