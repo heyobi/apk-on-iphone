@@ -23,10 +23,13 @@ for name in files:
 
 libs, funcs = {}, collections.Counter()   # (path, start, end) -> samples
 for (path, off), c in samples.items():
+    if not path.startswith("/"):                   # ([lxfast] and other pages of the core's own)
+        continue
     if path not in libs:
         libs[path] = Lib(root, path)
     L = libs[path]
-    i = bisect.bisect_right(L.starts, off) - 1     # (vaddr = offset for the libraries aotgen takes)
+    starts = getattr(L, "starts", [])             # (not an ELF file: none)
+    i = bisect.bisect_right(starts, off) - 1      # (vaddr = offset for the libraries aotgen takes)
     if i >= 0 and L.syms[i][1] and off < L.syms[i][0] + L.syms[i][1]:
         start, size, _ = L.syms[i]
         funcs[(path, start, start + size)] += c

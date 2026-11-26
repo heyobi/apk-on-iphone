@@ -196,6 +196,10 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
 #if defined(AOI_JIT) || defined(AOI_AOT)
     int bs = 1;                                                    /* at a block start: ask the accelerator */
 #endif
+#ifdef AOI_AOT
+    const int aot_on = c->naot != 0;                               /* (no translated library: no block tracking;
+                                                                    * one mapped meanwhile counts from the next call) */
+#endif
     c->stop = AOI_RUN;
     while (c->stop == AOI_RUN) {
         uint32_t insn;
@@ -215,7 +219,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             continue;
         }
 #ifdef AOI_AOT
-        if (bs && c->naot && !trace) {                             /* translated libraries (core/aot.h) */
+        if (bs && aot_on && !trace) {                              /* translated libraries (core/aot.h) */
             int k;
             for (k = 0; k < c->naot; k++)
                 if (c->pc - c->aot_lo[k] < c->aot_hi[k] - c->aot_lo[k]) {
@@ -851,8 +855,10 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
             break;
         }
         if (c->stop == AOI_RUN) {
-#if defined(AOI_JIT) || defined(AOI_AOT)
+#if defined(AOI_JIT)
             bs = next != c->pc + 4;                                /* a taken branch starts a block */
+#elif defined(AOI_AOT)
+            if (aot_on) bs = next != c->pc + 4;
 #endif
             c->pc = next;
         }
