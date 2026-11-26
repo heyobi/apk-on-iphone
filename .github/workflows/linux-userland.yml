@@ -72,6 +72,24 @@ jobs:
       - name: ${{ matrix.image }} checks
         run: sh tests/linux/run_rpm.sh "$RUNNER_TEMP/root" ${{ matrix.image }} net
 
+  bench-almalinux:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: AlmaLinux arm64 rootfs (official image, digests checked)
+        run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" latest almalinux
+      - name: Benchmarks, native and LxTerm engine
+        run: sudo -E sh tests/linux/bench_dnf.sh "$RUNNER_TEMP/root" almalinux bench-almalinux.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-almalinux
+          path: bench-almalinux.json
+
   apt:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
