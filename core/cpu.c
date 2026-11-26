@@ -220,13 +220,16 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
         }
 #ifdef AOI_AOT
         if (bs && aot_on && !trace) {                              /* translated libraries (core/aot.h) */
-            int k;
-            for (k = 0; k < c->naot; k++)
+            int j, k = 0;
+            for (j = 0; j < c->naot; j++) {
+                k = c->aot_last + j;                               /* (the library hit last first) */
+                if (k >= c->naot) k -= c->naot;
                 if (c->pc - c->aot_lo[k] < c->aot_hi[k] - c->aot_lo[k]) {
                     const struct aoi_aot_lib *L = c->aot_lib[k];
                     aoi_aot_fn f = L->pages[(c->pc - c->aot_biases[k] - L->text_lo) >> 12];
                     int n;
                     if (!f) break;
+                    c->aot_last = k;
                     c->aot_bias = c->aot_biases[k];
                     if (!(n = f(c))) break;
                     aoi_aot_runs++;
@@ -244,6 +247,7 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                     k = -1;
                     break;
                 }
+            }
             if (k < 0) {
                 cpage_va = 1;
                 if (c->stop != AOI_RUN) break;

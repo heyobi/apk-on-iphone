@@ -60,7 +60,7 @@ void aoi_aot_mapped(struct aoi_proc *p, uint64_t a, uint64_t len, uint64_t off, 
     uint8_t id[20];
     uint64_t x[3], bias;
     int idlen, i, k;
-    if (!aoi_aot_libs[0] || !p->linux_mode || p->cpu.naot >= 4) return;
+    if (!aoi_aot_libs[0] || !p->linux_mode || p->cpu.naot >= AOI_AOT_MAX) return;
     if (!identify(fd, id, &idlen, x)) return;
     for (i = 0; aoi_aot_libs[i]; i++) {
         const struct aoi_aot_lib *L = aoi_aot_libs[i];
@@ -71,7 +71,7 @@ void aoi_aot_mapped(struct aoi_proc *p, uint64_t a, uint64_t len, uint64_t off, 
         for (k = -1; k < AOI_PROC_THREADS; k++) {
             struct aoi_cpu *c = k < 0 ? &p->cpu : &p->th[k].cpu;
             int n = c->naot;
-            if (n >= 4) continue;
+            if (n >= AOI_AOT_MAX) continue;
             c->aot_lo[n] = bias + L->text_lo;
             c->aot_hi[n] = bias + L->text_hi;
             c->aot_biases[n] = bias;

@@ -84,9 +84,10 @@ struct aoi_cpu {
 
     /* Translated libraries mapped in this process (core/aot.h): their code addresses, load
      * biases, tables; aot_bias is the one of the function being run. */
-    int naot;
-    uint64_t aot_lo[4], aot_hi[4], aot_biases[4], aot_bias;
-    const struct aoi_aot_lib *aot_lib[4];
+#define AOI_AOT_MAX 16                                    /* translated libraries per process */
+    int naot, aot_last;                                       /* (aot_last: the one hit last, tried first) */
+    uint64_t aot_lo[AOI_AOT_MAX], aot_hi[AOI_AOT_MAX], aot_biases[AOI_AOT_MAX], aot_bias;
+    const struct aoi_aot_lib *aot_lib[AOI_AOT_MAX];
 };
 
 /* Guest memory access. Returns NULL (and sets a fault) if [addr, addr+len) is unmapped. */
