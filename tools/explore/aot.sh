@@ -1,7 +1,7 @@
 #!/bin/sh
 # Exploration: guest libraries translated ahead of time (tools/aotgen.c, core/aot.c), only
 # their hot functions: a training run under LXRUN_PROF picks, in each library, the functions
-# that hold 97% of its samples (tests/linux/prof_funcs.py, bounds from AlmaLinux's debuginfo). Then lxrun is built with them, and the
+# that hold 99% of its samples (tests/linux/prof_funcs.py, bounds from AlmaLinux's debuginfo). Then lxrun is built with them, and the
 # training commands and some others (not seen in training) run with and without:
 # outputs must match, times are compared.
 # usage: sudo sh tools/explore/aot.sh ROOT
@@ -27,8 +27,8 @@ echo "== debug symbols (function bounds), natively"
 mount -t proc proc "$R/proc"; mount --rbind /dev "$R/dev"
 chroot "$R" /bin/bash -c "dnf -y -q --enablerepo='*-debuginfo' --setopt=strict=0 install python3-libs-debuginfo libsolv-debuginfo libsqlite3x-debuginfo sqlite-libs-debuginfo rpm-libs-debuginfo libdnf-debuginfo libxml2-debuginfo glib2-debuginfo openssl-libs-debuginfo zlib-ng-compat-debuginfo > /dev/null 2>&1; ls /usr/lib/debug/.build-id | wc -l"
 umount -R "$R/dev" "$R/proc"
-python3 tests/linux/prof_funcs.py "$R" 0.97 build/ranges build/prof/*.prof
-LIBS="libsolv:usr/lib64/libsolv.so.1 libpython:usr/lib64/libpython3.12.so.1.0 libsqlite:usr/lib64/libsqlite3.so.0 librpm:usr/lib64/librpm.so.10 librpmio:usr/lib64/librpmio.so.10 libdnf:usr/lib64/libdnf.so.2 libxml2:usr/lib64/libxml2.so.2 libglib:usr/lib64/libglib-2.0.so.0 libcrypto:usr/lib64/libcrypto.so.3 libz:usr/lib64/libz.so.1"
+python3 tests/linux/prof_funcs.py "$R" 0.99 build/ranges build/prof/*.prof
+LIBS="libsolv:usr/lib64/libsolv.so.1 libpython:usr/lib64/libpython3.12.so.1.0 libsqlite:usr/lib64/libsqlite3.so.0 librpm:usr/lib64/librpm.so.10 librpmio:usr/lib64/librpmio.so.10 libdnf:usr/lib64/libdnf.so.2 libxml2:usr/lib64/libxml2.so.2 libglib:usr/lib64/libglib-2.0.so.0 libcrypto:usr/lib64/libcrypto.so.3 libz:usr/lib64/libz.so.1 librpmseq:usr/lib64/librpm_sequoia.so.1 libsolvext:usr/lib64/libsolvext.so.1 bash:usr/bin/bash ldso:usr/lib/ld-linux-aarch64.so.1 libgcc:usr/lib64/libgcc_s.so.1 libcurl:usr/lib64/libcurl.so.4"
 TABLE="#include \"aot.h\"
 "; OBJS=""; REFS=""; total=0
 for l in $LIBS; do
