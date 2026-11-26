@@ -26,7 +26,7 @@ for l in $LIBS; do
     REFS="$REFS &aot_$name,"
 done
 printf "${TABLE}const struct aoi_aot_lib *const aoi_aot_libs[] = {$REFS 0 };\n" > build/aot_table.c
-cc -O2 -g -Wall -Wextra -std=c11 -DAOI_AOT -o build/lxrun-aot tools/lxrun.c $CORE $OBJS build/aot_table.c -lm -lpthread
+cc -O2 -g -std=c11 -Icore -DAOI_AOT -o build/lxrun-aot tools/lxrun.c $CORE $OBJS build/aot_table.c -lm -lpthread
 set +e
 cp /etc/resolv.conf "$R/etc/resolv.conf"
 LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'dnf -y makecache' > /dev/null 2>&1   # (metadata for both)
