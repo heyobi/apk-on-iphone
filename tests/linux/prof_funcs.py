@@ -5,8 +5,10 @@ Function bounds come from the libraries' symbols (the debuginfo files in ROOT/us
 when installed, as prof_resolve.py finds them); a sample outside any known function brings
 the 512 bytes around it. Writes, per library, OUTDIR/<basename>.ranges: "start end" in hex
 (file offsets = virtual addresses), one range per line.
-usage: prof_funcs.py ROOT COVER OUTDIR PROFILE...   (COVER: 0.97 = 97%)"""
-import bisect, collections, os, sys
+usage: prof_funcs.py ROOT COVER OUTDIR PROFILE...   (COVER: 0.97 = 97%)
+PROF_EXCLUDE=REGEX leaves out functions whose names match (glibc's string functions,
+which core/lxfast.c already runs on the host)."""
+import bisect, collections, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from prof_resolve import Lib   # noqa: E402
@@ -21,6 +23,7 @@ for name in files:
         if path != "?":
             samples[(path, int(off, 16))] += int(c)
 
+EXCLUDE = re.compile(os.environ["PROF_EXCLUDE"]) if os.environ.get("PROF_EXCLUDE") else None
 libs, funcs = {}, collections.Counter()   # (path, start, end) -> samples
 for (path, off), c in samples.items():
     if not path.startswith("/"):                   # ([lxfast] and other pages of the core's own)
@@ -31,7 +34,9 @@ for (path, off), c in samples.items():
     starts = getattr(L, "starts", [])             # (not an ELF file: none)
     i = bisect.bisect_right(starts, off) - 1      # (vaddr = offset for the libraries aotgen takes)
     if i >= 0 and L.syms[i][1] and off < L.syms[i][0] + L.syms[i][1]:
-        start, size, _ = L.syms[i]
+        start, size, fname = L.syms[i]
+        if EXCLUDE and EXCLUDE.search(fname or ""):
+            continue
         funcs[(path, start, start + size)] += c
     else:
         funcs[(path, max(0, off - 256) & ~3, (off + 256) & ~3)] += c
