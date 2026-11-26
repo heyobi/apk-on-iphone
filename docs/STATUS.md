@@ -30,6 +30,28 @@ debuginfo packages give full symbols). Guest instruction counts match native one
 - dnf's metadata: filelists are already skipped by dnf 4.20; a cold makecache is parsing
   BaseOS's 11 MB primary.xml (libxml2, libsolv, strcmp/msort in libc).
 
+**Ahead-of-time translation, prototype** (`tools/aotgen.c`, `core/aot.c`, built with
+`-DAOI_AOT`; exploration `tools/explore/aot.sh`, not in the app yet). A training run under
+`LXRUN_PROF` picks, per library, the functions holding 99% of its samples
+(`tests/linux/prof_funcs.py`); aotgen turns their pages into C (one function per page, the
+interpreter's integer subset, memory through the guest's prot table), matched at mmap by
+build-id; translated pages chain into each other. Up to 16 libraries per process
+(`AOI_AOT_MAX`; with 4 the first ones mapped crowded out rpm-sequoia, bash, ld.so). 16
+libraries, 24 MB of objects; outputs identical to the interpreter's on every command:
+
+| CI runner | interpreted | translated | |
+|---|---:|---:|---:|
+| `dnf --version` (trained) | 4.85 s | 3.24 s | −33% |
+| `dnf -C search nginx` (trained) | 9.03 s | 5.78 s | −36% |
+| `rpm -qa` (trained) | 3.43 s | 2.75 s | −20% |
+| `dnf -C info httpd` (unseen) | 8.90 s | 5.59 s | −37% |
+| `dnf -C list --available` (unseen) | 17.91 s | 10.86 s | −39% |
+| `python3` json + re (unseen) | 7.17 s | 5.26 s | −27% |
+| `dnf install tmux` (unseen) | 15.74 s | 10.09 s | −36% |
+
+Next: smaller code (memory helpers out of line), per-build tables generated in CI for the
+app's AlmaLinux image, then the app.
+
 Server programs through LxTerm's systemctl (lxterm `lxios/LxTerm/systemctl.sh`, CI there):
 httpd and nginx start, serve, reload and stop. Core changes they needed:
 
