@@ -43,13 +43,31 @@ cmp_one 'echo n | dnf -C install tmux; echo "rc=$?"'
 cmp_one 'cd /etc && dnf -C --setopt=install_weak_deps=False --assumeno install tmux; pwd'
 cmp_one 'DNF_VAR_releasever=10 LANG=C dnf -C repolist'
 echo "== an install changes the package database: the next run saves again"
-z "dnf install tmux" 'dnf -y -C --setopt=install_weak_deps=False install tmux > /dev/null 2>&1; rpm -q tmux'
+z "dnf install tmux" 'dnf -y --setopt=install_weak_deps=False install tmux > /dev/null 2>&1; rpm -q tmux'
 cat /tmp/z.out | sed 's/^/   | /'
 z "dnf --version (saves again)" 'dnf --version'
 z "dnf --version" 'dnf --version'
 cmp_one 'dnf -C list --installed tmux'
-z "dnf remove tmux" 'dnf -y -C remove tmux > /dev/null 2>&1; rpm -q tmux'
+z "dnf remove tmux" 'dnf -y remove tmux > /dev/null 2>&1; rpm -q tmux'
 cat /tmp/z.out | sed 's/^/   | /'
+echo "== where the time goes (dnf --version, instructions)"
+AOI_ZYGOTE_RULE=$RULE LXRUN_QUIET=1 LXRUN_STATS=1 build/lxrun "$R" /bin/bash -c 'dnf --version' 2>&1 >/dev/null | grep -E "exit|libc" | sed 's/^/   fast: /'
+AOI_ZYGOTE_RULE=$RULE LXRUN_QUIET=1 LXRUN_STATS=1 build/lxrun "$R" /bin/bash -c 'true' 2>&1 >/dev/null | grep -E "exit" | sed 's/^/   bash -c true: /'
+AOI_ZYGOTE_RULE=$RULE LXRUN_QUIET=1 build/lxrun -t "$R" /bin/bash -c 'dnf --version' 2>/tmp/trace >/dev/null; grep -E "execve|exec .* from|snapshot" /tmp/trace | head -n 8 | sed 's/^/   trace: /'
+cat > "$R/tmp/prof.py" <<'PEOF'
+import cProfile, pstats, sys, io
+sys.argv = ["dnf", "--version"]
+from dnf.cli import main
+pr = cProfile.Profile(); pr.enable()
+try:
+    main.user_main(["--version"], exit_code=False)
+except SystemExit:
+    pass
+pr.disable()
+s = io.StringIO(); pstats.Stats(pr, stream=s).sort_stats("cumulative").print_stats(18); print(s.getvalue()[:3500])
+PEOF
+echo "   after imports, dnf --version spends (cProfile):"
+LXRUN_QUIET=1 build/lxrun "$R" /usr/bin/python3 /tmp/prof.py 2>&1 | grep -v "^4.20\|Installed\|Built" | head -n 40 | sed 's/^/   | /'
 echo "== AOI_ZYGOTE=0"
 t0=$(date +%s.%N); AOI_ZYGOTE=0 AOI_ZYGOTE_RULE=$RULE LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'dnf --version' > /dev/null 2>&1; echo "   $(secs $t0) s"
 ls -la "$R/var/cache/lxzygote/" "$R/tmp/" | grep -i "lxzygote\|snap\|stamp"
