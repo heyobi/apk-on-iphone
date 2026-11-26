@@ -18,8 +18,9 @@
  * page permissions as the interpreter sees them); anything else - a pointer into an
  * unmapped or protected page, a copy that overlaps across host chunks - is declined and
  * runs as the guest's own code, which faults exactly where it would have. Results are
- * the ones glibc returns (memcmp/strcmp: the difference of the first differing bytes,
- * as unsigned chars). The routing lives in one guest page next to libc (thunks, stubs,
+ * the ones glibc returns; for memcmp/strcmp/strncmp the sign, which is all the C
+ * standard promises (the value here is the difference of the first differing bytes as
+ * unsigned chars; glibc's own value depends on its variant). The routing lives in one guest page next to libc (thunks, stubs,
  * the variants), so fork, threads and snapshots carry it with the process.
  * AOI_LXFAST=0 turns it off. */
 #include "lxfast.h"

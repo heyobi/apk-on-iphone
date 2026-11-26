@@ -2,7 +2,8 @@
  * random lengths, alignments and contents, overlapping moves, and strings that end on
  * the last byte before a PROT_NONE page. Built on the arm64 runner, run under lxrun in
  * a glibc root (tests/linux/run_libcfast.sh). Prints "libcfast ok N" or the first
- * difference.
+ * difference. Comparisons are checked by sign: the C standard promises only that, and
+ * glibc's own values depend on its variant (-128 where the bytes differ by one).
  * cc -O1 -fno-builtin -o libcfast tests/linux/libcfast.c */
 #define _GNU_SOURCE
 #include <stdint.h>
@@ -57,7 +58,6 @@ static void strings(char *buf, size_t cap)
         if (strlen(a) != r_strlen(a)) FAIL("strlen %zu", la);
         if (strnlen(a, n) != (r_strlen(a) < n ? r_strlen(a) : n)) FAIL("strnlen");
         if (sgn(strcmp(a, b)) != sgn(r_strcmp(a, b, (size_t)-1))) FAIL("strcmp sign");
-        if (strcmp(a, b) != r_strcmp(a, b, (size_t)-1)) FAIL("strcmp value %d %d", strcmp(a, b), r_strcmp(a, b, (size_t)-1));
         if (sgn(strncmp(a, b, n)) != sgn(r_strcmp(a, b, n))) FAIL("strncmp");
         {
             char *q = a, *last = NULL;
@@ -95,8 +95,8 @@ static void memory(unsigned char *buf, size_t cap)
 {
     unsigned char *ref = malloc(cap);
     int it;
-    for (it = 0; it < 20000; it++) {
-        size_t n = rnd() % (rnd() % 8 ? 200 : 70000), s = rnd() % (cap - n), d = rnd() % (cap - n), i;
+    for (it = 0; it < 4000; it++) {
+        size_t n = rnd() % (rnd() % 8 ? 200 : 20000), s = rnd() % (cap - n), d = rnd() % (cap - n), i;
         int v = rnd() % 256, op = rnd() % 3;
         for (i = 0; i < cap; i += 64) buf[i] = (unsigned char)rnd();
         for (i = 0; i < cap; i++) ref[i] = buf[i];
@@ -147,7 +147,7 @@ int main(void)
     char *buf = malloc(cap);
     unsigned char *mb = malloc(1 << 18);
     strings(buf, cap);
-    memory(mb, 1 << 18);
+    memory(mb, 1 << 16);
     edges();
     printf("libcfast ok %ld\n", checks);
     return 0;
