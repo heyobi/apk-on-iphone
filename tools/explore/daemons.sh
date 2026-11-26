@@ -56,5 +56,5 @@ run() {   # run NAME SECONDS COMMAND
     names /tmp/all.log
     if grep -q "= -12$" /tmp/all.log; then echo "   ENOMEM calls, in context:"; grep -B3 "= -12$" /tmp/all.log | head -n 24 | sed 's/^/   ! /'; fi
 }
-run mariadb-install-db 400 'mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /tmp/mi.log 2>&1; echo rc=$?; grep -iE "error|fail|warn|\[" /tmp/mi.log | head -n 25'
+run mariadb-install-db 400 'mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /tmp/mi.log 2>&1; echo rc=$?; grep -v "^$" /tmp/mi.log | head -n 45'
 run mariadbd 120 '/usr/libexec/mariadbd --user=mysql --basedir=/usr --datadir=/var/lib/mysql > /tmp/md.log 2>&1 & sleep 40; mariadb -e "select 6*7" 2>&1; head -n 30 /tmp/md.log'
