@@ -40,15 +40,16 @@
 #include <time.h>
 #include <unistd.h>
 
-/* 192 GiB of guest addresses (reserved, not committed): scudo alone reserves
+/* 128 GiB of guest addresses (reserved, not committed): scudo alone reserves
  * 8+ GiB up front, Chromium's PartitionAlloc two 16 GiB pools and V8's sandbox
- * 8 GiB more, 4 GiB-aligned (WebView; 64 GiB had no room left for it); MariaDB's
- * InnoDB reserves 128 GiB for its buffer pool when 8 TiB is refused (128 GiB had
- * no room left for that). Mappings
+ * 8 GiB more, 4 GiB-aligned (WebView; 64 GiB had no room left for it). MariaDB's
+ * InnoDB wants 128 GiB for its buffer pool when 8 TiB is refused: 192 GiB gave it
+ * room but cost every process start ~0.15 s (the page table is one byte per page,
+ * per process), and its setup still did not finish - not worth it yet. Mappings
  * without an address hint go above 4 GiB, as on a real kernel, which leaves the
  * low 4 GiB to requests that ask for it (ART's heap, whose 32-bit references must
  * point below 4 GiB). */
-#define GUEST_SPACE (192ULL << 30)
+#define GUEST_SPACE (128ULL << 30)
 #define HIGH_START  (4ULL << 30)
 #define SHARED_PAGE 0x4000u                     /* core/vm.c's host page: shared file mappings */
 #define IS_ERR(v)   ((v) >= (uint64_t)-4096)
