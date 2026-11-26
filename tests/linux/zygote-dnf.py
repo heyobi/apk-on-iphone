@@ -8,6 +8,8 @@ import os
 import sys
 import time
 
+if sys.path and sys.path[0] == os.path.dirname(os.path.abspath(__file__)):
+    del sys.path[0]                            # (as dnf-3 does: nothing imported from the script's folder)
 from dnf.cli import main
 
 try:

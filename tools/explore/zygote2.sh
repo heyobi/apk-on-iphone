@@ -7,10 +7,9 @@ DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 R=$1
 cd "$DIR" || exit 1
 cp /etc/resolv.conf "$R/etc/resolv.conf"
-mkdir -p "$R/usr/lib/lxzygote" && cp tests/linux/zygote-dnf.py "$R/usr/lib/lxzygote/dnf.py"
-echo "== /usr/bin/dnf -> $(readlink "$R/usr/bin/dnf"):"; sed 's/^/   /' "$R/usr/bin/dnf-3"
+mkdir -p "$R/usr/lib/lxzygote" && cp tests/linux/zygote-dnf.py "$R/usr/lib/lxzygote/zygote-dnf.py"
 LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'dnf -y makecache' > /dev/null 2>&1
-RULE=/usr/bin/dnf-3:/usr/bin/python3:/usr/lib/lxzygote/dnf.py:/var/lib/rpm/rpmdb.sqlite
+RULE=/usr/bin/dnf-3:/usr/bin/python3:/usr/lib/lxzygote/zygote-dnf.py:/var/lib/rpm/rpmdb.sqlite
 secs() { echo "$(date +%s.%N) - $1" | bc; }
 z() {   # z LABEL COMMAND  (fast start on)
     t0=$(date +%s.%N)
