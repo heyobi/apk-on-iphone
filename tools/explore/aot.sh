@@ -1,7 +1,7 @@
 #!/bin/sh
 # Exploration: guest libraries translated ahead of time (tools/aotgen.c, core/aot.c), only
-# their hot pages: a training run under LXRUN_PROF picks, per library, the pages that hold
-# 99% of its samples (tests/linux/prof_pages.py). Then lxrun is built with them, and the
+# their hot functions: a training run under LXRUN_PROF picks the functions that hold 97% of
+# the samples (tests/linux/prof_funcs.py, bounds from AlmaLinux's debuginfo). Then lxrun is built with them, and the
 # training commands and some others (not seen in training) run with and without:
 # outputs must match, times are compared.
 # usage: sudo sh tools/explore/aot.sh ROOT
@@ -23,19 +23,25 @@ print(hashlib.sha256(str(s).encode()).hexdigest())"' 'rpm -qa'; do
     k=$((k + 1))
     LXRUN_PROF=build/prof/$k.prof LXRUN_QUIET=1 timeout 1800 build/lxrun "$R" /bin/bash -c "$cmd" > /dev/null 2>&1
 done
-LIBS="libsolv:usr/lib64/libsolv.so.1 libpython:usr/lib64/libpython3.12.so.1.0 libsqlite:usr/lib64/libsqlite3.so.0 librpm:usr/lib64/librpm.so.10 librpmio:usr/lib64/librpmio.so.10 libdnf:usr/lib64/libdnf.so.2 libxml2:usr/lib64/libxml2.so.2 libglib:usr/lib64/libglib-2.0.so.0"
-TABLE="#include \"aot.h\"\n"; OBJS=""; REFS=""; total=0
+echo "== debug symbols (function bounds), natively"
+mount -t proc proc "$R/proc"; mount --rbind /dev "$R/dev"
+chroot "$R" /bin/bash -c "dnf -y -q --enablerepo='*-debuginfo' --setopt=strict=0 install python3-libs-debuginfo libsolv-debuginfo libsqlite3x-debuginfo sqlite-libs-debuginfo rpm-libs-debuginfo libdnf-debuginfo libxml2-debuginfo glib2-debuginfo openssl-libs-debuginfo zlib-ng-compat-debuginfo > /dev/null 2>&1; ls /usr/lib/debug/.build-id | wc -l"
+umount -R "$R/dev" "$R/proc"
+python3 tests/linux/prof_funcs.py "$R" 0.97 build/ranges build/prof/*.prof
+LIBS="libsolv:usr/lib64/libsolv.so.1 libpython:usr/lib64/libpython3.12.so.1.0 libsqlite:usr/lib64/libsqlite3.so.0 librpm:usr/lib64/librpm.so.10 librpmio:usr/lib64/librpmio.so.10 libdnf:usr/lib64/libdnf.so.2 libxml2:usr/lib64/libxml2.so.2 libglib:usr/lib64/libglib-2.0.so.0 libcrypto:usr/lib64/libcrypto.so.3 libz:usr/lib64/libz.so.1"
+TABLE="#include \"aot.h\"
+"; OBJS=""; REFS=""; total=0
 for l in $LIBS; do
     name=${l%%:*}; real=$(readlink -f "$R/${l#*:}")
-    base=$(basename "$real")
-    python3 tests/linux/prof_pages.py "$base" 0.99 build/prof/*.prof > "build/aot_$name.pages" || continue
-    [ -s "build/aot_$name.pages" ] || continue
-    build/aotgen "$real" "$name" "build/aot_$name.c" "build/aot_$name.pages" || continue
+    rf="build/ranges/$(basename "$real").ranges"
+    [ -s "$rf" ] || continue
+    build/aotgen "$real" "$name" "build/aot_$name.c" "$rf" || continue
     t0=$(date +%s)
     cc -O1 -g0 -w -std=gnu11 -Icore -DAOI_AOT -c "build/aot_$name.c" -o "build/aot_$name.o" || continue
     sz=$(stat -c %s "build/aot_$name.o"); total=$((total + sz))
     echo "   $name: object $((sz / 1024)) KiB, compiled in $(( $(date +%s) - t0 )) s"
-    TABLE="${TABLE}extern const struct aoi_aot_lib aot_$name;\n"; OBJS="$OBJS build/aot_$name.o"; REFS="$REFS &aot_$name,"
+    TABLE="${TABLE}extern const struct aoi_aot_lib aot_$name;
+"; OBJS="$OBJS build/aot_$name.o"; REFS="$REFS &aot_$name,"
 done
 echo "   all translated code: $((total / 1024)) KiB of objects"
 printf "${TABLE}const struct aoi_aot_lib *const aoi_aot_libs[] = {$REFS 0 };\n" > build/aot_table.c

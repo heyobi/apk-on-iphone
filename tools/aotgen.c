@@ -2,7 +2,9 @@
  *
  * usage: aotgen LIBRARY NAME OUT.c [PAGES]
  *   PAGES: a file of page addresses (hex, one per line) to translate, from a profile
- *   (tests/linux/prof_resolve.py --pages); the others stay interpreted. Default: all.
+ *   (tests/linux/prof_pages.py); or, named *.ranges, "start end" address ranges (hot
+ *   functions: tests/linux/prof_funcs.py) - only their instructions are translated, the
+ *   rest of their pages leaves to the interpreter. Default: everything.
  *
  * Every instruction of the library's .text becomes C in a function per 4 KiB page; a jump
  * table enters the page at any instruction. Integer data processing, loads and stores,
@@ -473,14 +475,23 @@ int main(int argc, char **argv)
     uint16_t phnum, phentsize, shnum, shentsize, shstrndx;
     uint8_t id[20];
     int idlen = 0, i, npages, translated = 0, total = 0;
-    static uint64_t want[65536];
-    int nwant = 0;
+    static uint64_t want[65536], rlo[65536], rhi[65536];
+    int nwant = 0, nr = 0;
     if (argc != 4 && argc != 5) { fprintf(stderr, "usage: aotgen LIBRARY NAME OUT.c [PAGES]\n"); return 2; }
     if (argc == 5) {
         FILE *pf = fopen(argv[4], "r");
         unsigned long long v;
         if (!pf) { perror(argv[4]); return 1; }
-        while (nwant < 65536 && fscanf(pf, "%llx", &v) == 1) want[nwant++] = v & ~0xfffULL;
+        size_t al = strlen(argv[4]);
+        if (al > 7 && !strcmp(argv[4] + al - 7, ".ranges")) {
+            unsigned long long e;
+            while (nr < 65536 && fscanf(pf, "%llx %llx", &v, &e) == 2) {
+                uint64_t q;
+                rlo[nr] = v; rhi[nr] = e; nr++;
+                for (q = v & ~0xfffULL; q < e && nwant < 65536; q += 4096) want[nwant++] = q;
+            }
+        } else
+            while (nwant < 65536 && fscanf(pf, "%llx", &v) == 1) want[nwant++] = v & ~0xfffULL;
         fclose(pf);
     }
     if (!(f = fopen(argv[1], "rb"))) { perror(argv[1]); return 1; }
@@ -540,9 +551,15 @@ int main(int argc, char **argv)
         for (j = 0; j < nwant && !wanted; j++) wanted = want[j] == pg;
         if (!wanted) continue;
         page_lo = pg; page_hi = pg + 4096;
+        static char inr[1024];
+        for (k = 0; k < 1024; k++) {
+            uint64_t pc = pg + 4u * (unsigned)k;
+            inr[k] = !nr;
+            for (j = 0; j < nr && !inr[k]; j++) inr[k] = pc >= rlo[j] && pc < rhi[j];
+        }
         fprintf(o, "static int p_%llx(struct aoi_cpu *c)\n{\n    int n = 0;\n    switch ((unsigned)((c->pc - B - 0x%llxULL) >> 2)) {\n",
                 (unsigned long long)pg, (unsigned long long)pg);
-        for (k = 0; k < 1024; k++) fprintf(o, "    case %d: goto L%d;\n", k, k);
+        for (k = 0; k < 1024; k++) if (inr[k]) fprintf(o, "    case %d: goto L%d;\n", k, k);
         fprintf(o, "    default: return 0;\n    }\n");
         for (k = 0; k < 1024; k++) {
             uint64_t pc = pg + 4u * (unsigned)k;
@@ -551,10 +568,11 @@ int main(int argc, char **argv)
             if (pc >= x_vaddr && pc + 4 <= x_vaddr + x_sz) memcpy(&w, img + (pc - x_vaddr + x_off), 4);
             fprintf(o, "L%d: ", k);
             total++;
-            r = (pc >= x_vaddr && pc + 4 <= x_vaddr + x_sz) ? insn(w, pc) : 0;
+            r = inr[k] && (pc >= x_vaddr && pc + 4 <= x_vaddr + x_sz) ? insn(w, pc) : 0;
             if (r == 1) { fprintf(o, " n++;\n"); translated++; nins++; }
             else if (r == 2) { fprintf(o, "\n"); translated++; nins++; }
-            else fprintf(o, "c->pc = B + 0x%llxULL; return n;   /* %08x */\n", (unsigned long long)pc, w);
+            else if (inr[k]) fprintf(o, "c->pc = B + 0x%llxULL; return n;   /* %08x */\n", (unsigned long long)pc, w);
+            else { fprintf(o, "c->pc = B + 0x%llxULL; return n;\n", (unsigned long long)pc); total--; }
         }
         fprintf(o, "    c->pc = B + 0x%llxULL; return n;\n}\n", (unsigned long long)page_hi);
     }

@@ -133,4 +133,5 @@ def main():
     print("-- full symbols (debug files) for: " + (", ".join(full) or "none"))
 
 
-main()
+if __name__ == "__main__":
+    main()
