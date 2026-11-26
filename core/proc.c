@@ -4831,6 +4831,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_ioctl:
+        if (p->linux_mode && a1 == 0x5452 && (f = fd_get(p, a0)) && f->kind != AOI_FD_FILE) {
+            /* FIOASYNC: accepted, no SIGIO is sent (nginx sets it on the channels to its workers
+             * and gave up spawning them without; it reads them when epoll says so anyway) */
+            r = 0;
+            break;
+        }
         if (p->linux_mode && (f = fd_get(p, a0)) && f->kind != AOI_FD_TTY && f->kind != AOI_FD_PTM && f->kind != AOI_FD_INET) {
             /* any other fd (pipes, socketpairs, AF_UNIX, files): FIONBIO as fcntl's O_NONBLOCK
              * (Python's asyncio sets its self-pipe socketpair so: Jupyter), FIONREAD from the
