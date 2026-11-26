@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The hot functions of the libraries in LXRUN_PROF profiles, for tools/aotgen.c: the fewest
-functions (by samples, across all the libraries) that hold COVER of the samples in them.
+"""The hot functions of the libraries in LXRUN_PROF profiles, for tools/aotgen.c: in each library, the
+fewest functions (by samples) that hold COVER of that library's samples.
 Function bounds come from the libraries' symbols (the debuginfo files in ROOT/usr/lib/debug
 when installed, as prof_resolve.py finds them); a sample outside any known function brings
 the 512 bytes around it. Writes, per library, OUTDIR/<basename>.ranges: "start end" in hex
@@ -38,11 +38,17 @@ for (path, off), c in samples.items():
 
 total = sum(funcs.values())
 acc, chosen = 0, collections.defaultdict(list)
-for (path, s, e), c in funcs.most_common():
-    if total and acc / total >= cover:
-        break
-    chosen[path].append((s, e))
-    acc += c
+per_lib = collections.defaultdict(list)   # each library on its own: one that dominates the
+for (path, s, e), c in funcs.most_common():   # samples (libpython) would leave the others out
+    per_lib[path].append((s, e, c))
+for path, fs in per_lib.items():
+    lib_total, lib_acc = sum(c for _, _, c in fs), 0
+    for s, e, c in fs:
+        if lib_acc / lib_total >= cover:
+            break
+        chosen[path].append((s, e))
+        lib_acc += c
+    acc += lib_acc
 os.makedirs(outdir, exist_ok=True)
 for path, rs in chosen.items():
     with open(os.path.join(outdir, os.path.basename(path) + ".ranges"), "w") as f:

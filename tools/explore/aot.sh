@@ -1,7 +1,7 @@
 #!/bin/sh
 # Exploration: guest libraries translated ahead of time (tools/aotgen.c, core/aot.c), only
-# their hot functions: a training run under LXRUN_PROF picks the functions that hold 97% of
-# the samples (tests/linux/prof_funcs.py, bounds from AlmaLinux's debuginfo). Then lxrun is built with them, and the
+# their hot functions: a training run under LXRUN_PROF picks, in each library, the functions
+# that hold 97% of its samples (tests/linux/prof_funcs.py, bounds from AlmaLinux's debuginfo). Then lxrun is built with them, and the
 # training commands and some others (not seen in training) run with and without:
 # outputs must match, times are compared.
 # usage: sudo sh tools/explore/aot.sh ROOT
@@ -53,7 +53,8 @@ cmp_run() {   # cmp_run LABEL COMMAND
         LXRUN_STATS=1 LXRUN_QUIET=1 timeout 1800 build/$b "$R" /bin/bash -c "$2" > /tmp/out.$b 2> /tmp/err.$b
         echo "$(echo "$(date +%s.%N) - $t0" | bc)" > /tmp/t.$b
     done
-    sed -i 's/ *[0-9.]* [kM]B\/s.*//' /tmp/out.lxrun /tmp/out.lxrun-aot   # (download speeds differ)
+    sed -i -e 's/ *[0-9.]* [kM]B\/s.*//' -e '/^Last metadata expiration check/d' \
+        /tmp/out.lxrun /tmp/out.lxrun-aot   # (download speeds, the metadata's age differ)
     if cmp -s /tmp/out.lxrun /tmp/out.lxrun-aot; then same=same; else same=DIFFERENT; fi
     a=$(cat /tmp/t.lxrun); b=$(cat /tmp/t.lxrun-aot)
     printf 'AOT %-34s interpreted %7.2f s   translated %7.2f s   %4.0f%%   output %s\n' "$1" "$a" "$b" "$(echo "100 * (1 - $b / $a)" | bc -l)" "$same"
