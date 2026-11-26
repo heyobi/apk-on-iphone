@@ -1,0 +1,34 @@
+# One-off measurements on an arm64 runner (tools/explore/*.sh), started by hand, apart
+# from the Linux userland checks so that they never cancel each other.
+name: Explore
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "tools/explore/ script"
+        default: meta_dnf.sh
+      image:
+        description: "Docker Hub image"
+        default: almalinux
+      tag:
+        default: latest
+
+jobs:
+  explore:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc binutils > /dev/null
+      - name: Build lxrun
+        run: make build/lxrun
+      - name: Root
+        run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" ${{ inputs.tag }} ${{ inputs.image }}
+      - name: ${{ inputs.script }}
+        run: sudo -E sh tools/explore/${{ inputs.script }} "$RUNNER_TEMP/root" 2>&1 | tee explore.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: explore
+          path: explore.txt
