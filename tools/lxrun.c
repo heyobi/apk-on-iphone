@@ -17,6 +17,7 @@
 #include "../core/proc.h"
 #include "../core/tty.h"
 #include "../core/lxfast.h"
+#include "../core/aot.h"
 
 #include <pthread.h>
 #include <termios.h>
@@ -431,6 +432,9 @@ int main(int argc, char **argv)
         if (getenv("LXRUN_STATS"))
             fprintf(stderr, "[lxrun] libc on the host: %" PRIu64 " calls, %" PRIu64 " handed back to the guest's code (all processes)\n",
                     aoi_lxfast_hits, aoi_lxfast_declined);
+        if (getenv("LXRUN_STATS") && aoi_aot_runs)
+            fprintf(stderr, "[lxrun] translated ahead of time: %" PRIu64 " runs, %" PRIu64 " instructions (all processes)\n",
+                    aoi_aot_runs, aoi_aot_insns);
 #ifdef AOI_JIT
         if (!quiet || getenv("LXRUN_STATS"))
             fprintf(stderr, "[lxrun] accelerator: %" PRIu64 " blocks translated, %" PRIu64 " refused by the engine, %" PRIu64 " reused, %" PRIu64 " region runs, %d KiB compiled in %d ms\n",

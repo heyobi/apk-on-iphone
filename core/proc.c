@@ -9,6 +9,7 @@
 #include "binder.h"
 #include "hle.h"
 #include "lxfast.h"
+#include "aot.h"
 #include "gpu.h"
 #include "gralloc.h"
 #include "tty.h"
@@ -1591,6 +1592,7 @@ static uint64_t sys_mmap(struct aoi_proc *p, uint64_t addr, uint64_t len, int pr
         if (prot & 4) {                                            /* glibc's string functions on the host (core/lxfast.c) */
             uint64_t page = aoi_lxfast_mapped(p, a, len, off, f->host, f->path);
             if (page) note_map(p, page, PAGE, 0, "[lxfast]");
+            aoi_aot_mapped(p, a, len, off, f->host);               /* translated ahead of time (core/aot.c) */
         }
         {                                                          /* Skia's raster stages natively (core/hle.c): */
             size_t n = strlen(f->path);                            /* libhwui's code segment (vaddr = offset) */

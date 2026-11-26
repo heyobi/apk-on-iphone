@@ -81,6 +81,12 @@ struct aoi_cpu {
     /* Set by a host_call that hands the call back to guest code (core/lxfast.c): run
      * from there with the registers as they were, instead of returning to x30. */
     uint64_t thunk_redirect;
+
+    /* Translated libraries mapped in this process (core/aot.h): their code addresses, load
+     * biases, tables; aot_bias is the one of the function being run. */
+    int naot;
+    uint64_t aot_lo[4], aot_hi[4], aot_biases[4], aot_bias;
+    const struct aoi_aot_lib *aot_lib[4];
 };
 
 /* Guest memory access. Returns NULL (and sets a fault) if [addr, addr+len) is unmapped. */
