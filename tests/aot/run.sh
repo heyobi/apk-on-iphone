@@ -14,14 +14,15 @@ W=/tmp/aotfuzz.$$
 rm -rf "$W"; mkdir -p "$W" build
 CORE=$(sed -n 's/^CORE *:= //p' Makefile)
 make -s build/lxrun || exit 1
-cc -O2 -Wall -o build/aotgen tools/aotgen.c || exit 1
+cc -O2 -w -o build/aotgen tools/aotgen.c || exit 1
 
 python3 tests/aot/fuzzgen.py "$W/fuzz.S" "$NF" "$NI" "$SEED" || exit 1
 cc -shared -fPIC -Wl,--build-id -o "$W/libfuzz.so" "$W/fuzz.S" || { echo "FAIL aot fuzz: assembling"; exit 1; }
 cc -O1 -o "$W/fuzzmain" tests/aot/main.c -L"$W" -lfuzz -Wl,-rpath,'$ORIGIN' || exit 1
 
 # the whole of .text, translated
-set -- $(readelf -SW "$W/libfuzz.so" | awk '$2 == ".text" { print $4, $6 }')
+set -- $(readelf -SW "$W/libfuzz.so" | awk '{ for (i = 1; i < NF; i++) if ($i == ".text") { print $(i + 2), $(i + 4); exit } }')
+[ $# = 2 ] || { echo "FAIL aot fuzz: no .text in libfuzz.so"; exit 1; }
 printf '%x %x\n' "0x$1" "$((0x$1 + 0x$2))" > "$W/fuzz.ranges"
 build/aotgen "$W/libfuzz.so" fuzz "$W/aot_fuzz.c" "$W/fuzz.ranges" || { echo "FAIL aot fuzz: aotgen"; exit 1; }
 cc -O1 -g0 -w -std=gnu11 -Icore -DAOI_AOT -c "$W/aot_fuzz.c" -o "$W/aot_fuzz.o" || { echo "FAIL aot fuzz: compiling the translation"; exit 1; }
