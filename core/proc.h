@@ -295,8 +295,9 @@ const char *aoi_snap_load_image(struct aoi_proc *p, const char *path, const char
 /* Fast start for an interpreted program (Linux mode): exec of EXE (guest path, as resolved)
  * runs INTERP SCRIPT GIVEN ARGS...; SCRIPT imports what the program needs and opens
  * /dev/aoi_snapshot, which saves the process under ROOT/var/cache/lxzygote/; later execs of
- * EXE resume that snapshot instead, while WATCH (a guest file: the package database) and
- * SCRIPT are unchanged. The script reads its arguments from /proc/self/cmdline (INTERP
+ * EXE resume that snapshot instead while SCRIPT, every file the snapshot maps and the guest
+ * paths in WATCH (comma-separated: the program's Python folders) are unchanged. Without
+ * SCRIPT, EXE runs as usual. The script reads its arguments from /proc/self/cmdline (INTERP
  * SCRIPT [--env=FILE] GIVEN ARGS...) and, when given, the environment from FILE.
  * Off when exe is NULL. AOI_ZYGOTE=0 in the host's environment turns every rule off. */
 void aoi_proc_zygote(const char *exe, const char *interp, const char *script, const char *watch);

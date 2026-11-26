@@ -14,6 +14,7 @@
 #include "gralloc.h"
 #include "tty.h"
 
+
 #include <dirent.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -40,6 +41,8 @@
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
+
+static void zyg_saved(struct aoi_proc *p, const char *snap);   /* (fast start, below) */
 
 /* 128 GiB of guest addresses (reserved, not committed): scudo alone reserves
  * 8+ GiB up front, Chromium's PartitionAlloc two 16 GiB pools and V8's sandbox
@@ -1247,6 +1250,7 @@ static enum aoi_stop proc_run(struct aoi_proc *p, uint64_t max_steps)
             int64_t t0 = now_ns();
             p->snap_request = 0;
             e = p->gpu_live ? "the GPU holds its state (aoi.Snapshot drops it first)" : aoi_snap_save(p, p->snap_path);
+            if (!e && strstr(p->snap_path, "/var/cache/lxzygote/")) zyg_saved(p, p->snap_path);   /* (fast start) */
             if (p->log) fprintf(p->log, "I/aoi: snapshot %s: %s (%.2f s)\n", p->snap_path, e ? e : "saved",
                                 (double)(now_ns() - t0) / 1e9);
             p->snap_path[0] = 0;
@@ -2908,7 +2912,7 @@ int aoi_proc_turn_others(void)
 
 /* ---------- fast start ("zygote", aoi_proc_zygote) ---------- */
 
-static struct { int on; char exe[AOI_PATH], interp[AOI_PATH], script[AOI_PATH], watch[AOI_PATH]; } zyg;
+static struct { int on; char exe[AOI_PATH], interp[AOI_PATH], script[AOI_PATH], watch[4 * AOI_PATH]; } zyg;
 
 void aoi_proc_zygote(const char *exe, const char *interp, const char *script, const char *watch)
 {
@@ -2921,17 +2925,64 @@ void aoi_proc_zygote(const char *exe, const char *interp, const char *script, co
     snprintf(zyg.watch, sizeof zyg.watch, "%s", watch);
 }
 
-/* What a snapshot depends on: the watched file (the package database: any install or
- * update changes it) and the script. */
-static void zyg_stamp(struct aoi_proc *p, char *out, size_t n)
+/* One line of a snapshot's stamp: "ino size mtime path" of a guest path (zeros if missing). */
+static void zyg_line(struct aoi_proc *p, const char *g, FILE *f)
 {
     char h[AOI_PATH];
-    struct stat a, b;
-    memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
-    to_host(p, zyg.watch, h); stat(h, &a);
-    to_host(p, zyg.script, h); stat(h, &b);
-    snprintf(out, n, "%lld %lld %lld %lld %lld\n", (long long)a.st_ino, (long long)a.st_size, (long long)a.st_mtime,
-             (long long)b.st_size, (long long)b.st_mtime);
+    struct stat st;
+    memset(&st, 0, sizeof st);
+    to_host(p, g, h);
+    stat(h, &st);
+    fprintf(f, "%lld %lld %lld %s\n", (long long)st.st_ino, (long long)st.st_size, (long long)st.st_mtime, g);
+}
+
+/* A zygote snapshot was saved: its stamp lists what it depends on (the script, the watched
+ * folders, every file it maps), so that only a change there makes the next exec save again:
+ * an unrelated install does not. (From the time slice loop, right after aoi_snap_save.) */
+static void zyg_saved(struct aoi_proc *p, const char *snap)
+{
+    char stampf[AOI_PATH + 16], tmp[AOI_PATH + 24], list[4 * AOI_PATH], *q, *save = NULL;
+    size_t l = strlen(snap);
+    FILE *f;
+    int i, j;
+    if (l < 5 || strcmp(snap + l - 5, ".snap")) return;
+    snprintf(stampf, sizeof stampf, "%.*s.stamp", (int)(l - 5), snap);
+    snprintf(tmp, sizeof tmp, "%s.tmp", stampf);
+    if (!(f = fopen(tmp, "w"))) return;
+    zyg_line(p, zyg.script, f);
+    snprintf(list, sizeof list, "%s", zyg.watch);
+    for (q = strtok_r(list, ",", &save); q; q = strtok_r(NULL, ",", &save)) zyg_line(p, q, f);
+    for (i = 0; i < p->nmaps && i < AOI_PROC_MAPS; i++) {
+        if (p->maps[i].path[0] != '/' || !strncmp(p->maps[i].path, "/dev/", 5) || !strncmp(p->maps[i].path, "/proc/", 6)) continue;
+        for (j = 0; j < i && strcmp(p->maps[j].path, p->maps[i].path); j++) {}
+        if (j == i) zyg_line(p, p->maps[i].path, f);
+    }
+    if (fclose(f) || rename(tmp, stampf)) unlink(tmp);
+    chmod(snap, 0600);
+}
+
+/* 1 while everything the stamp lists is as it was. */
+static int zyg_valid(struct aoi_proc *p, const char *stampf)
+{
+    char line[AOI_PATH + 96], h[AOI_PATH];
+    FILE *f = fopen(stampf, "r");
+    int n = 0, ok = 1;
+    if (!f) return 0;
+    while (ok && fgets(line, sizeof line, f)) {
+        long long ino, size, mtime;
+        int at = 0;
+        struct stat st;
+        size_t l = strlen(line);
+        if (l && line[l - 1] == '\n') line[--l] = 0;
+        if (sscanf(line, "%lld %lld %lld %n", &ino, &size, &mtime, &at) != 3 || !at) { ok = 0; break; }
+        memset(&st, 0, sizeof st);
+        to_host(p, line + at, h);
+        stat(h, &st);
+        ok = (long long)st.st_ino == ino && (long long)st.st_size == size && (long long)st.st_mtime == mtime;
+        n++;
+    }
+    fclose(f);
+    return ok && n > 0;
 }
 
 /* Translated libraries for a process that came from a snapshot (their tables hold this run's
@@ -2955,18 +3006,18 @@ static void zyg_aot(struct aoi_proc *np)
  * snapshot (*done set) or puts SCRIPT before GIVEN so that this run saves a new one. */
 static uint64_t zyg_exec(struct aoi_proc *p, struct aoi_cpu *c, int *argc, const char **argv, int gi, const char *const *envp, int *done)
 {
-    char dir[AOI_PATH], snap[AOI_PATH + 64], stampf[AOI_PATH + 80], want[256], have[256] = "";
+    char dir[AOI_PATH], snap[AOI_PATH + 64], stampf[AOI_PATH + 80];
     const char *base = strrchr(zyg.exe, '/') ? strrchr(zyg.exe, '/') + 1 : zyg.exe;
-    FILE *f;
+    struct stat st;
     int i;
     *done = 0;
+    to_host(p, zyg.script, dir);
+    if (stat(dir, &st) || !S_ISREG(st.st_mode)) return 0;          /* no script (removed?): a plain exec */
     to_host(p, "/var/cache/lxzygote", dir);
     mkdir(dir, 0755);
     snprintf(snap, sizeof snap, "%s/%s.snap", dir, base);
     snprintf(stampf, sizeof stampf, "%s/%s.stamp", dir, base);
-    zyg_stamp(p, want, sizeof want);
-    if ((f = fopen(stampf, "r"))) { if (!fgets(have, sizeof have, f)) have[0] = 0; fclose(f); }
-    if (!strcmp(have, want) && aoi_snap_this_build(snap)) {
+    if (zyg_valid(p, stampf) && aoi_snap_this_build(snap)) {
         struct aoi_proc *np = calloc(1, sizeof *np);
         if (np && !aoi_snap_load_image(np, snap, p->root)) {
             char eg[64], eh[AOI_PATH], envarg[96], *o = np->cmdline;
@@ -2999,8 +3050,7 @@ static uint64_t zyg_exec(struct aoi_proc *p, struct aoi_cpu *c, int *argc, const
         }
         if (np) { aoi_proc_free(np); free(np); }
     }
-    unlink(snap);                                                  /* this run saves a new one */
-    if ((f = fopen(stampf, "w"))) { fputs(want, f); fclose(f); }
+    unlink(snap); unlink(stampf);                                  /* this run saves a new one (zyg_saved) */
     snprintf(p->snap_path, sizeof p->snap_path, "%s", snap);
     if (*argc > AOI_ARGS - 3) return 0;
     memmove(argv + gi + 1, argv + gi, sizeof *argv * (size_t)(*argc - gi + 1));   /* ... SCRIPT GIVEN ARGS... */

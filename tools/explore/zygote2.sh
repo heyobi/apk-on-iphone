@@ -9,7 +9,7 @@ cd "$DIR" || exit 1
 cp /etc/resolv.conf "$R/etc/resolv.conf"
 mkdir -p "$R/usr/lib/lxzygote" && cp tests/linux/zygote-dnf.py "$R/usr/lib/lxzygote/zygote-dnf.py"
 LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'dnf -y makecache' > /dev/null 2>&1
-RULE=/usr/bin/dnf-3:/usr/bin/python3:/usr/lib/lxzygote/zygote-dnf.py:/var/lib/rpm/rpmdb.sqlite
+RULE=/usr/bin/dnf-3:/usr/bin/python3:/usr/lib/lxzygote/zygote-dnf.py:/usr/lib/python3.12/site-packages,/usr/lib64/python3.12/site-packages,/usr/lib/python3.12/site-packages/dnf,/usr/lib64/python3.12/site-packages/libdnf,/usr/lib64/python3.12/site-packages/hawkey,/usr/lib64/python3.12/site-packages/rpm,/usr/lib64/python3.12
 secs() { echo "$(date +%s.%N) - $1" | bc; }
 z() {   # z LABEL COMMAND  (fast start on)
     t0=$(date +%s.%N)
@@ -42,14 +42,23 @@ cmp_one 'yum -C list --installed bash'
 cmp_one 'echo n | dnf -C install tmux; echo "rc=$?"'
 cmp_one 'cd /etc && dnf -C --setopt=install_weak_deps=False --assumeno install tmux; pwd'
 cmp_one 'DNF_VAR_releasever=10 LANG=C dnf -C repolist'
-echo "== an install changes the package database: the next run saves again"
+echo "== an unrelated install keeps the snapshot (it depends only on dnf's and Python's files)"
 z "dnf install tmux" 'dnf -y --setopt=install_weak_deps=False install tmux > /dev/null 2>&1; rpm -q tmux'
 cat /tmp/z.out | sed 's/^/   | /'
-z "dnf --version (saves again)" 'dnf --version'
+z "dnf --version (still fast)" 'dnf --version'
 z "dnf --version" 'dnf --version'
 cmp_one 'dnf -C list --installed tmux'
 z "dnf remove tmux" 'dnf -y remove tmux > /dev/null 2>&1; rpm -q tmux'
 cat /tmp/z.out | sed 's/^/   | /'
+echo "== a change to what it depends on saves again"
+touch "$R/usr/lib/python3.12/site-packages/dnf"
+z "dnf --version (dnf's folder changed: saves)" 'dnf --version'
+z "dnf --version" 'dnf --version'
+echo "== without the script dnf runs as usual"
+mv "$R/usr/lib/lxzygote/zygote-dnf.py" /tmp/zd.py
+cmp_one 'dnf --version'
+mv /tmp/zd.py "$R/usr/lib/lxzygote/zygote-dnf.py"
+echo "   stamp:"; head -n 12 "$R/var/cache/lxzygote/dnf-3.stamp" | sed 's/^/   | /'; echo "   ($(wc -l < "$R/var/cache/lxzygote/dnf-3.stamp") lines)"
 echo "== where the time goes (dnf --version, instructions)"
 AOI_ZYGOTE_RULE=$RULE LXRUN_QUIET=1 LXRUN_STATS=1 build/lxrun "$R" /bin/bash -c 'dnf --version' 2>&1 >/dev/null | grep -E "exit|libc" | sed 's/^/   fast: /'
 AOI_ZYGOTE_RULE=$RULE LXRUN_QUIET=1 LXRUN_STATS=1 build/lxrun "$R" /bin/bash -c 'true' 2>&1 >/dev/null | grep -E "exit" | sed 's/^/   bash -c true: /'
