@@ -58,6 +58,18 @@ for w in "--version" "-y makecache" "-C search nginx"; do
     lx "python3 /tmp/prof.py tottime 25 $w 2>&1 >/dev/null" | grep -v '^$' | head -n 40
 done
 
+echo "::group::debug symbols for the libraries dnf runs on (native, into the copy)"
+PKGS="glibc python3-libs libsolv libdnf librepo rpm-libs openssl-libs libxml2 glib2 zlib-ng-compat libzstd xz-libs libcurl sqlite-libs libgcrypt gpgme libmodulemd libyaml"
+chroot "$NR" /bin/bash -c "dnf -y -q --enablerepo='*-debuginfo' --setopt=strict=0 install \$(for p in $PKGS; do printf '%s-debuginfo ' \$p; done) 2>&1 | tail -n 5; ls /usr/lib/debug/.build-id | wc -l"
+echo "::endgroup::"
+for w in "dnf -y makecache" "cold: dnf -y makecache" "rpm -qa" "dnf -C search nginx" "dnf -y install --setopt=install_weak_deps=False httpd"; do
+    echo "== guest profile (LXRUN_PROF): $w"
+    case $w in cold:*) w=${w#cold: }; lx 'dnf clean all' >/dev/null 2>&1 ;; esac
+    # (one simple command: bash execs it, so it is the main process the profile follows)
+    LXRUN_PROF=/tmp/lx.prof LXRUN_QUIET=1 timeout 2400 "$L" "$R" /bin/bash -c "$w" >/dev/null 2>&1
+    python3 "$DIR/tests/linux/prof_resolve.py" /tmp/lx.prof "$NR" 45
+done
+
 if command -v perf >/dev/null 2>&1; then
     echo "== perf: host-side hot spots of lxrun running dnf -y makecache"
     LXRUN_QUIET=1 perf record -q -F 999 -g -o /tmp/perf.data "$L" "$R" /bin/bash -c 'dnf -y makecache' >/dev/null 2>&1

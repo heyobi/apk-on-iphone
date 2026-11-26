@@ -32,6 +32,87 @@ static struct aoi_proc proc;
 static struct termios saved_tio;
 static int raw_tty;
 
+#ifndef __EMSCRIPTEN__
+/* LXRUN_PROF=FILE: a sampling profile of the main process's guest code. Every millisecond
+ * of CPU time (SIGPROF), the guest pc of the main process's running thread is noted as
+ * (mapped file, offset); at exit FILE gets one "count path offset" line per sample site,
+ * for tests/linux/prof_resolve.py to turn into functions. The handler only reads memory
+ * and copies a path into its own table the first time it sees it. */
+#include <signal.h>
+#include <sys/time.h>
+#define PROF_PATHS 512
+#define PROF_SLOTS (1u << 20)
+static char prof_path[PROF_PATHS][160];
+static int prof_npaths;
+static uint64_t *prof_key;                                         /* (path index + 1) << 40 | offset */
+static uint32_t *prof_cnt;
+static uint64_t prof_samples, prof_lost;
+static pthread_t prof_main;
+
+static void prof_tick(int sig)
+{
+    uint64_t pc, off = 0, key, h;
+    int i, k = -1;
+    (void)sig;
+    if (!pthread_equal(pthread_self(), prof_main)) return;         /* (other guest processes' threads) */
+    pc = proc.cpu.pc;
+    for (i = proc.nmaps - 1; i >= 0; i--) {
+        struct aoi_proc_map *m = &proc.maps[i];
+        if (pc >= m->start && pc < m->start + m->len) {
+            off = pc - m->start + m->off;
+            for (k = 0; k < prof_npaths && strcmp(prof_path[k], m->path); k++) {}
+            if (k == prof_npaths) {
+                if (k >= PROF_PATHS - 1) { prof_lost++; return; }  /* (the last: outside every mapping) */
+                memcpy(prof_path[k], m->path, sizeof prof_path[k]);
+                prof_path[k][sizeof prof_path[k] - 1] = 0;
+                prof_npaths++;
+            }
+            break;
+        }
+    }
+    if (k < 0) { k = PROF_PATHS - 1; off = pc; }                   /* (outside every mapping) */
+    key = ((uint64_t)(k + 1) << 40) | (off & 0xffffffffffULL);
+    for (h = (key * 0x9e3779b97f4a7c15ULL) >> 44, i = 0; i < 64; i++, h = (h + 1) & (PROF_SLOTS - 1)) {
+        if (prof_key[h] == key) { prof_cnt[h]++; prof_samples++; return; }
+        if (!prof_key[h]) { prof_key[h] = key; prof_cnt[h] = 1; prof_samples++; return; }
+    }
+    prof_lost++;
+}
+
+static void prof_start(void)
+{
+    struct itimerval it = { { 0, 1000 }, { 0, 1000 } };
+    if (!getenv("LXRUN_PROF")) return;
+    prof_key = calloc(PROF_SLOTS, sizeof *prof_key);
+    prof_cnt = calloc(PROF_SLOTS, sizeof *prof_cnt);
+    if (!prof_key || !prof_cnt) return;
+    prof_main = pthread_self();
+    signal(SIGPROF, prof_tick);
+    setitimer(ITIMER_PROF, &it, NULL);
+}
+
+static void prof_write(void)
+{
+    struct itimerval off = { { 0, 0 }, { 0, 0 } };
+    FILE *f;
+    uint32_t h;
+    if (!prof_key) return;
+    setitimer(ITIMER_PROF, &off, NULL);
+    if (!(f = fopen(getenv("LXRUN_PROF"), "w"))) return;
+    fprintf(f, "# samples %" PRIu64 " lost %" PRIu64 " (1 ms of CPU time each)\n", prof_samples, prof_lost);
+    for (h = 0; h < PROF_SLOTS; h++) {
+        uint64_t k;
+        if (!(k = prof_key[h])) continue;
+        fprintf(f, "%u %s %#llx\n", prof_cnt[h], (int)(k >> 40) - 1 == PROF_PATHS - 1 ? "?" : prof_path[(k >> 40) - 1],
+                (unsigned long long)(k & 0xffffffffffULL));
+    }
+    fclose(f);
+}
+#else
+static void prof_start(void) {}
+static void prof_write(void) {}
+#endif
+
 #ifdef __EMSCRIPTEN__
 /* In a web view (tests/wasm/web): the terminal's output collects in JavaScript and the
  * scheduler's host turn (aoi_host_poll) sends it to the app and brings back the keys. */
@@ -329,7 +410,9 @@ int main(int argc, char **argv)
     if (trace) proc.trace = stderr;
     proc.log = quiet ? NULL : stderr;
     t0 = now_s();
+    prof_start();
     st = aoi_proc_run(&proc, 0);
+    prof_write();
     t1 = now_s();
 #ifdef __EMSCRIPTEN__
     if (aoi_host_poll) {
