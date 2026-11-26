@@ -91,7 +91,7 @@ enum { L_EPERM = 1, L_ENOENT = 2, L_ESRCH = 3, L_EINTR = 4, L_EIO = 5, L_EBADF =
        L_EAGAIN = 11, L_ENOMEM = 12, L_EACCES = 13, L_EFAULT = 14, L_EBUSY = 16, L_EEXIST = 17,
        L_EXDEV = 18, L_ENOTDIR = 20, L_EISDIR = 21, L_EINVAL = 22, L_ENFILE = 23, L_EMFILE = 24,
        L_E2BIG = 7, L_ENOEXEC = 8, L_ENOTTY = 25, L_EFBIG = 27, L_ENOSPC = 28, L_ESPIPE = 29, L_EROFS = 30, L_EPIPE = 32,
-       L_ERANGE = 34, L_ENAMETOOLONG = 36, L_ENOSYS = 38, L_ENOTEMPTY = 39, L_ELOOP = 40,
+       L_ERANGE = 34, L_EDEADLK = 35, L_ENAMETOOLONG = 36, L_ENOSYS = 38, L_ENOTEMPTY = 39, L_ELOOP = 40,
        L_ENODATA = 61, L_EOVERFLOW = 75, L_ENOTSOCK = 88, L_ENOTSUP = 95, L_EAFNOSUPPORT = 97,
        L_ENOTCONN = 107, L_ETIMEDOUT = 110, L_ECONNREFUSED = 111,
        L_EDESTADDRREQ = 89, L_EMSGSIZE = 90, L_EPROTOTYPE = 91, L_ENOPROTOOPT = 92, L_EPROTONOSUPPORT = 93,
@@ -5182,6 +5182,47 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             for (i = 0; i < AOI_PROC_THREADS && (uint64_t)moved < a3; i++)
                 if (p->th[i].state == AOI_T_FUTEX && p->th[i].futex_addr == addr) { p->th[i].futex_addr = addr2; moved++; }
             r = (uint64_t)(woken + moved);
+        } else if (op == 6 || op == 13 || op == 8 || op == 7) {     /* LOCK_PI, LOCK_PI2, TRYLOCK_PI, UNLOCK_PI */
+            /* Priority-inheriting mutexes (APR's process-shared ones: httpd). The word holds the
+             * owner's tid (and FUTEX_WAITERS); it may be in memory shared with other processes,
+             * so it changes by compare-and-swap on the host memory, and a contended lock waits
+             * by retrying - correct across processes, rare in practice. glibc asks for an
+             * UNLOCK_PI of a free word at start (EPERM: PI is supported). */
+            uint8_t *hp = (addr & 3) ? NULL : aoi_vm_ptr(&p->vm, addr, 4, AOI_PROT_R | AOI_PROT_W);
+            uint32_t *wp = (uint32_t *)(void *)hp, tid = (uint32_t)p->th[p->cur].tid, cur;
+            if (!wp) { r = err(L_EFAULT); break; }
+            cur = __atomic_load_n(wp, __ATOMIC_SEQ_CST);
+            if (op == 7) {
+                if ((cur & 0x3fffffffu) != tid) { r = err(L_EPERM); break; }
+                __atomic_store_n(wp, 0, __ATOMIC_SEQ_CST);          /* (waiters retry and take it) */
+                r = 0;
+                break;
+            }
+            for (;;) {
+                if (!(cur & 0x3fffffffu)) {                        /* free (or its owner died): ours */
+                    uint32_t want = tid | (cur & 0x40000000u);     /* (FUTEX_OWNER_DIED stays for the caller to see) */
+                    if (__atomic_compare_exchange_n(wp, &cur, want, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) { r = 0; break; }
+                    continue;
+                }
+                if ((cur & 0x3fffffffu) == tid) { r = err(L_EDEADLK); break; }
+                if (op == 8) { r = err(L_EAGAIN); break; }
+                if (!(cur & 0x80000000u) &&
+                    !__atomic_compare_exchange_n(wp, &cur, cur | 0x80000000u, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) continue;
+                r = ~0ULL;                                         /* held: wait */
+                break;
+            }
+            if (r != ~0ULL) break;
+            if (a3) {                                              /* absolute timeout (LOCK_PI: CLOCK_REALTIME) */
+                uint8_t ts[16];
+                struct timespec now;
+                if (!get(p, a3, ts, 16)) { r = err(L_EFAULT); break; }
+                clock_gettime(op == 13 && !(a1 & 256) ? CLOCK_MONOTONIC : CLOCK_REALTIME, &now);
+                if ((int64_t)now.tv_sec * 1000000000 + now.tv_nsec >= (int64_t)u64(ts) * 1000000000 + (int64_t)u64(ts + 8)) {
+                    r = err(L_ETIMEDOUT);
+                    break;
+                }
+            }
+            r = block_and_retry(p, 200000);
         } else r = err(L_ENOSYS);
         break;
     }
@@ -5286,9 +5327,34 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                 memcpy(n, b, k < 15 ? k : 15);                     /* the kernel's comm: 15 bytes at most */
             }
             r = put(p, a1, n, 16) ? 0 : err(L_EFAULT);
+        } else if (a0 == 2 || a0 == 37) {                          /* PR_GET_PDEATHSIG, PR_GET_CHILD_SUBREAPER: 0 */
+            uint32_t z = 0;
+            r = put(p, a1, &z, 4) ? 0 : err(L_EFAULT);
         } else
-            r = (a0 == 0x53564d41 || a0 == 38) ? 0 : a0 == 3 ? 1 : err(L_EINVAL);   /* SET_VMA, NO_NEW_PRIVS */
+            switch (a0) {
+            case 0x53564d41: case 38: case 1: case 4: case 8: case 29: case 33: case 36: case 41: case 0x59616d61:
+                /* SET_VMA, NO_NEW_PRIVS, PDEATHSIG, DUMPABLE (nginx's workers, systemd services), KEEPCAPS,
+                 * TIMERSLACK, MCE_KILL, CHILD_SUBREAPER, THP_DISABLE, SET_PTRACER: accepted */
+                r = 0; break;
+            case 3: case 23: r = 1; break;                         /* GET_DUMPABLE, CAPBSET_READ: yes */
+            case 7: case 21: case 30: case 42: case 39: r = 0; break;   /* GET_KEEPCAPS, GET_SECCOMP, GET_TIMERSLACK, GET_THP_DISABLE, GET_NO_NEW_PRIVS */
+            case 47: r = a1 == 4 ? 0 : a1 == 1 ? 0 : err(L_EINVAL); break;   /* CAP_AMBIENT: CLEAR_ALL, IS_SET (no) */
+            default: r = err(L_EINVAL); break;
+            }
         break;
+    case 102: case 103: {                                          /* getitimer, setitimer */
+        /* no interval timers yet: none is ever running (getitimer: zeros), so stopping one
+         * succeeds (nginx at exit); starting one is not done (ENOSYS, not a silent no-op) */
+        uint8_t v[32];
+        memset(v, 0, sizeof v);
+        if (a0 > 2) { r = err(L_EINVAL); break; }
+        if (nr == 102) { r = put(p, a1, v, 32) ? 0 : err(L_EFAULT); break; }
+        if (a1 && !get(p, a1, v, 32)) { r = err(L_EFAULT); break; }
+        if (u64(v + 16) || u64(v + 24)) { r = err(L_ENOSYS); break; }   /* it_value set: start */
+        memset(v, 0, sizeof v);
+        r = !a2 || put(p, a2, v, 32) ? 0 : err(L_EFAULT);
+        break;
+    }
     case NR_uname: {
         uint8_t u[390];
         memset(u, 0, sizeof u);
