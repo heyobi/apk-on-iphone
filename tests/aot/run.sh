@@ -14,7 +14,7 @@ W=/tmp/aotfuzz.$$
 rm -rf "$W"; mkdir -p "$W" build
 CORE=$(sed -n 's/^CORE *:= //p' Makefile)
 make -s build/lxrun || exit 1
-cc -O2 -w -o build/aotgen tools/aotgen.c || exit 1
+cc -O2 -w -o build/aotgen "${AOTGEN_SRC:-tools/aotgen.c}" || exit 1   # (AOTGEN_SRC: a mutated copy, to check the test catches it)
 
 python3 tests/aot/fuzzgen.py "$W/fuzz.S" "$NF" "$NI" "$SEED" || exit 1
 cc -shared -fPIC -Wl,--build-id -o "$W/libfuzz.so" "$W/fuzz.S" || { echo "FAIL aot fuzz: assembling"; exit 1; }
