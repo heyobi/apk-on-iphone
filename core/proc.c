@@ -2260,7 +2260,38 @@ static uint64_t net_connect(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t 
         getsockopt(f->host, SOL_SOCKET, SO_ERROR, &e, &el);
         return e ? err(lx_errno(e)) : 0;
     }
+    {   /* AF_UNSPEC: a datagram socket forgets its peer (glibc's getaddrinfo sorts its answers so,
+         * one socket connected to each in turn: left on the last peer, the next source address
+         * it read was the old one, and glibc's assertion stopped httpd) */
+        uint8_t fam[2];
+        if (len >= 2 && get(p, addr, fam, 2) && !fam[0] && !fam[1]) {
+            struct sockaddr_storage un;
+            memset(&un, 0, sizeof un);
+            un.ss_family = AF_UNSPEC;
+#ifdef __APPLE__
+            un.ss_len = sizeof(struct sockaddr);
+#endif
+            connect(f->host, (struct sockaddr *)&un, sizeof(struct sockaddr));   /* (Linux reports no error) */
+            return 0;
+        }
+    }
     if ((e0 = get_sa(p, addr, len, &sa, &sl, f->v4))) return sa_err(e0);
+    if (sa.ss_family == AF_INET && !f->v4 && !strcmp(f->path, "socket:[inet6]")) {
+        /* an IPv4 peer on an IPv6 socket: Linux connects it as ::ffff:a.b.c.d (and so reads that
+         * source back), Darwin wants it written so */
+        struct sockaddr_in in4;
+        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)&sa;
+        memcpy(&in4, &sa, sizeof in4);
+        memset(&sa, 0, sizeof sa);
+        in6->sin6_family = AF_INET6;
+        in6->sin6_port = in4.sin_port;
+        memcpy((uint8_t *)&in6->sin6_addr + 10, "\xff\xff", 2);
+        memcpy((uint8_t *)&in6->sin6_addr + 12, &in4.sin_addr, 4);
+#ifdef __APPLE__
+        in6->sin6_len = sizeof *in6;
+#endif
+        sl = sizeof *in6;
+    }
     if (!connect(f->host, (struct sockaddr *)&sa, sl)) return 0;
     if (errno != EINPROGRESS) return herr();
     if (f->nonblock) return err(L_EINPROGRESS);
