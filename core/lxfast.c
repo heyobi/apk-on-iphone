@@ -1,3 +1,5 @@
+#define _GNU_SOURCE                 /* pread */
+#define _DARWIN_C_SOURCE
 /* glibc's string and memory functions at host speed.
  *
  * On AlmaLinux a third of dnf's metadata work is strcmp, memcpy, strchr, strlen and
