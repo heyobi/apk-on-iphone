@@ -87,6 +87,8 @@ jobs:
         run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" latest almalinux
       - name: glibc's string functions on the host (core/lxfast.c)
         run: sh tests/linux/run_libcfast.sh "$RUNNER_TEMP/root"
+      - name: dnf's fast start (aoi_proc_zygote)
+        run: sudo -E sh tests/linux/run_zygote.sh "$RUNNER_TEMP/root"
       - name: Benchmarks, native and LxTerm engine
         run: sudo -E sh tests/linux/bench_dnf.sh "$RUNNER_TEMP/root" almalinux bench-almalinux.json
       - uses: actions/upload-artifact@v4
