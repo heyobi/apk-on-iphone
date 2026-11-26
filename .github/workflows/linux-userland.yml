@@ -158,6 +158,18 @@ jobs:
       - name: Jupyter
         run: sh tests/linux/run_jupyter.sh "$RUNNER_TEMP/debian"
 
+  aot-fuzz:                       # the translated libraries against the CPU and the interpreter (tests/aot)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc binutils > /dev/null
+      - name: Random functions, native = interpreted = translated (a fixed seed and this run's)
+        run: |
+          sh tests/aot/run.sh 1 300 48 40
+          sh tests/aot/run.sh ${{ github.run_number }} 300 48 40
+
   regress:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

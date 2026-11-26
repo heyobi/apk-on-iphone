@@ -67,6 +67,16 @@ The ⚡ engine on the same commands (`tools/explore/accel_alma.sh`, Node): the w
 is ~2x slower than the native one and the translator brings hot loops back to native speed,
 so for dnf native + AOT + fast start is the way.
 
+**Differential test of the translation** (`tests/aot/`, CI job `aot-fuzz`): `fuzzgen.py` writes
+random functions of the integer instructions aotgen translates (arithmetic with and without
+flags, logic, moves, bitfields, conditional select/compare, carry, multiply, divide, shifts,
+bit counting, loads and stores of every size, forward branches) into a shared library;
+`main.c` calls each with random register states and buffers and prints a hash per function.
+Run natively on the arm64 runner, interpreted and translated, the three must match: 5 seeds x
+300 functions x 48 instructions x 40 calls, 97.9% of the instructions translated, all equal.
+Two deliberately broken translators (eor-immediate done as orr; adcs's carry flag) both fail it
+(`tools/explore/aotfuzz.sh`).
+
 Server programs through LxTerm's systemctl (lxterm `lxios/LxTerm/systemctl.sh`, CI there):
 httpd and nginx start, serve, reload and stop. Core changes they needed:
 
