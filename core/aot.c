@@ -7,6 +7,7 @@
 #include "cpu.h"
 #include "proc.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -61,6 +62,11 @@ void aoi_aot_mapped(struct aoi_proc *p, uint64_t a, uint64_t len, uint64_t off, 
     uint64_t x[3], bias;
     int idlen, i, k;
     if (!aoi_aot_libs[0] || !p->linux_mode || p->cpu.naot >= AOI_AOT_MAX) return;
+    {
+        static int off = -1;                                       /* AOI_AOT=0: interpreted only */
+        if (off < 0) { const char *e = getenv("AOI_AOT"); off = e && e[0] == '0'; }
+        if (off) return;
+    }
     if (!identify(fd, id, &idlen, x)) return;
     for (i = 0; aoi_aot_libs[i]; i++) {
         const struct aoi_aot_lib *L = aoi_aot_libs[i];
