@@ -12,7 +12,10 @@ LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'dnf -y makecache' > /dev/null 2>&1 
 cat > "$R/tmp/zygote.py" <<'EOF'
 import os, sys, time
 from dnf.cli import main                          # dnf, libdnf, hawkey, rpm, librepo...
-open("/dev/aoi_snapshot").close()                 # saved at the next time slice...
+try:
+    open("/dev/aoi_snapshot").close()             # saved at the next time slice (always ENOENT)...
+except OSError:
+    pass
 while True:                                       # ...wait for it (EBUSY until taken)
     try:
         open("/dev/aoi_snapshot_pending").close()
@@ -38,7 +41,7 @@ echo "   save run: $(secs $t0) s, snapshot $(du -h /tmp/dnf.snap | cut -f1)"
 cmp_one() {   # cmp_one ARGS...
     printf '%s\n' "$@" > "$R/tmp/zygote.args"
     t0=$(date +%s.%N)
-    LXRUN_QUIET=1 build/lxrun "$R" /usr/bin/dnf "$@" > /tmp/plain.out 2>&1
+    LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c "dnf $*" > /tmp/plain.out 2>&1
     a=$(secs $t0)
     t0=$(date +%s.%N)
     AOI_SNAPSHOT_LOAD=/tmp/dnf.snap LXRUN_QUIET=1 build/lxrun "$R" > /tmp/zyg.out 2>&1
