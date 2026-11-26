@@ -62,7 +62,7 @@ class Lib:
     def __init__(self, root, path):
         self.name = os.path.basename(path)
         host = root + path
-        self.loads, self.syms, self.full = [], [], False
+        self.loads, self.syms, self.full, self.starts = [], [], False, []   # (not an ELF file, e.g. [lxfast]: no names)
         try:
             d, self.loads, secs = elf(host)
         except Exception:
