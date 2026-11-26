@@ -4418,6 +4418,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         case 6: case 7: case 37: case 38: r = 0; break;            /* F_SETLK(W), F_OFD_SETLK(W): granted (SQLite) */
+        case 8: case 10: case 15: case 1024: case 1026: r = 0; break;   /* F_SETOWN, F_SETSIG, F_SETOWN_EX, F_SETLEASE,
+                                                                     * F_NOTIFY: accepted, no SIGIO (nginx's worker channels) */
+        case 9: case 11: r = 0; break;                             /* F_GETOWN, F_GETSIG: none */
+        case 16: { uint8_t z[8] = { 0 }; r = put(p, a2, z, 8) ? 0 : err(L_EFAULT); break; }   /* F_GETOWN_EX */
+        case 1025: r = 2; break;                                   /* F_GETLEASE: F_UNLCK */
+        case 1031: case 1032: r = 65536; break;                    /* F_SETPIPE_SZ, F_GETPIPE_SZ */
         case 1033: case 1034:                                      /* F_ADD_SEALS, F_GET_SEALS: memfds only */
             if (strncmp(f->path, "memfd:", 6)) { r = err(L_EINVAL); break; }
             if (a1 == 1034) { r = (uint64_t)f->seals; break; }
