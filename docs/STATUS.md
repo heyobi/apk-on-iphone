@@ -1,5 +1,52 @@
 # Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
 
+## AlmaLinux: measured, profiled, faster; server programs (2026-11-26)
+
+Measured in CI (`bench-almalinux` job, `tests/linux/bench_dnf.sh`): each workload natively
+(chroot on the same arm64 runner) and under lxrun; JSON artifact per run. Profiled
+(`profile-almalinux`, `tests/linux/profile_dnf.sh`): `LXRUN_PROF=FILE` samples the guest pc
+every millisecond of CPU time; `tests/linux/prof_resolve.py` names the functions (AlmaLinux's
+debuginfo packages give full symbols). Guest instruction counts match native ones (530 M vs
+527 M for `dnf --version`): the time is interpretation, not system calls.
+
+| AlmaLinux 10.3, dnf 4.20 | native | start | now |
+|---|---:|---:|---:|
+| `dnf install httpd` | 0.91 s | 37.0 s | 22.5 s |
+| `dnf install tmux` | 0.62 s | 22.8 s | 15.3 s |
+| `rpm -qa` | 0.05 s | 5.0 s | 3.1 s |
+| `dnf makecache`, cached | 0.47 s | 14.0 s | 10.0 s |
+| `dnf makecache`, cold | 3.0 s | 130 s | 101 s |
+
+- **Cryptographic Extension** (`core/simd.c` `crypto_step`): AESE/AESD/AESMC/AESIMC, SHA1*,
+  SHA256*, HWCAP `aes pmull sha1 sha2`. `sha256_block_neon` had been 26-39% of dnf's time
+  (librepo re-checks cached metadata, rpm checks header digests). difftest classes added.
+- **glibc's string functions on the host** (`core/lxfast.c`): when libc.so.6 is mapped,
+  memcpy, memmove, memset, memchr, rawmemchr, memcmp, strlen, strnlen, strchr, strchrnul,
+  strrchr, strcmp, strncmp, strcpy, stpcpy branch to thunks (IFUNC resolvers: the real one
+  runs once, its variant is kept for declined calls). Inaccessible bytes or overlap across
+  chunks: declined, glibc's own code runs. `tests/linux/libcfast.c` against byte references
+  natively and under lxrun (comparisons by sign: glibc's values depend on its variant).
+  `AOI_LXFAST=0` turns it off. 2.4 M calls in a dnf run, none declined.
+- dnf's metadata: filelists are already skipped by dnf 4.20; a cold makecache is parsing
+  BaseOS's 11 MB primary.xml (libxml2, libsolv, strcmp/msort in libc).
+
+Server programs through LxTerm's systemctl (lxterm `lxios/LxTerm/systemctl.sh`, CI there):
+httpd and nginx start, serve, reload and stop. Core changes they needed:
+
+- `connect(AF_UNSPEC)` dissolves a datagram socket's peer, and an IPv4 peer on an IPv6
+  socket is connected as `::ffff:a.b.c.d` (glibc's getaddrinfo sorts answers with one socket
+  connected to each in turn; the stale source tripped its assertion);
+- futex `LOCK_PI`/`LOCK_PI2`/`TRYLOCK_PI`/`UNLOCK_PI` by compare-and-swap on host memory,
+  contended locks retried, across processes too (APR's process-shared mutexes);
+- `ioctl FIOASYNC`, `fcntl F_SETOWN`/`F_SETSIG`/`F_SETOWN_EX`/leases accepted without SIGIO,
+  `F_GETPIPE_SZ` (nginx's worker channels); more `prctl` options (DUMPABLE, PDEATHSIG...);
+  `getitimer`, `setitimer` to stop (starting a timer: ENOSYS, not faked).
+
+Not yet: MariaDB. Its InnoDB reserves 128 GiB when 8 TiB is refused; 192 GiB of guest space
+fits it but costs every process start ~0.15 s (one prot byte per page, per process), and
+`mariadb-install-db` then still hangs. A sparse page table first. `RLIMIT_NOFILE` is 256
+(`AOI_PROC_FDS`).
+
 ## Eight distributions, ports, Jupyter (2026-11-25)
 
 LxTerm 1.0.1 runs Debian (bundled) and, downloaded on demand, Ubuntu 26.04, Alpine,
