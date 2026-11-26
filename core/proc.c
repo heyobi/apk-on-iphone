@@ -669,8 +669,8 @@ enum { AT_NULL = 0, AT_PHDR = 3, AT_PHENT = 4, AT_PHNUM = 5, AT_PAGESZ = 6, AT_B
        AT_ENTRY = 9, AT_UID = 11, AT_EUID = 12, AT_GID = 13, AT_EGID = 14, AT_PLATFORM = 15,
        AT_HWCAP = 16, AT_CLKTCK = 17, AT_SECURE = 23, AT_RANDOM = 25, AT_HWCAP2 = 26, AT_EXECFN = 31 };
 
-/* What the interpreter implements: FP, ASIMD, CRC32, LSE atomics. No crypto, no FP16. */
-#define GUEST_HWCAP ((1u << 0) | (1u << 1) | (1u << 7) | (1u << 8))
+/* What the interpreter implements: FP, ASIMD, AES, PMULL, SHA1, SHA2, CRC32, LSE atomics. No FP16. */
+#define GUEST_HWCAP ((1u << 0) | (1u << 1) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8))
 
 uint64_t aoi_proc_syscall(struct aoi_cpu *c);
 
@@ -1514,7 +1514,7 @@ static int proc_file(struct aoi_proc *p, const char *g)
         fprintf(t, "MemTotal:        8000000 kB\nMemFree:         4000000 kB\nMemAvailable:    4000000 kB\n"
                    "Buffers:               0 kB\nCached:                0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n");
     } else if (!strcmp(g, "/proc/cpuinfo")) {
-        fprintf(t, "processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\nCPU implementer\t: 0x61\n"
+        fprintf(t, "processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd aes pmull sha1 sha2 crc32 atomics\nCPU implementer\t: 0x61\n"
                    "CPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\nCPU revision\t: 0\n\n");
     } else if (!strcmp(g, "/proc/sys/kernel/randomize_va_space")) {
         fprintf(t, "2\n");
