@@ -24,6 +24,11 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld bc binutils > /dev/null
       - name: Build lxrun
         run: make build/lxrun
+      - if: contains(inputs.script, 'accel')
+        uses: mymindstorm/setup-emsdk@v14
+        with: { version: latest }
+      - if: contains(inputs.script, 'accel')          # (the wasm32 core, for the accelerated engine; before sudo, which drops emsdk's PATH)
+        run: sh tests/wasm/build.sh
       - name: Root
         run: sh tests/linux/fetch-image.sh "$RUNNER_TEMP/root" ${{ inputs.tag }} ${{ inputs.image }}
       - name: ${{ inputs.script }}

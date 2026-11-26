@@ -7,12 +7,7 @@
 DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 R=$1
 cd "$DIR" || exit 1
-if ! command -v emcc > /dev/null; then
-    git clone -q --depth 1 https://github.com/emscripten-core/emsdk /tmp/emsdk
-    (cd /tmp/emsdk && ./emsdk install latest > /dev/null 2>&1 && ./emsdk activate latest > /dev/null 2>&1)
-    . /tmp/emsdk/emsdk_env.sh > /dev/null 2>&1
-fi
-sh tests/wasm/build.sh > /dev/null || { echo "wasm build failed"; exit 1; }
+[ -f build/lxrun.js ] || { echo "no build/lxrun.js (explore.yml builds it for accel scripts)"; exit 1; }
 node --version
 cp /etc/resolv.conf "$R/etc/resolv.conf"
 LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'dnf -y makecache' > /dev/null 2>&1   # (metadata for -C runs)
