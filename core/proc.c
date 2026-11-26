@@ -2953,7 +2953,8 @@ static void zyg_saved(struct aoi_proc *p, const char *snap)
     snprintf(list, sizeof list, "%s", zyg.watch);
     for (q = strtok_r(list, ",", &save); q; q = strtok_r(NULL, ",", &save)) zyg_line(p, q, f);
     for (i = 0; i < p->nmaps && i < AOI_PROC_MAPS; i++) {
-        if (p->maps[i].path[0] != '/' || !strncmp(p->maps[i].path, "/dev/", 5) || !strncmp(p->maps[i].path, "/proc/", 6)) continue;
+        if (p->maps[i].path[0] != '/' || !strncmp(p->maps[i].path, "/dev/", 5) || !strncmp(p->maps[i].path, "/proc/", 6) ||
+            !strncmp(p->maps[i].path, "/etc/", 5)) continue;               /* (/etc/: saved as data, core/snap.c) */
         for (j = 0; j < i && strcmp(p->maps[j].path, p->maps[i].path); j++) {}
         if (j == i) zyg_line(p, p->maps[i].path, f);
     }

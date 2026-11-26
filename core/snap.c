@@ -55,7 +55,9 @@ static int file_name(const char *path)
 
 /* ---------- memory ---------- */
 
-/* For each present page: the index+1 of the latest map record covering it (0: none). */
+/* For each present page: the index+1 of the latest map record covering it (0: none). Pages
+ * of files under /etc/ are stored as data: an install rewrites ld.so.cache, and the process
+ * must find the bytes it had (a resumed glibc keeps pointers into its view of the cache). */
 static uint16_t *page_maps(struct aoi_proc *p, int64_t *pos, uint64_t nch)
 {
     uint16_t *pm = calloc(nch * PER_CHUNK, sizeof *pm);
@@ -64,7 +66,7 @@ static uint16_t *page_maps(struct aoi_proc *p, int64_t *pos, uint64_t nch)
     for (i = 0; i < p->nmaps && i < 65535; i++) {
         struct aoi_proc_map *m = &p->maps[i];
         uint64_t a;
-        if (!file_name(m->path)) continue;
+        if (!file_name(m->path) || !strncmp(m->path, "/etc/", 5)) continue;
         for (a = m->start & ~(uint64_t)(PAGE - 1); a < m->start + m->len && a < p->vm.size; a += PAGE) {
             uint64_t ci = a >> AOI_VM_CHUNK_SHIFT;
             if (pos[ci] >= 0) pm[(uint64_t)pos[ci] * PER_CHUNK + (a & (AOI_VM_CHUNK - 1)) / PAGE] = (uint16_t)(i + 1);
