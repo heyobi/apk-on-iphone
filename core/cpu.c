@@ -225,9 +225,18 @@ enum aoi_stop aoi_cpu_run(struct aoi_cpu *c, uint64_t max_steps)
                     if (!f) break;
                     c->aot_bias = c->aot_biases[k];
                     if (!(n = f(c))) break;
+                    aoi_aot_runs++;
+                    /* chained: while it lands in translated code of the same library (a call, a
+                     * return, the next page), the next page's function runs at once */
+                    while (c->stop == AOI_RUN && c->pc - c->aot_lo[k] < c->aot_hi[k] - c->aot_lo[k] && c->steps + (uint64_t)n < limit
+                           && n < 1000000 && (f = L->pages[(c->pc - c->aot_biases[k] - L->text_lo) >> 12])) {
+                        int m = f(c);
+                        if (!m) break;
+                        n += m;
+                        aoi_aot_runs++;
+                    }
                     c->steps += (uint64_t)n;
                     aoi_aot_insns += (uint64_t)n;
-                    aoi_aot_runs++;
                     k = -1;
                     break;
                 }

@@ -1,6 +1,8 @@
 /* aotgen: a guest aarch64 shared library -> C, translated ahead of time (core/aot.h).
  *
- * usage: aotgen LIBRARY NAME OUT.c
+ * usage: aotgen LIBRARY NAME OUT.c [PAGES]
+ *   PAGES: a file of page addresses (hex, one per line) to translate, from a profile
+ *   (tests/linux/prof_resolve.py --pages); the others stay interpreted. Default: all.
  *
  * Every instruction of the library's .text becomes C in a function per 4 KiB page; a jump
  * table enters the page at any instruction. Integer data processing, loads and stores,
@@ -471,7 +473,16 @@ int main(int argc, char **argv)
     uint16_t phnum, phentsize, shnum, shentsize, shstrndx;
     uint8_t id[20];
     int idlen = 0, i, npages, translated = 0, total = 0;
-    if (argc != 4) { fprintf(stderr, "usage: aotgen LIBRARY NAME OUT.c\n"); return 2; }
+    static uint64_t want[65536];
+    int nwant = 0;
+    if (argc != 4 && argc != 5) { fprintf(stderr, "usage: aotgen LIBRARY NAME OUT.c [PAGES]\n"); return 2; }
+    if (argc == 5) {
+        FILE *pf = fopen(argv[4], "r");
+        unsigned long long v;
+        if (!pf) { perror(argv[4]); return 1; }
+        while (nwant < 65536 && fscanf(pf, "%llx", &v) == 1) want[nwant++] = v & ~0xfffULL;
+        fclose(pf);
+    }
     if (!(f = fopen(argv[1], "rb"))) { perror(argv[1]); return 1; }
     fseek(f, 0, SEEK_END); img_len = (size_t)ftell(f); fseek(f, 0, SEEK_SET);
     img = malloc(img_len);
@@ -525,7 +536,9 @@ int main(int argc, char **argv)
     text_hi = (text_hi + 0xfff) & ~0xfffULL;
     npages = (int)((text_hi - text_lo) >> 12);
     for (pg = text_lo; pg < text_hi; pg += 4096) {
-        int k, nins = 0;
+        int k, nins = 0, j, wanted = !nwant;
+        for (j = 0; j < nwant && !wanted; j++) wanted = want[j] == pg;
+        if (!wanted) continue;
         page_lo = pg; page_hi = pg + 4096;
         fprintf(o, "static int p_%llx(struct aoi_cpu *c)\n{\n    int n = 0;\n    switch ((unsigned)((c->pc - B - 0x%llxULL) >> 2)) {\n",
                 (unsigned long long)pg, (unsigned long long)pg);
@@ -546,7 +559,11 @@ int main(int argc, char **argv)
         fprintf(o, "    c->pc = B + 0x%llxULL; return n;\n}\n", (unsigned long long)page_hi);
     }
     fprintf(o, "static const aoi_aot_fn pages[%d] = {\n", npages);
-    for (pg = text_lo; pg < text_hi; pg += 4096) fprintf(o, "    p_%llx,\n", (unsigned long long)pg);
+    for (pg = text_lo; pg < text_hi; pg += 4096) {
+        int j, wanted = !nwant;
+        for (j = 0; j < nwant && !wanted; j++) wanted = want[j] == pg;
+        if (wanted) fprintf(o, "    p_%llx,\n", (unsigned long long)pg); else fprintf(o, "    0,\n");
+    }
     fprintf(o, "};\nconst struct aoi_aot_lib aot_%s = { \"%s\", {", argv[2], argv[2]);
     for (i = 0; i < idlen; i++) fprintf(o, "%s0x%02x", i ? ", " : "", id[i]);
     fprintf(o, "}, %d, 0x%llxULL, 0x%llxULL, pages };\n", idlen, (unsigned long long)text_lo, (unsigned long long)text_hi);
