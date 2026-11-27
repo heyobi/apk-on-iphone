@@ -3552,6 +3552,40 @@ static void lx_proc_refresh(void)
     pthread_mutex_unlock(&lx_proc_mu);
 }
 
+/* A directory under /proc (a process's, its fd/ or task/): opened from the host tree rather than
+ * made like a file, and this process's own made current first (not at the next refresh); its
+ * fd/ lists its descriptors as symlinks to what they are (Python's test suite, lsof, closefrom).
+ * 1 if g is such a directory. */
+static int lx_proc_dir(struct aoi_proc *p, const char *g)
+{
+    char h[AOI_PATH], d[AOI_PATH + 32], ln[AOI_PATH + 64], nm[24];
+    struct stat st;
+    const char *s = g + 6;
+    int pid = 0, self = 0, i;
+    if (!p->linux_mode) return 0;
+    lx_proc_refresh();
+    if (!strncmp(s, "self", 4) && (!s[4] || s[4] == '/')) { pid = PID(p); self = 1; s += 4; }
+    else if (*s >= '0' && *s <= '9') { pid = atoi(s); while (*s >= '0' && *s <= '9') s++; }
+    if (pid && pid == PID(p) && lx_procdir[0]) {
+        snprintf(nm, sizeof nm, "%d", pid);
+        pthread_mutex_lock(&lx_proc_mu);
+        lx_piddir(lx_procdir, nm);
+        if (!strcmp(s, "/fd") || !strcmp(s, "/fd/")) {
+            snprintf(d, sizeof d, "%s/%s/fd", lx_procdir, self ? "self" : nm);
+            rmtree(d);
+            mkdir(d, 0555);
+            for (i = 0; i < AOI_PROC_FDS; i++) {
+                if (!p->fd[i].used) continue;
+                snprintf(ln, sizeof ln, "%s/%d", d, i);
+                if (symlink(p->fd[i].path[0] ? p->fd[i].path : "anon_inode:[unknown]", ln)) {}
+            }
+        }
+        pthread_mutex_unlock(&lx_proc_mu);
+    }
+    to_host(p, g, h);
+    return !stat(h, &st) && S_ISDIR(st.st_mode);
+}
+
 /* What /proc/<pid>/... shows of a process, copied under the registry's lock. */
 struct lx_pinfo {
     int pid, ppid, pgid, sid, tty, nthreads, fg;
@@ -4331,7 +4365,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_openat: {
         int hfd, fdn;
         if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0100000), g))) { r = err(rc); break; }
-        if (!strncmp(g, "/proc/", 6)) {                             /* synthetic procfs */
+        if (!strncmp(g, "/proc/", 6) && !lx_proc_dir(p, g)) {      /* synthetic procfs (its directories: below) */
             if ((hfd = proc_file(p, g)) < 0) { r = err(L_ENOENT); break; }
         } else if (p->linux_mode && is_tty_path(g)) {              /* a terminal (core/tty.c) */
             r = tty_open(p, g, a2);
