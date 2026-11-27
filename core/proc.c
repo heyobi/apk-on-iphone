@@ -40,6 +40,7 @@
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/uio.h>
+#include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -131,6 +132,12 @@ static int lx_errno(int e)
     case ECONNRESET: return L_ECONNRESET; case ENOBUFS: return L_ENOBUFS; case EISCONN: return L_EISCONN;
     case EHOSTUNREACH: return L_EHOSTUNREACH; case EALREADY: return L_EALREADY;
     case EINPROGRESS: return L_EINPROGRESS; case ENOTSUP: return L_ENOTSUP;
+#ifdef ENOATTR
+    case ENOATTR: return L_ENODATA;
+#endif
+#if defined(ENODATA) && (!defined(ENOATTR) || ENODATA != ENOATTR)
+    case ENODATA: return L_ENODATA;
+#endif
     default: return L_EIO;
     }
 }
@@ -1833,6 +1840,225 @@ static mode_t lx_mode(struct aoi_proc *p, int fd, const char *h, mode_t m)
     return m | (S_ISDIR(st.st_mode) ? 0700 : 0600);
 }
 
+/* ---------- what the host file cannot hold (Linux mode): mode bits, owner, xattrs ----------
+ * The host keeps the owner's read and write (lx_mode) and has one owner. A file whose guest
+ * mode lacks those bits, or whose guest owner is not root, carries its guest mode, uid and gid
+ * in the host xattr "user.lxmeta", and a marker the stat paths check before reading it (no
+ * extra system call for the ordinary file): the sticky bit on Linux hosts, UF_NODUMP on
+ * Darwin (which refuses the sticky bit on a file). The guest's own extended attributes are
+ * host xattrs named "user.lx." + their name. */
+#define LX_META "user.lxmeta"
+#define LX_XPFX "user.lx."
+struct lx_meta { uint32_t magic, mode, uid, gid; };
+
+static ssize_t hx_get(int fd, const char *h, int nofollow, const char *name, void *v, size_t n)
+{
+#ifdef __APPLE__
+    return fd >= 0 ? fgetxattr(fd, name, v, n, 0, 0) : getxattr(h, name, v, n, 0, nofollow ? XATTR_NOFOLLOW : 0);
+#else
+    return fd >= 0 ? fgetxattr(fd, name, v, n) : nofollow ? lgetxattr(h, name, v, n) : getxattr(h, name, v, n);
+#endif
+}
+static int hx_set(int fd, const char *h, int nofollow, const char *name, const void *v, size_t n, int lflags)
+{
+#ifdef __APPLE__
+    int o = (lflags & 1 ? XATTR_CREATE : 0) | (lflags & 2 ? XATTR_REPLACE : 0) | (nofollow ? XATTR_NOFOLLOW : 0);
+    return fd >= 0 ? fsetxattr(fd, name, v, n, 0, o & ~XATTR_NOFOLLOW) : setxattr(h, name, v, n, 0, o);
+#else
+    int o = (lflags & 1 ? XATTR_CREATE : 0) | (lflags & 2 ? XATTR_REPLACE : 0);
+    return fd >= 0 ? fsetxattr(fd, name, v, n, o) : nofollow ? lsetxattr(h, name, v, n, o) : setxattr(h, name, v, n, o);
+#endif
+}
+static int hx_remove(int fd, const char *h, int nofollow, const char *name)
+{
+#ifdef __APPLE__
+    return fd >= 0 ? fremovexattr(fd, name, 0) : removexattr(h, name, nofollow ? XATTR_NOFOLLOW : 0);
+#else
+    return fd >= 0 ? fremovexattr(fd, name) : nofollow ? lremovexattr(h, name) : removexattr(h, name);
+#endif
+}
+static ssize_t hx_list(int fd, const char *h, int nofollow, char *v, size_t n)
+{
+#ifdef __APPLE__
+    return fd >= 0 ? flistxattr(fd, v, n, 0) : listxattr(h, v, n, nofollow ? XATTR_NOFOLLOW : 0);
+#else
+    return fd >= 0 ? flistxattr(fd, v, n) : nofollow ? llistxattr(h, v, n) : listxattr(h, v, n);
+#endif
+}
+
+static int meta_marked(const struct stat *st)
+{
+#ifdef __APPLE__
+    return (st->st_flags & UF_NODUMP) != 0;
+#else
+    return (st->st_mode & S_ISVTX) != 0;
+#endif
+}
+
+/* The guest metadata of a host file (1) or none (0: its host mode, owner root). */
+static int meta_get(int fd, const char *h, int nofollow, const struct stat *st, struct lx_meta *m)
+{
+    if (S_ISLNK(st->st_mode) || !meta_marked(st)) return 0;
+    return hx_get(fd, h, nofollow, LX_META, m, sizeof *m) == (ssize_t)sizeof *m && m->magic == 0x314d584c;
+}
+
+/* After lx_stat: the guest's mode bits, uid and gid where the file carries them. */
+static void meta_stat(struct aoi_proc *p, int fd, const char *h, int nofollow, const struct stat *st, uint8_t *o)
+{
+    struct lx_meta m;
+    uint32_t w;
+    if (!p->linux_mode || !meta_get(fd, h, nofollow, st, &m)) return;
+    memcpy(&w, o + 16, 4);
+    w = (w & ~07777u) | (m.mode & 07777);
+    memcpy(o + 16, &w, 4);
+    memcpy(o + 24, &m.uid, 4); memcpy(o + 28, &m.gid, 4);
+}
+
+/* Gives a host file the guest mode, uid and gid: the host mode where it can hold them
+ * (owner root, the owner's bits present), else the forced host mode plus the metadata. */
+static int meta_set(int fd, const char *h, mode_t mode, uint32_t uid, uint32_t gid)
+{
+    struct stat st;
+    mode_t host;
+    int need, had;
+    if (fd >= 0 ? fstat(fd, &st) : lstat(h, &st)) return -1;
+    if (S_ISLNK(st.st_mode)) return 0;                             /* (a symlink's mode and owner: not kept) */
+    mode &= 07777;
+    host = mode | (S_ISDIR(st.st_mode) ? 0700 : 0600);
+    need = host != mode || uid || gid;
+    had = meta_marked(&st);
+    if (need) {
+        struct lx_meta m = { 0x314d584c, (uint32_t)mode, uid, gid };
+        if (hx_set(fd, h, 0, LX_META, &m, sizeof m, 0)) need = 0;  /* (no xattrs here: as before) */
+    } else if (had) hx_remove(fd, h, 0, LX_META);
+#ifdef __APPLE__
+    if (need != had) {
+        unsigned fl = need ? (st.st_flags | UF_NODUMP) : (st.st_flags & ~UF_NODUMP);
+        if (fd >= 0) fchflags(fd, fl); else chflags(h, fl);
+    }
+    host &= ~(mode_t)S_ISVTX;                                       /* (Darwin: no sticky files; dirs keep it) */
+    if ((mode & S_ISVTX) && S_ISDIR(st.st_mode)) host |= S_ISVTX;
+#else
+    if (need) host |= S_ISVTX;
+#endif
+    return fd >= 0 ? fchmod(fd, host) : chmod(h, host);
+}
+
+/* The guest's current mode and owner of a host file. */
+static int meta_cur(int fd, const char *h, struct lx_meta *m)
+{
+    struct stat st;
+    if (fd >= 0 ? fstat(fd, &st) : stat(h, &st)) return -1;
+    if (!meta_get(fd, h, 0, &st, m)) { m->mode = st.st_mode & 07777; m->uid = m->gid = 0; }
+    return 0;
+}
+
+/* A sched_* target: 0 (or the process), another process, or the errno. */
+static int sched_pid(struct aoi_proc *p, uint64_t a)
+{
+    int pid = (int)a;
+    if (pid < 0) return L_EINVAL;
+    if (!pid || !p->linux_mode || pid == PID(p)) return 0;
+    return aoi_proc_alive(pid) ? 0 : L_ESRCH;
+}
+
+/* The guest's extended attributes (set 5-7, get 8-10, list 11-13, remove 14-16; path, lpath,
+ * fd): host xattrs LX_XPFX + name. A host without them: set and remove accepted, none to get. */
+static uint64_t lx_xattr(struct aoi_proc *p, int nr, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
+{
+    char g[AOI_PATH], h[AOI_PATH], name[300], *buf = NULL;
+    int op = (nr - 5) / 3, kind = (nr - 5) % 3, fd = -1, nofollow = kind == 1, rc;
+    struct stat st;
+    uint64_t r;
+    ssize_t n;
+    if (kind == 2) {
+        struct aoi_proc_fd *f = fd_get(p, a0);
+        if (!f) return err(L_EBADF);
+        if (f->kind != AOI_FD_FILE) return op == 0 || op == 3 ? err(L_ENOTSUP) : op == 1 ? err(L_ENODATA) : 0;
+        fd = f->host;
+    } else {
+        if ((rc = at_path(p, (uint64_t)-100, a0, !nofollow, g))) return err(rc);
+        if (!strncmp(g, "/proc/", 6) || !strncmp(g, "/dev/", 5)) return op == 1 ? err(L_ENODATA) : op == 2 ? 0 : err(L_ENOTSUP);
+        to_host(p, g, h);
+        if (lstat(h, &st)) return herr();
+        if (nofollow && S_ISLNK(st.st_mode))                       /* Linux: no user.* xattrs on a symlink */
+            return op == 1 ? err(L_ENODATA) : op == 2 ? 0 : err(L_EPERM);
+    }
+    if (op != 2) {                                                 /* the name */
+        char gn[256];
+        if (!gstr(p, a1, gn, sizeof gn)) return err(L_ERANGE);
+        if (!gn[0]) return err(L_ERANGE);
+        if (strncmp(gn, "user.", 5) && strncmp(gn, "trusted.", 8) && strncmp(gn, "security.", 9) && strncmp(gn, "system.", 7))
+            return err(L_ENOTSUP);
+        if (!strncmp(gn, "system.", 7)) return op == 1 ? err(L_ENODATA) : op == 3 ? err(L_ENODATA) : err(L_ENOTSUP);   /* (ACLs) */
+        snprintf(name, sizeof name, "%s%s", LX_XPFX, gn);
+    }
+    switch (op) {
+    case 0: {                                                      /* set(name, value, size, flags) */
+        if (a3 > 65536) return err(L_E2BIG);
+        if (!(buf = malloc(a3 ? a3 : 1))) return err(L_ENOMEM);
+        if (a3 && !get(p, a2, buf, a3)) { free(buf); return err(L_EFAULT); }
+        r = hx_set(fd, kind == 2 ? NULL : h, nofollow, name, buf, a3, (int)a4 & 3) ? (errno == ENOTSUP ? 0 : herr()) : 0;
+        free(buf);
+        return r;
+    }
+    case 1:                                                        /* get(name, value, size) */
+        if (!a3) { n = hx_get(fd, kind == 2 ? NULL : h, nofollow, name, NULL, 0); return n < 0 ? (errno == ENOTSUP ? err(L_ENODATA) : herr()) : (uint64_t)n; }
+        if (!(buf = malloc(a3))) return err(L_ENOMEM);
+        n = hx_get(fd, kind == 2 ? NULL : h, nofollow, name, buf, a3);
+        if (n < 0) r = errno == ENOTSUP ? err(L_ENODATA) : herr();
+        else r = put(p, a2, buf, (uint64_t)n) ? (uint64_t)n : err(L_EFAULT);
+        free(buf);
+        return r;
+    case 2: {                                                      /* list(list, size): the guest's names */
+        ssize_t i, k = 0;
+        char *out;
+        n = hx_list(fd, kind == 2 ? NULL : h, nofollow, NULL, 0);
+        if (n <= 0) return n < 0 && errno != ENOTSUP ? herr() : 0;
+        if (!(buf = malloc((size_t)n + 1)) || !(out = malloc((size_t)n + 1))) { free(buf); return err(L_ENOMEM); }
+        n = hx_list(fd, kind == 2 ? NULL : h, nofollow, buf, (size_t)n);
+        for (i = 0; n > 0 && i < n; i += (ssize_t)strlen(buf + i) + 1)
+            if (!strncmp(buf + i, LX_XPFX, strlen(LX_XPFX))) {
+                size_t l = strlen(buf + i) - strlen(LX_XPFX) + 1;
+                memcpy(out + k, buf + i + strlen(LX_XPFX), l); k += (ssize_t)l;
+            }
+        if (!a2) r = (uint64_t)k;
+        else if ((uint64_t)k > a2) r = err(L_ERANGE);
+        else r = put(p, a1, out, (uint64_t)k) ? (uint64_t)k : err(L_EFAULT);
+        free(buf); free(out);
+        return r;
+    }
+    default:                                                       /* remove(name) */
+        return hx_remove(fd, kind == 2 ? NULL : h, nofollow, name) ? (errno == ENOTSUP ? 0 : herr()) : 0;
+    }
+}
+
+/* chmod in Linux mode: the mode, the owner kept. */
+static int lx_chmod(struct aoi_proc *p, int fd, const char *h, mode_t mode)
+{
+    struct lx_meta m;
+    if (!p->linux_mode) return fd >= 0 ? fchmod(fd, mode) : chmod(h, mode);
+    if (meta_cur(fd, h, &m)) return -1;
+    return meta_set(fd, h, mode, m.uid, m.gid);
+}
+
+/* chown in Linux mode: (uint32_t)-1 keeps that id. */
+static int lx_chown(int fd, const char *h, uint32_t uid, uint32_t gid)
+{
+    struct lx_meta m;
+    if (meta_cur(fd, h, &m)) return -1;
+    if (uid != 0xffffffffu) m.uid = uid;
+    if (gid != 0xffffffffu) m.gid = gid;
+    return meta_set(fd, h, m.mode, m.uid, m.gid);
+}
+
+/* A file this process created: its owner, and the mode the host could not hold. */
+static void meta_created(struct aoi_proc *p, int fd, const char *h, mode_t mode)
+{
+    if (!p->linux_mode) return;
+    if (p->cred[1] || p->cred[4] || (mode & 0600) != 0600) meta_set(fd, h, mode, p->cred[1], p->cred[4]);
+}
+
 /* ---------- the terminal (Linux mode, core/tty.c) ---------- */
 
 /* /dev/tty, /dev/console, /dev/tty0, /dev/pts/N, /dev/ptmx */
@@ -3167,6 +3393,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         np->th[0].tid = np->pid;
         np->th[0].sigmask = p->th[p->vf->thread].sigmask;
         memcpy(np->cred, p->cred, sizeof np->cred);
+        np->umask = p->umask;
         for (k = 1; k <= 64; k++) if (p->sigact[k][0] == 1) np->sigact[k][0] = 1;   /* SIG_IGN survives execve */
         if (!np->trace && p->trace) { np->trace = p->trace; np->trace_shared = 1; }
     }
@@ -3422,6 +3649,8 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd)
     struct stat st;
     p->linux_mode = 1;
     p->uid = 0;
+    p->umask = 022;
+    umask(0);                                                      /* (the guest's: p->umask, applied here) */
     pthread_mutex_lock(&lx_mu);                                    /* the first is 1000; more sessions their own */
     p->pid = p->pgid = p->sid = lx_find(GUEST_PID) ? lx_newpid() : GUEST_PID;
     pthread_mutex_unlock(&lx_mu);
@@ -4457,6 +4686,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                 r = (uint64_t)fdn;
                 break;
             }
+            if (p->linux_mode && (a2 & 0100)) {                    /* O_CREAT: the guest's umask and mode */
+                mode_t m = (mode_t)(a3 & 07777) & ~(mode_t)p->umask;
+                int fresh = (p->cred[1] || p->cred[4] || (m & 0600) != 0600) && ((a2 & 0200) || lstat(h, &fs));
+                hfd = open(h, host_oflags(a2) | O_CLOEXEC, m | 0600);
+                if (hfd >= 0 && fresh) meta_created(p, hfd, NULL, m);
+            } else
             hfd = open(h, host_oflags(a2) | O_CLOEXEC, (mode_t)(p->linux_mode ? (a3 & 07777) | 0600 : a3));
             if (hfd < 0 && errno == EACCES && p->linux_mode && !p->cred[1] && !stat(h, &fs)) {
                 /* root reads and writes any file: the host file gets the owner's bits it lacks
@@ -4512,12 +4747,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         if (fstat(f->host, &st)) { r = herr(); break; }
         lx_stat(&st, sbuf, owner(p, f->path));
+        if (f->kind == AOI_FD_FILE) meta_stat(p, f->host, NULL, 0, &st, sbuf);
         dev_fix(sbuf, f->path);
         tty_stat_fd(f, sbuf);
         r = put(p, a1, sbuf, 128) ? 0 : err(L_EFAULT);
         break;
     case 291: {                                                    /* statx(dirfd, path, flags, mask, buf) */
-        int empty = (a2 & 0x1000) != 0, tty = 0;
+        int empty = (a2 & 0x1000) != 0, tty = 0, mfd = -2;
         char path0[2];
         uint8_t sx[256];
         if (empty && gstr(p, a1, path0, 2) && !path0[0]) {
@@ -4525,14 +4761,17 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             if (fstat(f->host, &st)) { r = herr(); break; }
             snprintf(g, AOI_PATH, "%s", f->path);
             tty = (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) ? 1 : 0;
+            mfd = f->kind == AOI_FD_FILE ? f->host : -2;
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a2 & 0x100), g))) { r = err(rc); break; }
             if (!(a2 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);
             if (p->linux_mode && is_tty_path(g)) { tty = 2; to_host(p, "/dev/null", h); }
             else to_host(p, g, h);
             if ((a2 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
+            mfd = tty ? -2 : -1;
         }
         lx_stat(&st, sbuf, owner(p, g));
+        if (mfd != -2) meta_stat(p, mfd, h, (a2 & 0x100) != 0, &st, sbuf);
         dev_fix(sbuf, g);
         if (tty == 1) tty_stat_fd(f, sbuf);
         else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
@@ -4544,21 +4783,24 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_newfstatat: {
-        int empty = (a3 & 0x1000) != 0, tty = 0;                  /* AT_EMPTY_PATH */
+        int empty = (a3 & 0x1000) != 0, tty = 0, mfd = -2;                  /* AT_EMPTY_PATH */
         char path0[2];
         if (empty && gstr(p, a1, path0, 2) && !path0[0]) {
             if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
             if (fstat(f->host, &st)) { r = herr(); break; }
             snprintf(g, AOI_PATH, "%s", f->path);
             tty = (f->kind == AOI_FD_TTY || f->kind == AOI_FD_PTM) ? 1 : 0;
+            mfd = f->kind == AOI_FD_FILE ? f->host : -2;
         } else {
             if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
             if (!(a3 & 0x100) && !strcmp(g, "/proc/self/exe")) snprintf(g, AOI_PATH, "%s", p->exe);   /* (linker64) */
             if (p->linux_mode && is_tty_path(g)) { tty = 2; to_host(p, "/dev/null", h); }
             else to_host(p, g, h);
             if ((a3 & 0x100) ? lstat(h, &st) : stat(h, &st)) { r = herr(); break; }
+            mfd = tty ? -2 : -1;
         }
         lx_stat(&st, sbuf, owner(p, g));
+        if (mfd != -2) meta_stat(p, mfd, h, (a3 & 0x100) != 0, &st, sbuf);
         dev_fix(sbuf, g);
         if (tty == 1) tty_stat_fd(f, sbuf);
         else if (tty == 2) { struct aoi_tty *tt = tty_of_path(p, g); tty_stat(sbuf, tt ? aoi_tty_index(tt) : 0, !strcmp(g, "/dev/ptmx")); }
@@ -4776,21 +5018,19 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case 5: case 6: case 7: case 8: case 9: case 10: case 11: case 12: case 13: case 14: case 15: case 16:
-        if (p->linux_mode)                                         /* Linux mode: set/remove accepted (not stored), */
-            r = nr <= 7 || nr >= 14 ? 0 : nr <= 10 ? err(L_ENODATA) : 0;   /* none to get, an empty list */
-        else r = err(L_ENOTSUP);                                   /* *xattr: no extended attributes */
+        r = p->linux_mode ? lx_xattr(p, nr, a0, a1, a2, a3, a4) : err(L_ENOTSUP);   /* *xattr */
         break;
     case 452: {                                                    /* fchmodat2(dirfd, path, mode, flags) */
         char e0[2];
         if ((a3 & 0x1000) && gstr(p, a1, e0, 2) && !e0[0]) {       /* AT_EMPTY_PATH: the fd itself (systemd) */
             if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-            r = fchmod(f->host, lx_mode(p, f->host, NULL, (mode_t)a2 & 07777)) ? herr() : 0;
+            r = lx_chmod(p, f->host, NULL, (mode_t)a2 & 07777) ? herr() : 0;
             break;
         }
         if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
         to_host(p, g, h);
         if ((a3 & 0x100) && !lstat(h, &st) && S_ISLNK(st.st_mode)) { r = err(L_ENOTSUP); break; }
-        r = chmod(h, lx_mode(p, -1, h, (mode_t)a2 & 07777)) ? herr() : 0;
+        r = lx_chmod(p, -1, h, (mode_t)a2 & 07777) ? herr() : 0;
         break;
     }
     case 228: case 229: case 230: case 231: case 284:              /* mlock, munlock, mlockall, munlockall, mlock2 */
@@ -4994,20 +5234,43 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case NR_fchmod:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        r = fchmod(f->host, lx_mode(p, f->host, NULL, (mode_t)a1 & 07777)) ? herr() : 0;
+        r = lx_chmod(p, f->host, NULL, (mode_t)a1 & 07777) ? herr() : 0;
         break;
     case NR_fchmodat:
         if ((rc = at_path(p, sx32(a0), a1, 1, g))) { r = err(rc); break; }
         to_host(p, g, h);
-        r = chmod(h, lx_mode(p, -1, h, (mode_t)a2 & 07777)) ? herr() : 0;
+        r = lx_chmod(p, -1, h, (mode_t)a2 & 07777) ? herr() : 0;
         break;
-    case NR_fchown: case NR_fchownat:                              /* one user: accepted, not applied */
-        r = nr == NR_fchown && !fd_get(p, a0) ? err(L_EBADF) : 0;
+    case NR_fchown: case NR_fchownat:                              /* the guest owner: see meta_set */
+        if (nr == NR_fchown) {
+            if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+            r = !p->linux_mode || f->kind != AOI_FD_FILE ? 0 : lx_chown(f->host, NULL, (uint32_t)a1, (uint32_t)a2) ? herr() : 0;
+            break;
+        }
+        {
+            char e0[2];
+            int nofollow = (a4 & 0x100) != 0;
+            if ((a4 & 0x1000) && gstr(p, a1, e0, 2) && !e0[0]) {   /* AT_EMPTY_PATH */
+                if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+                r = !p->linux_mode || f->kind != AOI_FD_FILE ? 0 : lx_chown(f->host, NULL, (uint32_t)a2, (uint32_t)a3) ? herr() : 0;
+                break;
+            }
+            if ((rc = at_path(p, sx32(a0), a1, !nofollow, g))) { r = err(rc); break; }
+            to_host(p, g, h);
+            if (lstat(h, &st)) { r = herr(); break; }
+            if (!p->linux_mode || (nofollow && S_ISLNK(st.st_mode))) { r = 0; break; }
+            r = lx_chown(-1, h, (uint32_t)a2, (uint32_t)a3) ? herr() : 0;
+        }
         break;
     case NR_mkdirat:
         if ((rc = at_path(p, sx32(a0), a1, 0, g))) { r = err(rc); break; }
         to_host(p, g, h);
-        r = mkdir(h, (mode_t)(a2 & 07777) | (p->linux_mode ? 0700 : 0)) ? herr() : 0;
+        if (!p->linux_mode) { r = mkdir(h, (mode_t)(a2 & 07777)) ? herr() : 0; break; }
+        {
+            mode_t m = (mode_t)(a2 & 07777) & ~(mode_t)p->umask;
+            r = mkdir(h, m | 0700) ? herr() : 0;
+            if (!r) meta_created(p, -1, h, m);
+        }
         break;
     case NR_unlinkat:
         if ((rc = at_path(p, sx32(a0), a1, 0, g))) { r = err(rc); break; }
@@ -5070,9 +5333,42 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
         r = fsync(f->host) ? herr() : 0;
         break;
-    case NR_utimensat:                                             /* timestamps: accepted, not applied */
-        r = 0;
+    case NR_utimensat: {                                           /* utimensat(dirfd, path, times, flags) */
+        struct timespec ts[2];
+        uint8_t tb[32];
+        int i;
+        if (a2) {
+            if (!get(p, a2, tb, 32)) { r = err(L_EFAULT); break; }
+            for (i = 0; i < 2; i++) {
+                int64_t sec, ns;
+                memcpy(&sec, tb + 16 * i, 8); memcpy(&ns, tb + 16 * i + 8, 8);
+                ts[i].tv_sec = (time_t)sec;
+                if (ns == 0x3fffffff) ts[i].tv_nsec = UTIME_NOW;
+                else if (ns == 0x3ffffffe) ts[i].tv_nsec = UTIME_OMIT;
+                else if (ns < 0 || ns > 999999999) { r = err(L_EINVAL); goto ut_done; }
+                else ts[i].tv_nsec = (long)ns;
+            }
+        }
+        if (!a1) {                                                 /* futimens */
+            if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+            if (f->kind != AOI_FD_FILE) { r = 0; break; }
+            r = futimens(f->host, a2 ? ts : NULL) ? herr() : 0;
+        } else {
+            char e0[2];
+            if ((a3 & 0x1000) && gstr(p, a1, e0, 2) && !e0[0]) {   /* AT_EMPTY_PATH */
+                if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+                r = f->kind != AOI_FD_FILE ? 0 : futimens(f->host, a2 ? ts : NULL) ? herr() : 0;
+                break;
+            }
+            if ((rc = at_path(p, sx32(a0), a1, !(a3 & 0x100), g))) { r = err(rc); break; }
+            if (p->linux_mode && (is_tty_path(g) || !strncmp(g, "/proc/", 6) || !strncmp(g, "/dev/", 5))) { r = 0; break; }
+            to_host(p, g, h);
+            r = utimensat(AT_FDCWD, h, a2 ? ts : NULL, (a3 & 0x100) ? AT_SYMLINK_NOFOLLOW : 0) ? herr() : 0;
+        }
+        if (r == err(L_EPERM)) r = 0;                              /* (a host file it may not touch: as before) */
+    ut_done:
         break;
+    }
     case NR_userfaultfd: {                                         /* see uffd_ioctl */
         int n, d;
         if (!p->uffd) { r = err(L_ENOSYS); break; }               /* see docs/STATUS.md: boot image under CMC */
@@ -5083,6 +5379,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     }
     case NR_ioctl:
+        if (p->linux_mode && !fd_get(p, a0)) { r = err(L_EBADF); break; }
         if (p->linux_mode && a1 == 0x5452 && (f = fd_get(p, a0)) && f->kind != AOI_FD_FILE) {
             /* FIOASYNC: accepted, no SIGIO is sent (nginx sets it on the channels to its workers
              * and gave up spawning them without; it reads them when epoll says so anyway) */
@@ -5384,7 +5681,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
                               p->cred[0], p->cred[1], p->cred[2], p->cred[3], p->cred[4], p->cred[5]);
         break;
     }
-    case NR_umask: r = 022; break;
+    case NR_umask:
+        if (!p->linux_mode) { r = 022; break; }
+        r = p->umask; p->umask = (uint32_t)a0 & 0777;
+        break;
     case NR_set_robust_list: r = 0; break;
     case NR_futex: {
         int op = (int)a1 & 127;                                    /* minus PRIVATE / CLOCK_REALTIME */
@@ -5658,6 +5958,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_sched_getaffinity: {
         uint64_t one = 1;
+        if ((rc = sched_pid(p, a0))) { r = err(rc); break; }
         if (a1 < 8) { r = err(L_EINVAL); break; }
         r = put(p, a2, &one, 8) ? 8 : err(L_EFAULT);
         break;
@@ -5732,8 +6033,19 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case NR_setpriority: r = 0; break;                              /* accepted; one scheduler for all */
     case NR_getpriority: r = 20; break;                             /* nice 0, in the kernel's 20-nice form */
-    case NR_sched_getscheduler: r = 0; break;                       /* SCHED_OTHER */
-    case NR_sched_getparam: { uint32_t prio = 0; r = put(p, a1, &prio, 4) ? 0 : err(L_EFAULT); break; }
+    case NR_sched_getscheduler: r = (rc = sched_pid(p, a0)) ? err(rc) : 0; break;   /* SCHED_OTHER */
+    case NR_sched_getparam: {
+        uint32_t prio = 0;
+        if ((rc = sched_pid(p, a0))) { r = err(rc); break; }
+        r = put(p, a1, &prio, 4) ? 0 : err(L_EFAULT);
+        break;
+    }
+    case 127: {                                                    /* sched_rr_get_interval: 100 ms */
+        int64_t ts[2] = { 0, 100000000 };
+        if ((rc = sched_pid(p, a0))) { r = err(rc); break; }
+        r = put(p, a1, ts, 16) ? 0 : err(L_EFAULT);
+        break;
+    }
     case NR_getrlimit: case NR_prlimit64: {
         uint64_t res = nr == NR_getrlimit ? a0 : a1, out = nr == NR_getrlimit ? a1 : a3, lim[2];
         lim[0] = lim[1] = ~0ULL;
@@ -5996,10 +6308,13 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case 164:                                                      /* setrlimit: the limits stay the host's */
     case 223:                                                      /* fadvise64: a hint */
     case 81: case 84: case 267:                                    /* sync, sync_file_range, syncfs */
-    case 118: case 119: case 122:                                  /* sched_setparam/setscheduler/setaffinity */
         r = 0;
         break;
+    case 118: case 119: case 122:                                  /* sched_setparam/setscheduler/setaffinity */
+        r = (rc = sched_pid(p, a0)) ? err(rc) : 0;
+        break;
     case 125: case 126:                                            /* sched_get_priority_max/min */
+        if ((int64_t)a0 < 0 || a0 > 6 || a0 == 4) { r = err(L_EINVAL); break; }
         r = (a0 == 1 || a0 == 2) ? (nr == 125 ? 99 : 1) : 0;      /* SCHED_FIFO, SCHED_RR: 1..99; others 0 */
         break;
     case 168: {                                                    /* getcpu(cpu, node): one CPU */

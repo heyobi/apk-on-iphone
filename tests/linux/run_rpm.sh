@@ -64,6 +64,25 @@ if [ "${3:-}" = net ]; then
     printf 'import asyncio, os, stat\nP = "/tmp/t.sock"\nasync def main():\n    for _ in range(2):\n        s = await asyncio.start_unix_server(lambda r, w: w.close(), P)\n        print(stat.S_ISSOCK(os.stat(P).st_mode), end=" ")\n        s.close(); await s.wait_closed()\n    print("rebound")\nasyncio.run(main())\n' > "$R/tmp/usock.py"
     check "unix socket name is a socket" "True True rebound" 120 /bin/bash -c 'rm -f /tmp/t.sock; python3 /tmp/usock.py'   # (asyncio removes stale socket names)
     check "/proc/self/fd lists the fds" "fds ok" 60 /bin/bash -c 'python3 -c "import os; f = open(\"/etc/os-release\"); n = os.listdir(\"/proc/self/fd\"); print(\"fds ok\" if str(f.fileno()) in n and len(n) >= 4 else n)"; ls /proc/$$ > /dev/null && echo pid dir'
+    cat > "$R/tmp/meta.py" <<'PY'
+import os, stat
+d = "/tmp/meta-t"; os.makedirs(d, exist_ok=True); f = d + "/f"
+open(f, "w").close()
+os.chmod(f, 0o444); m1 = stat.S_IMODE(os.stat(f).st_mode)
+open(f, "a").write("root writes")                                  # root still writes a 0444 file
+os.chown(f, 1234, 5678); st = os.stat(f)
+os.chmod(f, 0o640); m2 = stat.S_IMODE(os.stat(f).st_mode); u2 = os.stat(f).st_uid
+os.chown(f, 0, 0); os.chmod(f, 0o644)
+old = os.umask(0); g = d + "/g"
+if os.path.exists(g): os.unlink(g)
+open(g, "w").close(); m3 = stat.S_IMODE(os.stat(g).st_mode)
+os.mkdir(d + "/x", 0o555) if not os.path.exists(d + "/x") else os.chmod(d + "/x", 0o555); m4 = stat.S_IMODE(os.stat(d + "/x").st_mode)
+os.umask(old)
+os.utime(f, (1.5, 1000000.25)); mt = os.stat(f).st_mtime
+os.setxattr(f, "user.lx-test", b"v1"); xa = os.getxattr(f, "user.lx-test"); xl = os.listxattr(f)
+print("meta", oct(m1), st.st_uid, st.st_gid, oct(m2), u2, oct(m3), oct(m4), mt, xa, xl)
+PY
+    check "file modes, owners, times, xattrs" "meta 0o444 1234 5678 0o640 1234 0o666 0o555 1000000.25 b'v1' ['user.lx-test']" 60 /bin/bash -c 'python3 /tmp/meta.py; ls -l /tmp/meta-t/f'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"

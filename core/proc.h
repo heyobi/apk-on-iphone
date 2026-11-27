@@ -184,6 +184,7 @@ struct aoi_proc {
     int trace_shared;               /* trace is the parent's FILE: not closed here */
     uint32_t cred[6];               /* real, effective, saved uid; the same for gid (0: root) */
     int ctty;                       /* controlling terminal: /dev/pts/(ctty-1), 0: the console */
+    uint32_t umask;                 /* Linux mode: the file mode creation mask */
     volatile int stopped;           /* job control: stopped by this signal (SIGTSTP...), 0: running */
     void *me_child;                 /* its struct aoi_child in the parent (stop/continue reports) */
     int64_t start_ns;               /* when it started (/proc/<pid>/stat) */
