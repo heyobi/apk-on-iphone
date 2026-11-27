@@ -16,7 +16,7 @@
 
 #include <stdio.h>
 
-#define AOI_PROC_FDS 256
+#define AOI_PROC_FDS 1024               /* RLIMIT_NOFILE (1024, as on Linux; 256 was too few for asyncio and Python's test suite) */
 #define AOI_PATH 1024
 
 struct aoi_proc_fd {
