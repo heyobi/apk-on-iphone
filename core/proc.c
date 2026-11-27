@@ -534,7 +534,10 @@ static void lx_stat(const struct stat *st, uint8_t *o, uint32_t uid)
     memset(o, 0, 128);
     v = (uint64_t)st->st_dev; memcpy(o + 0, &v, 8);
     v = (uint64_t)st->st_ino; memcpy(o + 8, &v, 8);
-    w = (uint32_t)st->st_mode; memcpy(o + 16, &w, 4);
+    w = (uint32_t)st->st_mode;
+    if (S_ISREG(st->st_mode) && (st->st_mode & 07777) == 02600 && !st->st_size)   /* a bound AF_UNIX name (bind): */
+        w = 0140755;                                               /* a socket, as Linux shows it (asyncio, test -S) */
+    memcpy(o + 16, &w, 4);
     w = (uint32_t)st->st_nlink; memcpy(o + 20, &w, 4);
     w = uid; memcpy(o + 24, &w, 4); memcpy(o + 28, &w, 4);     /* uid, gid: the process's (its files) */
     v = (uint64_t)st->st_rdev; memcpy(o + 32, &v, 8);
@@ -4103,6 +4106,7 @@ static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t n
         if (key[0] == '/') {                                       /* the name in the file system, as Linux */
             to_host(p, key, h);
             if ((fd = open(h, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0) return errno == EEXIST ? err(98) : herr();
+            fchmod(fd, 02600);                                     /* (marks it: lx_stat shows a socket) */
             close(fd);
         }
         snprintf(f->path, AOI_PATH, "socket:[unix %s", key);

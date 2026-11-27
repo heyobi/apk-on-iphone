@@ -61,6 +61,8 @@ if [ "${3:-}" = net ]; then
     check "python3 multiprocessing" "pool [0, 1, 4, 9]" 300 /bin/bash -c 'python3 /tmp/mp.py'   # (semaphores in /dev/shm)
     printf 'import subprocess\np = subprocess.run(["python3", "-c", "import os; print(os.getsid(0) == os.getpid())"], start_new_session=True, capture_output=True, text=True)\nprint("new session", p.stdout.strip(), p.returncode)\n' > "$R/tmp/sess.py"
     check "subprocess start_new_session" "new session True 0" 120 /bin/bash -c 'python3 /tmp/sess.py'   # (setsid in a vfork child)
+    printf 'import asyncio, os, stat\nP = "/tmp/t.sock"\nasync def main():\n    for _ in range(2):\n        s = await asyncio.start_unix_server(lambda r, w: w.close(), P)\n        print(stat.S_ISSOCK(os.stat(P).st_mode), end=" ")\n        s.close(); await s.wait_closed()\n    print("rebound")\nasyncio.run(main())\n' > "$R/tmp/usock.py"
+    check "unix socket name is a socket" "True True rebound" 120 /bin/bash -c 'rm -f /tmp/t.sock; python3 /tmp/usock.py'   # (asyncio removes stale socket names)
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"
