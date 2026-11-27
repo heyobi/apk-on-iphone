@@ -785,7 +785,7 @@ void aoi_proc_free(struct aoi_proc *p)
     shm_sync(p, 0, ~0ULL >> 1, 1);                                 /* shared file mappings reach their files */
     for (i = 3; i < AOI_PROC_FDS; i++)
         if (p->fd[i].used) {
-            if (p->fd[i].dir) closedir(p->fd[i].dir); else close(p->fd[i].host);
+            if (p->fd[i].dir) closedir(p->fd[i].dir); close(p->fd[i].host);
         }
     aoi_vm_free(&p->vm);
 }
@@ -2078,9 +2078,9 @@ static uint64_t sys_getdents64(struct aoi_proc *p, struct aoi_proc_fd *f, uint64
 {
     uint64_t used = 0;
     struct dirent *de;
-    if (!f->dir) {
+    if (!f->dir) {                                                 /* (on a dup: closing the fd closes both) */
         int d = dup(f->host);
-        if (d < 0 || !(f->dir = fdopendir(d))) return herr();
+        if (d < 0 || !(f->dir = fdopendir(d))) { if (d >= 0) close(d); return herr(); }
     }
     for (;;) {
         long pos = telldir(f->dir);
@@ -2765,7 +2765,7 @@ static void vfork_end(struct aoi_proc *p, struct aoi_cpu *c, uint64_t ret)
     for (i = 0; i < AOI_PROC_FDS; i++) {
         struct aoi_proc_fd *f = &p->fd[i];
         if (!f->used) continue;
-        if (f->dir) closedir(f->dir); else close(f->host);
+        if (f->dir) closedir(f->dir); close(f->host);
         if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
         if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
         free(f->req);
@@ -3984,7 +3984,7 @@ static uint64_t exec_replace(struct aoi_proc *p, struct aoi_cpu *c, struct aoi_p
     for (i = 0; i < AOI_PROC_FDS; i++) {
         struct aoi_proc_fd *f = &p->fd[i];
         if (!f->used || !f->cloexec) continue;
-        if (f->dir) closedir(f->dir); else close(f->host);
+        if (f->dir) closedir(f->dir); close(f->host);
         if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
         if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
         free(f->req);
@@ -4173,6 +4173,8 @@ static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t n
         fcntl(sp[1], F_SETFL, O_NONBLOCK);
         pthread_mutex_lock(&lx_unix_mu);
         if ((i = lx_unix_find(key)) >= 0) lx_unix_drop(i);        /* a stale one under the same name */
+        for (i = 0; i < LX_UNIX; i++)                              /* and listeners whose fds are all closed */
+            if (lx_unix[i].used && !lx_unix_alive(i)) lx_unix_drop(i);
         for (i = 0; i < LX_UNIX && lx_unix[i].used; i++) {}
         if (i == LX_UNIX) { pthread_mutex_unlock(&lx_unix_mu); close(sp[0]); close(sp[1]); return err(L_ENOMEM); }
         lx_unix[i].used = 1; lx_unix[i].type = f->ptype ? f->ptype : 1; lx_unix[i].keep = sp[1]; lx_unix[i].nq = 0;
@@ -4474,7 +4476,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         for (fd = a0; fd <= last; fd++) {
             if (!(f = fd_get(p, fd))) continue;
             if (a2 & 4) { f->cloexec = 1; continue; }              /* CLOSE_RANGE_CLOEXEC */
-            if (fd > 2 || p->own_stdio || p->vf) { if (f->dir) closedir(f->dir); else close(f->host); }
+            if (fd > 2 || p->own_stdio || p->vf) { if (f->dir) closedir(f->dir); close(f->host); }
             if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
             if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
             if (f->kind == AOI_FD_DNS && f->peer >= 0) close(f->peer);
@@ -4487,7 +4489,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_close:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
-        if (a0 > 2 || p->own_stdio || p->vf) { if (f->dir) closedir(f->dir); else close(f->host); }
+        if (a0 > 2 || p->own_stdio || p->vf) { if (f->dir) closedir(f->dir); close(f->host); }
         if (f->kind == AOI_FD_EPOLL) epoll_unref(f->ep);
         if (f->kind == AOI_FD_EVENTFD) ev_ref(p, f, -1);
         if (f->kind == AOI_FD_DNS && f->peer >= 0) close(f->peer);
@@ -4680,7 +4682,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((d = dup(f->host)) < 0) { r = herr(); break; }
         if (nr == NR_dup3) {
             struct aoi_proc_fd *t = &p->fd[a1];
-            if (t->used && (a1 > 2 || p->own_stdio || p->vf)) { if (t->dir) closedir(t->dir); else close(t->host); }
+            if (t->used && (a1 > 2 || p->own_stdio || p->vf)) { if (t->dir) closedir(t->dir); close(t->host); }
             /* fds 0-2: the guest's own host fd, never dup2 onto the host's 0-2 (they are
              * the whole iOS process's, and the app's log may be one); the one they had
              * is the embedder's and stays open */
