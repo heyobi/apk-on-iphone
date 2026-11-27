@@ -19,6 +19,8 @@ done
 echo "== the whole suite (-j4, 300 s per test file)"
 LXRUN_QUIET=1 timeout 6000 build/lxrun "$R" /bin/bash -c 'cd /tmp && python3 -m test -j4 --timeout 300' > /tmp/all.out 2>&1
 echo "rc=$?"
-grep -n "Warning --\|Traceback\|Error\|WORKER" /tmp/all.out | head -n 40
-echo "--- first lines"; head -n 30 /tmp/all.out
-echo "--- summary"; grep -v "^    test" /tmp/all.out | tail -n 60
+echo "--- failed test files, with their first error"
+grep -E "\] test[^ ]* (failed|crashed|worker non-zero exit code|timed out)" /tmp/all.out | sed 's/^.*\] //' | sort -u
+echo "--- first error lines per failure"
+awk '/^(ERROR|FAIL): /{name=$0} /^[A-Za-z]*Error:|^AssertionError/{if(name){print name" -> "$0; name=""}}' /tmp/all.out | sort | uniq -c | sort -rn | head -n 120
+echo "--- totals"; grep -E "^Total|^Result" /tmp/all.out
