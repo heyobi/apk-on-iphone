@@ -83,6 +83,22 @@ os.setxattr(f, "user.lx-test", b"v1"); xa = os.getxattr(f, "user.lx-test"); xl =
 print("meta", oct(m1), st.st_uid, st.st_gid, oct(m2), u2, oct(m3), oct(m4), mt, xa, xl)
 PY
     check "file modes, owners, times, xattrs" "meta 0o444 1234 5678 0o640 1234 0o666 0o555 1000000.25 b'v1' ['user.lx-test']" 60 /bin/bash -c 'python3 /tmp/meta.py; ls -l /tmp/meta-t/f'
+    cat > "$R/tmp/alarm.py" <<'PY'
+import os, select, signal, threading, time
+class Boom(Exception): pass
+def h(*a): raise Boom()
+signal.signal(signal.SIGALRM, h)
+r, w = os.pipe(); t0 = time.monotonic(); out = []
+signal.alarm(1)
+try: select.select([r], [], [], 20); out.append("no")
+except Boom: out.append("select %.0f" % (time.monotonic() - t0))
+lock = threading.Lock(); lock.acquire(); t0 = time.monotonic()
+signal.setitimer(signal.ITIMER_REAL, 0.5)
+try: lock.acquire(timeout=20); out.append("no")
+except Boom: out.append("lock %.0f" % (time.monotonic() - t0))
+print("alarm", *out)
+PY
+    check "alarm interrupts select and a lock" "alarm select 1 lock 1" 60 /bin/bash -c 'python3 /tmp/alarm.py'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"

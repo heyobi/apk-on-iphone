@@ -947,9 +947,18 @@ static int sig_send(struct aoi_proc *p, int i, int sig)
     t->pending |= SIGBIT(sig);
     if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && !(t->sigmask & SIGBIT(sig))) {
         uint64_t eintr = (uint64_t)-(int64_t)L_EINTR;
+        struct aoi_cpu *tc = i == p->cur ? &p->cpu : &t->cpu;
         t->state = AOI_T_RUN;
-        if (t->restart) t->restart = 0;                        /* the syscall reruns after the handler */
-        else if (i == p->cur) p->cpu.x[0] = eintr; else t->cpu.x[0] = eintr;
+        if (t->restart) {                                      /* a blocked call: reruns after the handler */
+            uint64_t n = tc->x[8];                                 /* with SA_RESTART, and not one Linux never */
+            t->restart = 0;                                        /* restarts (poll, select, epoll, sleeps) */
+            if (p->linux_mode && (!(p->sigact[sig][1] & 0x10000000) || n == 72 || n == 73 || n == 22 || n == 441 ||
+                                  n == 101 || n == 115 || n == 137)) {
+                tc->pc += 4;
+                tc->x[0] = eintr;
+                t->poll_deadline = 0;
+            }
+        } else tc->x[0] = eintr;
     }
     return 1;
 }
@@ -1075,6 +1084,15 @@ static int one_others(struct aoi_proc *self);
 
 static int64_t now_ns(void);
 
+/* ITIMER_REAL (setitimer, alarm): SIGALRM when it is due. */
+static void itimer_check(struct aoi_proc *p)
+{
+    int64_t now;
+    if (!p->itimer_at || (now = now_ns()) < p->itimer_at) return;
+    p->itimer_at = p->itimer_iv ? now + p->itimer_iv : 0;
+    __atomic_or_fetch(&p->xsig, SIGBIT(14), __ATOMIC_SEQ_CST);
+}
+
 /* A blocking call that would wait (an empty pipe, a binder looper with no work):
  * the thread sleeps `ns` and the syscall runs again, so the other guest threads
  * (the writer) get to run. */
@@ -1127,6 +1145,7 @@ static int schedule(struct aoi_proc *p)
     int i, k, next = -1;
     for (;;) {
         int64_t now, soonest = 0;
+        if (p->itimer_at) itimer_check(p);
         if (p->linux_mode && (p->stop_request || (p->xsig && !lx_take(p)))) return -2;   /* killed while all wait */
         if (p->af) aoi_af_tick(p);                                 /* (it may wake a writer) */
         now = now_ns();
@@ -1136,6 +1155,7 @@ static int schedule(struct aoi_proc *p)
                 if (p->th[i].state == AOI_T_SLEEP && p->th[i].restart) p->th[i].deadline = now;
         }
         soonest = p->af ? aoi_af_next(p) : 0;
+        if (p->itimer_at && (!soonest || p->itimer_at < soonest)) soonest = p->itimer_at;
         for (i = 0; i < AOI_PROC_THREADS; i++) {
             struct aoi_thread *t = &p->th[i];
             if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline && t->deadline <= now) {
@@ -1249,6 +1269,7 @@ static enum aoi_stop proc_run(struct aoi_proc *p, uint64_t max_steps)
         uint64_t end = p->cpu.steps + SLICE;
         enum aoi_stop st;
         if (max_steps && end > max_steps) end = max_steps;
+        if (p->itimer_at) itimer_check(p);
         if (p->xsig && !lx_take(p)) { shm_sync(p, 0, ~0ULL >> 1, 1); return AOI_STOP_EXIT; }   /* from another process */
         if (p->stopped && !lx_stopped_wait(p)) { shm_sync(p, 0, ~0ULL >> 1, 1); return AOI_STOP_EXIT; }   /* Ctrl-Z */
         if (!sig_pending(p)) return p->cpu.stop;
@@ -4137,6 +4158,7 @@ static uint64_t lx_fork(struct aoi_proc *p, struct aoi_cpu *c, uint64_t flags, u
     np->cur = 0;
     np->pid = pid; np->ppid = PID(p); np->pgid = p->pgid; np->sid = p->sid;
     np->xsig = 0; np->term_sig = 0;
+    np->itimer_at = np->itimer_iv = 0;                             /* (timers: not inherited) */
     np->child = NULL; np->nchild = 0; np->vf = NULL;
     np->binder = NULL; np->sf = NULL; np->af = NULL; np->gralloc = NULL; np->audio = NULL;
     np->frame = NULL; np->home = NULL; np->clip = NULL; np->ime = NULL; np->warm = NULL;
@@ -5893,11 +5915,27 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             }
         break;
     case 102: case 103: {                                          /* getitimer, setitimer */
-        /* no interval timers yet: none is ever running (getitimer: zeros), so stopping one
-         * succeeds (nginx at exit); starting one is not done (ENOSYS, not a silent no-op) */
+        /* ITIMER_REAL (alarm) runs (itimer_check); the CPU-time timers are never running
+         * (getitimer: zeros), so stopping one succeeds (nginx at exit); starting one is not
+         * done (ENOSYS, not a silent no-op) */
         uint8_t v[32];
         memset(v, 0, sizeof v);
         if (a0 > 2) { r = err(L_EINVAL); break; }
+        if (a0 == 0 && p->linux_mode) {
+            int64_t now = now_ns(), left = p->itimer_at ? p->itimer_at - now : 0, o[4], nv[4];
+            if (p->itimer_at && left < 1000) left = 1000;
+            o[0] = p->itimer_iv / 1000000000; o[1] = p->itimer_iv % 1000000000 / 1000;
+            o[2] = left / 1000000000; o[3] = left % 1000000000 / 1000;
+            if (nr == 102) { r = put(p, a1, o, 32) ? 0 : err(L_EFAULT); break; }
+            if (a1 && !get(p, a1, nv, 32)) { r = err(L_EFAULT); break; }
+            if (!a1) memset(nv, 0, sizeof nv);
+            if (nv[1] < 0 || nv[1] > 999999 || nv[3] < 0 || nv[3] > 999999 || nv[0] < 0 || nv[2] < 0) { r = err(L_EINVAL); break; }
+            if (a2 && !put(p, a2, o, 32)) { r = err(L_EFAULT); break; }
+            p->itimer_iv = nv[0] * 1000000000 + nv[1] * 1000;
+            p->itimer_at = nv[2] || nv[3] ? now + nv[2] * 1000000000 + nv[3] * 1000 : 0;
+            r = 0;
+            break;
+        }
         if (nr == 102) { r = put(p, a1, v, 32) ? 0 : err(L_EFAULT); break; }
         if (a1 && !get(p, a1, v, 32)) { r = err(L_EFAULT); break; }
         if (u64(v + 16) || u64(v + 24)) { r = err(L_ENOSYS); break; }   /* it_value set: start */
