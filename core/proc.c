@@ -3493,15 +3493,16 @@ static void rmtree(const char *dir)
 static const char *const lx_pid_files[] = { "stat", "status", "cmdline", "comm", "environ", "statm", "maps",
                                             "io", "limits", "oom_score_adj", "cgroup", "mountinfo", "mounts", NULL };
 
+/* (0755: this is the app's own temp tree, filled by this non-root process; 0555 left it empty on iOS) */
 static void lx_piddir(const char *base, const char *name)
 {
     char d[AOI_PATH], sub[AOI_PATH];
     int i;
     snprintf(d, sizeof d, "%s/%s", base, name);
-    if (mkdir(d, 0555) && errno != EEXIST) return;
+    if (mkdir(d, 0755) && errno != EEXIST) return;
     for (i = 0; lx_pid_files[i]; i++) touchf(d, lx_pid_files[i]);
-    snprintf(sub, sizeof sub, "%s/task", d); mkdir(sub, 0555);
-    snprintf(sub, sizeof sub, "%s/fd", d); mkdir(sub, 0555);
+    snprintf(sub, sizeof sub, "%s/task", d); mkdir(sub, 0755);
+    snprintf(sub, sizeof sub, "%s/fd", d); mkdir(sub, 0755);
 }
 
 /* Brings the host tree up to date with the live processes (at most every 0.3 s). */
@@ -3523,10 +3524,10 @@ static void lx_proc_refresh(void)
         for (i = 0; top[i]; i++) touchf(lx_procdir, top[i]);
         lx_piddir(lx_procdir, "self");
         lx_piddir(lx_procdir, "thread-self");
-        snprintf(sub, sizeof sub, "%s/sys", lx_procdir); mkdir(sub, 0555);
-        snprintf(sub, sizeof sub, "%s/sys/kernel", lx_procdir); mkdir(sub, 0555);
-        snprintf(sub, sizeof sub, "%s/sys/kernel/random", lx_procdir); mkdir(sub, 0555);
-        snprintf(sub, sizeof sub, "%s/sys/fs", lx_procdir); mkdir(sub, 0555);
+        snprintf(sub, sizeof sub, "%s/sys", lx_procdir); mkdir(sub, 0755);
+        snprintf(sub, sizeof sub, "%s/sys/kernel", lx_procdir); mkdir(sub, 0755);
+        snprintf(sub, sizeof sub, "%s/sys/kernel/random", lx_procdir); mkdir(sub, 0755);
+        snprintf(sub, sizeof sub, "%s/sys/fs", lx_procdir); mkdir(sub, 0755);
         snprintf(sub, sizeof sub, "%s/sys/kernel", lx_procdir);
         touchf(sub, "pid_max"); touchf(sub, "osrelease"); touchf(sub, "ostype"); touchf(sub, "hostname");
         touchf(sub, "randomize_va_space"); touchf(sub, "ngroups_max"); touchf(sub, "cap_last_cap");
@@ -3573,7 +3574,7 @@ static int lx_proc_dir(struct aoi_proc *p, const char *g)
         if (!strcmp(s, "/fd") || !strcmp(s, "/fd/")) {
             snprintf(d, sizeof d, "%s/%s/fd", lx_procdir, self ? "self" : nm);
             rmtree(d);
-            mkdir(d, 0555);
+            mkdir(d, 0755);
             for (i = 0; i < AOI_PROC_FDS; i++) {
                 if (!p->fd[i].used) continue;
                 snprintf(ln, sizeof ln, "%s/%d", d, i);
