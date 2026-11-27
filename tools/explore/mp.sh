@@ -1,19 +1,32 @@
 #!/bin/sh
-# Exploration: Python's multiprocessing.Pool under lxrun (hangs on Fedora and Rocky Linux,
-# works on AlmaLinux): the Python version, its start method, and where the processes wait.
+# Exploration: Python's multiprocessing under lxrun with each start method (fork, forkserver,
+# spawn): a Pool and a Queue fed by four processes.
 # usage: sudo sh tools/explore/mp.sh ROOT
 DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 R=$1
 cd "$DIR" || exit 1
 cp /etc/resolv.conf "$R/etc/resolv.conf"
 LXRUN_QUIET=1 build/lxrun "$R" /bin/bash -c 'command -v python3 || dnf -y -q install --setopt=install_weak_deps=False python3' > /dev/null 2>&1
-printf 'import multiprocessing as m, sys\nprint(sys.version.split()[0], m.get_start_method())\ndef f(x): return x * x\nif __name__ == "__main__":\n    with m.Pool(2) as p: print("pool", p.map(f, range(4)))\n' > "$R/tmp/mp.py"
+cat > "$R/tmp/mp2.py" <<'PY'
+import multiprocessing as m, sys
+def f(x): return x * x
+if __name__ == "__main__":
+    print(sys.version.split()[0], "default:", m.get_start_method(allow_none=True) or "(unset)")
+    m.set_start_method(sys.argv[1])
+    with m.Pool(2) as p:
+        print("pool", p.map(f, range(4)))
+    q = m.Queue()
+    ps = [m.Process(target=q.put, args=(i,)) for i in range(4)]
+    for x in ps: x.start()
+    print("queue", sorted(q.get() for _ in ps))
+    for x in ps: x.join()
+PY
 ls -ld "$R/dev/shm" 2>&1
-rm -f /tmp/ct.*
-AOI_CHILD_TRACE=/tmp/ct LXRUN_QUIET=1 timeout 60 build/lxrun -t "$R" /usr/bin/python3 /tmp/mp.py > /tmp/mp.out 2> /tmp/mp.trace
-echo "rc=$?"; cat /tmp/mp.out
-echo "== main process: last system calls"; tail -n 25 /tmp/mp.trace
-for f in /tmp/ct*; do [ -f "$f" ] || continue; echo "== $f: last system calls"; tail -n 25 "$f"; done
-echo "== with the fork start method"
-printf 'import multiprocessing as m\ndef f(x): return x * x\nif __name__ == "__main__":\n    m.set_start_method("fork")\n    with m.Pool(2) as p: print("pool", p.map(f, range(4)))\n' > "$R/tmp/mp2.py"
-LXRUN_QUIET=1 timeout 60 build/lxrun "$R" /usr/bin/python3 /tmp/mp2.py; echo "rc=$?"
+for meth in fork forkserver spawn; do
+    echo "== start method $meth"
+    t0=$(date +%s.%N)
+    LXRUN_QUIET=1 timeout 120 build/lxrun "$R" /usr/bin/python3 /tmp/mp2.py $meth > /tmp/mp.out 2>&1
+    rc=$?
+    tail -n 8 /tmp/mp.out
+    echo "rc=$rc $(echo "$(date +%s.%N) - $t0" | bc) s"
+done
