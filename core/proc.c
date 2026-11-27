@@ -82,6 +82,7 @@ static int lx_proc_link(struct aoi_proc *p, const char *g, char *out, size_t n);
 struct aoi_vfork {
     int thread, pid;
     int pgid;                                   /* Linux mode: the child's setpgid before its execve */
+    int sid;                                    /* and its setsid (subprocess's start_new_session) */
     uint64_t sigact[65][4];                     /* the parent's handlers: the child's changes are its own */
     char cwd[AOI_PATH];                         /* and its chdir (posix_spawn's file actions) */
     struct aoi_cpu cpu;                         /* the parent at its svc */
@@ -2734,6 +2735,7 @@ static uint64_t vfork_start(struct aoi_proc *p, struct aoi_cpu *c, uint64_t stac
     v->cpu = *c; v->sigmask = p->th[p->cur].sigmask;
     if (stack) c->sp = stack;                                      /* musl/glibc posix_spawn: the child's own stack */
     v->pgid = p->pgid;
+    v->sid = p->sid;
     memcpy(v->sigact, p->sigact, sizeof v->sigact);
     memcpy(v->cwd, p->cwd, sizeof v->cwd);
     memcpy(v->fd, p->fd, sizeof v->fd);
@@ -3143,7 +3145,7 @@ static uint64_t vfork_exec(struct aoi_proc *p, struct aoi_cpu *c, uint64_t pa, u
         setvbuf(np->trace, NULL, _IOLBF, 0);
     if (p->linux_mode) {                                           /* a process of the Linux userland */
         np->linux_mode = 1;
-        np->pid = p->vf->pid; np->ppid = PID(p); np->pgid = p->vf->pgid; np->sid = p->sid;
+        np->pid = p->vf->pid; np->ppid = PID(p); np->pgid = p->vf->pgid; np->sid = p->vf->sid;
         np->th[0].tid = np->pid;
         np->th[0].sigmask = p->th[p->vf->thread].sigmask;
         memcpy(np->cred, p->cred, sizeof np->cred);
@@ -4924,6 +4926,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         break;
     case 157:                                                      /* setsid */
         if (!p->linux_mode) { r = GUEST_PID; break; }
+        if (p->vf && p->cur == p->vf->thread) {                    /* a vfork child (subprocess, posix_spawn): */
+            if (p->vf->pgid == p->vf->pid) { r = err(L_EPERM); break; }   /* its own session, not the parent's */
+            p->vf->sid = p->vf->pgid = p->vf->pid;
+            r = (uint64_t)p->vf->pid;
+            break;
+        }
         if (p->pgid == p->pid) { r = err(L_EPERM); break; }
         p->sid = p->pgid = p->pid;
         r = (uint64_t)p->pid;
