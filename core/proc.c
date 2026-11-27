@@ -40,7 +40,9 @@
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/uio.h>
+#ifndef __EMSCRIPTEN__
 #include <sys/xattr.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -1872,6 +1874,16 @@ static mode_t lx_mode(struct aoi_proc *p, int fd, const char *h, mode_t m)
 #define LX_XPFX "user.lx."
 struct lx_meta { uint32_t magic, mode, uid, gid; };
 
+#ifdef __EMSCRIPTEN__                    /* (no xattrs there: set and remove accepted, none to get) */
+static ssize_t hx_get(int fd, const char *h, int nofollow, const char *name, void *v, size_t n)
+{ (void)fd; (void)h; (void)nofollow; (void)name; (void)v; (void)n; errno = ENOTSUP; return -1; }
+static int hx_set(int fd, const char *h, int nofollow, const char *name, const void *v, size_t n, int lflags)
+{ (void)fd; (void)h; (void)nofollow; (void)name; (void)v; (void)n; (void)lflags; errno = ENOTSUP; return -1; }
+static int hx_remove(int fd, const char *h, int nofollow, const char *name)
+{ (void)fd; (void)h; (void)nofollow; (void)name; errno = ENOTSUP; return -1; }
+static ssize_t hx_list(int fd, const char *h, int nofollow, char *v, size_t n)
+{ (void)fd; (void)h; (void)nofollow; (void)v; (void)n; errno = ENOTSUP; return -1; }
+#else
 static ssize_t hx_get(int fd, const char *h, int nofollow, const char *name, void *v, size_t n)
 {
 #ifdef __APPLE__
@@ -1906,6 +1918,7 @@ static ssize_t hx_list(int fd, const char *h, int nofollow, char *v, size_t n)
     return fd >= 0 ? flistxattr(fd, v, n) : nofollow ? llistxattr(h, v, n) : listxattr(h, v, n);
 #endif
 }
+#endif
 
 static int meta_marked(const struct stat *st)
 {
