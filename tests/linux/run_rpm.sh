@@ -99,8 +99,13 @@ except Boom: out.append("lock %.0f" % (time.monotonic() - t0))
 print("alarm", *out)
 PY
     check "alarm interrupts select and a lock" "alarm select 1 lock 1" 60 /bin/bash -c 'python3 /tmp/alarm.py'
-    printf 'import os, termios\nm, s = os.openpty()\nos.write(m, b"hi\n")\nprint("pty", os.ttyname(s).startswith("/dev/pts/"), os.read(s, 10), len(termios.tcgetattr(s)))\n' > "$R/tmp/pty.py"
-    check "os.openpty and termios" "pty True b'hi\n' 7" 60 /bin/bash -c 'python3 /tmp/pty.py'
+    cat > "$R/tmp/pty.py" <<'PY'
+import os, termios
+m, s = os.openpty()
+os.write(m, b"hi" + bytes([10]))
+print("pty", os.ttyname(s).startswith("/dev/pts/"), os.read(s, 10) == b"hi" + bytes([10]), len(termios.tcgetattr(s)))
+PY
+    check "os.openpty and termios" "pty True True 7" 60 /bin/bash -c 'python3 /tmp/pty.py'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"
