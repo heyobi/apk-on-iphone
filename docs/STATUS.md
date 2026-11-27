@@ -1,5 +1,26 @@
 # Status and handoff (2026-10-04; Linux userland mode 2026-11-23)
 
+## The CPython test suite as a compatibility test (2026-11-27)
+
+`python3 -m test -j4` (Fedora/AlmaLinux `python3-test`) under lxrun (`tools/explore/pytests.sh`)
+ran 484 of 493 files, 38,304 tests, 47 failing files. `tools/explore/pyfail.sh` reruns the
+failing files verbosely. Fixed from it, each with a `tests/linux/run_rpm.sh` check:
+
+- **File metadata the host cannot hold.** chmod that drops the owner's bits, chown, and files
+  created by a non-root process keep the guest mode, uid and gid in the host xattr
+  `user.lxmeta`, marked by the sticky bit (Linux host) or `UF_NODUMP` (Darwin) so ordinary
+  stats read nothing more. Per-process umask (the host's is 0). utimensat applies the times.
+  The guest's extended attributes are host xattrs `user.lx.<name>`.
+- **Signals.** `alarm`/`setitimer(ITIMER_REAL)` send SIGALRM. A blocked call interrupted by a
+  handler without SA_RESTART returns EINTR (poll, select, epoll waits and sleeps always do).
+- **Terminals.** FIOCLEX/FIONCLEX on a terminal fd: `os.openpty`, and with it pty, termios,
+  tty, readline and the asyncio pty tests.
+- sched_* check their pid and policy; sched_rr_get_interval; ioctl on a closed fd is EBADF.
+
+Still open from the list: forkserver fd passing (SCM_RIGHTS), memfd_create of large sizes,
+F_SETPIPE_SZ, epoll/select edge cases, unix socket peer names, /dev/stdin on a pipe,
+process/thread CPU time, the multiprocessing test files' worker crashes.
+
 ## AlmaLinux: measured, profiled, faster; server programs (2026-11-26)
 
 Measured in CI (`bench-almalinux` job, `tests/linux/bench_dnf.sh`): each workload natively
