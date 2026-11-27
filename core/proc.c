@@ -2235,6 +2235,7 @@ static uint64_t tty_ioctl(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t re
     case 0x541b: v = (int32_t)aoi_tty_pending(t); return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* FIONREAD */
     case 0x5411: v = 0; return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCOUTQ */
     case 0x5421: if (!get(p, arg, &v, 4)) return err(L_EFAULT); f->nonblock = v != 0; return 0;   /* FIONBIO */
+    case 0x5451: case 0x5450: f->cloexec = req == 0x5451; return 0;   /* FIOCLEX, FIONCLEX (os.openpty) */
     case 0x80045430: v = aoi_tty_index(t); return put(p, arg, &v, 4) ? 0 : err(L_EFAULT);   /* TIOCGPTN */
     case 0x40045431: return 0;                                     /* TIOCSPTLCK: unlocked */
     case 0x5441: {                                                 /* TIOCGPTPEER: the slave's fd */
