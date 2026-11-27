@@ -34,6 +34,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -2918,6 +2919,20 @@ int aoi_proc_turn_others(void)
 /* ---------- fast start ("zygote", aoi_proc_zygote) ---------- */
 
 static struct { int on; char exe[AOI_PATH], interp[AOI_PATH], script[AOI_PATH], watch[4 * AOI_PATH]; } zyg;
+
+void aoi_proc_raise_nofile(void)
+{
+    static const rlim_t want[] = { 65536, 32768, 16384, 10240, 8192, 4096 };   /* (Darwin: up to OPEN_MAX, 10240) */
+    struct rlimit rl;
+    size_t i;
+    if (getrlimit(RLIMIT_NOFILE, &rl)) return;
+    for (i = 0; i < sizeof want / sizeof want[0]; i++) {
+        struct rlimit n = rl;
+        if (rl.rlim_cur >= want[i]) return;
+        n.rlim_cur = rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want[i] ? rl.rlim_max : want[i];
+        if (!setrlimit(RLIMIT_NOFILE, &n)) return;
+    }
+}
 
 void aoi_proc_zygote(const char *exe, const char *interp, const char *script, const char *watch)
 {

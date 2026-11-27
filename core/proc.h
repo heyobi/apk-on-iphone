@@ -301,6 +301,9 @@ const char *aoi_snap_load_image(struct aoi_proc *p, const char *path, const char
  * SCRIPT [--env=FILE] GIVEN ARGS...) and, when given, the environment from FILE.
  * Off when exe is NULL. AOI_ZYGOTE=0 in the host's environment turns every rule off. */
 void aoi_proc_zygote(const char *exe, const char *interp, const char *script, const char *watch);
+/* Raises the host process's file descriptor limit as far as the system allows: every guest
+ * process's fds are host fds of this one process (a guest has up to AOI_PROC_FDS of its own). */
+void aoi_proc_raise_nofile(void);
 
 /* Gives guest fds a and b (ends 0 and 1 of one host pair of type ptype) a new pair id,
  * so a snapshot can rebuild the pair. Returns the id. */

@@ -371,13 +371,7 @@ int main(int argc, char **argv)
         }
         aoi_proc_linux(&proc, cwd);
     }
-    {
-        struct rlimit rl;                            /* every process dups its fds */
-        if (!getrlimit(RLIMIT_NOFILE, &rl) && rl.rlim_cur < 4096) {
-            rl.rlim_cur = rl.rlim_max < 4096 ? rl.rlim_max : 4096;
-            setrlimit(RLIMIT_NOFILE, &rl);
-        }
-    }
+    aoi_proc_raise_nofile();                         /* every guest process's fds are this one's */
 #ifdef __EMSCRIPTEN__
     if (use_tty) {                                   /* no host terminal or threads: the host turn */
         ws[0].id = getenv("LXRUN_SESSION") ? atoi(getenv("LXRUN_SESSION")) : 0;
