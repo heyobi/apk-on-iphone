@@ -57,6 +57,8 @@ if [ "${3:-}" = net ]; then
     check "dnf install python3"  "Complete"       2400 /bin/bash -c 'dnf -y install --setopt=install_weak_deps=False python3 2>&1 | tail -n 12; command -v python3 && echo Complete'
     check "dnf install tmux"     "tmux "         2400 /bin/bash -c 'dnf -y install --setopt=install_weak_deps=False tmux 2>&1 | tail -n 6; tmux -V'
     check "python3"              "499999500000"   120  /bin/bash -c 'python3 -c "print(sum(range(10**6)))"'
+    printf 'from multiprocessing import Pool\ndef f(x): return x * x\nif __name__ == "__main__":\n    with Pool(2) as p: print("pool", p.map(f, range(4)))\n' > "$R/tmp/mp.py"
+    check "python3 multiprocessing" "pool [0, 1, 4, 9]" 300 /bin/bash -c 'python3 /tmp/mp.py'   # (semaphores in /dev/shm)
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"

@@ -3415,6 +3415,12 @@ void aoi_proc_linux(struct aoi_proc *p, const char *cwd)
     }
     lx_register(p);
     if (!aoi_tty_pgrp) aoi_tty_pgrp = p->pgid;
+    host_path(p, "/dev/shm", h);                                   /* POSIX shared memory and semaphores (sem_open, */
+    if (h[0] && stat(h, &st)) {                                    /* shm_open: Python's multiprocessing); images */
+        host_path(p, "/dev", g);                                   /* ship /dev empty or without it */
+        if (g[0]) mkdir(g, 0755);
+        if (!mkdir(h, 01777)) chmod(h, 01777);
+    }
 }
 
 /* ---------- Linux mode: /proc for every process (ps, top, htop, free, uptime) ----------
