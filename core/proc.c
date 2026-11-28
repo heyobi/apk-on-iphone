@@ -1161,9 +1161,11 @@ static int schedule(struct aoi_proc *p)
         for (i = 0; i < AOI_PROC_THREADS; i++) {
             struct aoi_thread *t = &p->th[i];
             if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline && t->deadline <= now) {
+                uint64_t rv = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : t->sigwait_mask ? err(L_EAGAIN) : 0;
+                t->sigwait_mask = 0;                               /* (sigtimedwait timed out: EAGAIN) */
                 if (t->restart) t->restart = 0;
-                else if (i == p->cur) p->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
-                else t->cpu.x[0] = t->state == AOI_T_FUTEX ? err(L_ETIMEDOUT) : 0;
+                else if (i == p->cur) p->cpu.x[0] = rv;
+                else t->cpu.x[0] = rv;
                 t->state = AOI_T_RUN;
             }
             if ((t->state == AOI_T_FUTEX || t->state == AOI_T_SLEEP) && t->deadline &&
@@ -3569,6 +3571,8 @@ static int lx_take(struct aoi_proc *p)
         if (p->th[i].state == AOI_T_FREE || (p->th[i].sigmask & SIGBIT(sig)))
             for (k = 0; k < AOI_PROC_THREADS; k++)
                 if (p->th[k].state != AOI_T_FREE && !(p->th[k].sigmask & SIGBIT(sig))) { i = k; break; }
+        for (k = 0; k < AOI_PROC_THREADS; k++)                     /* a thread in sigwait for it: that one */
+            if (p->th[k].state == AOI_T_SLEEP && (p->th[k].sigwait_mask & SIGBIT(sig))) { i = k; break; }
         if (p->trace) fprintf(p->trace, "[sig] %d from another process to %d\n", sig, p->th[i].tid);
         if (!thread_signal(p, i, sig)) return 0;
     }
@@ -5367,6 +5371,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     }
     case NR_fsync: case NR_fdatasync:
         if (!(f = fd_get(p, a0))) { r = err(L_EBADF); break; }
+#ifdef F_FULLFSYNC
+        /* Darwin's fsync leaves the data in the drive's cache; Linux's fsync promises it is on
+         * the storage (a database's commit: PostgreSQL, SQLite's journal, rpm's database). */
+        if (f->kind == AOI_FD_FILE && !fcntl(f->host, F_FULLFSYNC)) { r = 0; break; }
+#endif
         r = fsync(f->host) ? herr() : 0;
         break;
     case NR_utimensat: {                                           /* utimensat(dirfd, path, times, flags) */
@@ -6321,8 +6330,12 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case 293:                                                      /* rseq: glibc probes it and does without */
         r = err(L_ENOSYS);
         break;
-    case 136: {                                                    /* rt_sigpending: nothing pending */
-        uint64_t z = 0;
+    case 136: {                                                    /* rt_sigpending: blocked and waiting */
+        uint64_t z = p->linux_mode ? __atomic_load_n(&p->xsig, __ATOMIC_SEQ_CST) : 0;
+        int k;
+        if (p->linux_mode)
+            for (k = 0; k < AOI_PROC_THREADS; k++) if (p->th[k].state != AOI_T_FREE) z |= p->th[k].pending;
+        z &= p->th[p->cur].sigmask;
         r = put(p, a0, &z, a1 < 8 ? a1 : 8) ? 0 : err(L_EFAULT);
         break;
     }

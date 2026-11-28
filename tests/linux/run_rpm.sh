@@ -106,6 +106,19 @@ os.write(m, b"hi" + bytes([10]))
 print("pty", os.ttyname(s).startswith("/dev/pts/"), os.read(s, 10) == b"hi" + bytes([10]), len(termios.tcgetattr(s)))
 PY
     check "os.openpty and termios" "pty True True 7" 60 /bin/bash -c 'python3 /tmp/pty.py'
+    cat > "$R/tmp/sigwait.py" <<'PY'
+import os, signal, threading, time
+S = signal.SIGUSR1
+signal.pthread_sigmask(signal.SIG_BLOCK, [S])
+os.kill(os.getpid(), S); time.sleep(0.2)
+pend = S in signal.sigpending()
+got = signal.sigwait([S])                                          # the pending one
+t = threading.Thread(target=lambda: (time.sleep(0.5), os.kill(os.getpid(), S))); t.start()
+got2 = signal.sigwait([S]); t.join()                               # sent by another thread
+t0 = time.monotonic(); none = signal.sigtimedwait([S], 0.3); dt = time.monotonic() - t0
+print("sigwait", pend, got == S, got2 == S, none, dt >= 0.25)
+PY
+    check "sigpending, sigwait, sigtimedwait" "sigwait True True True None True" 60 /bin/bash -c 'timeout 30 python3 /tmp/sigwait.py'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"
