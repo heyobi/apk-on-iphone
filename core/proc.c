@@ -4152,7 +4152,9 @@ static int lx_proc_link(struct aoi_proc *p, const char *g, char *out, size_t n)
 void aoi_proc_linux_resume(struct aoi_proc *p)
 {
     if (!p->linux_mode) return;
+    umask(0);                                                      /* (as aoi_proc_linux: the guest's is p->umask) */
     p->xsig = 0;
+    p->itimer_at = p->itimer_iv = 0;                               /* (a saved timer: not across a restart) */
     p->trace_shared = 0;
     p->stopped = 0;
     p->me_child = NULL;
