@@ -1848,14 +1848,13 @@ static uint64_t sys_pselect(struct aoi_proc *p, uint64_t nfds, uint64_t rp, uint
         if (rev & (EP_IN | EP_HUP | EP_ERR) && (want & EP_IN)) { out[0][i / 64] |= 1ULL << (i % 64); n++; }
         if (rev & (EP_OUT | EP_ERR) && (want & EP_OUT)) { out[1][i / 64] |= 1ULL << (i % 64); n++; }
     }
-    if (n || timeout == 0) {
-        p->th[p->cur].poll_deadline = 0;
+    if (n || timeout == 0 || poll_wait(p, timeout)) {             /* ready, or the time is up: */
+        p->th[p->cur].poll_deadline = 0;                           /* the sets say which (none) */
         if ((rp && !put(p, rp, out[0], (uint64_t)words * 8)) || (wp && !put(p, wp, out[1], (uint64_t)words * 8)) ||
             (ep && !put(p, ep, ex, (uint64_t)words * 8)))
             return err(L_EFAULT);
         return (uint64_t)n;
     }
-    poll_wait(p, timeout);
     return 0;
 }
 
@@ -6190,6 +6189,10 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         int64_t t[2];
         clockid_t id = (a0 == 0 || a0 == 5 || a0 == 8) ? CLOCK_REALTIME : CLOCK_MONOTONIC;
         if (nr == NR_clock_getres) { ts.tv_sec = 0; ts.tv_nsec = 1; }
+#ifdef CLOCK_THREAD_CPUTIME_ID
+        else if ((a0 == 2 || a0 == 3) && p->linux_mode && !det())  /* process/thread CPU time: the host */
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);           /* thread's (the process's green threads) */
+#endif
         else if (id == CLOCK_MONOTONIC) { int64_t m = aoi_mono_ns(); ts.tv_sec = m / 1000000000; ts.tv_nsec = m % 1000000000; }
         else if (det()) { int64_t m = det_ns() + 1700000000000000000ll; ts.tv_sec = m / 1000000000; ts.tv_nsec = m % 1000000000; }
         else clock_gettime(id, &ts);

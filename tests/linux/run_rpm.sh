@@ -141,6 +141,14 @@ if ok: libc.freeifaddrs(p)
 print("netlink", names, ok)
 PY
     check "if_nameindex, getifaddrs (netlink)" "netlink ['lo', 'eth0'] True" 60 /bin/bash -c 'python3 /tmp/nl.py'
+    cat > "$R/tmp/selt.py" <<'PY'
+import select, socket, time
+rd, wr = socket.socketpair()
+r = select.select([rd], [], [], 0.3)
+t0 = time.process_time(); time.sleep(0.3); cpu = time.process_time() - t0
+print("select", r == ([], [], []), cpu < 0.1)
+PY
+    check "select times out empty; CPU time is not wall time" "select True True" 60 /bin/bash -c 'python3 /tmp/selt.py'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"
