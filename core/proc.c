@@ -4368,12 +4368,52 @@ static int lx_unix_pair(int type, int c[2])
     return 0;
 }
 
+/* The receiving end of the datagram socket named key: a dup (or -1, errno set). */
+static int lx_udg_dest(struct aoi_proc *p, const char *key)
+{
+    char h[AOI_PATH];
+    struct stat st;
+    int i, d = -1;
+    pthread_mutex_lock(&lx_unix_mu);
+    if ((i = lx_unix_find(key)) >= 0 && lx_unix[i].type == 2) d = dup(lx_unix[i].keep);
+    pthread_mutex_unlock(&lx_unix_mu);
+    if (d >= 0) { fcntl(d, F_SETFD, FD_CLOEXEC); return d; }
+    if (key[0] == '/') { to_host(p, key, h); if (stat(h, &st)) { errno = ENOENT; return -1; } }
+    errno = ECONNREFUSED;
+    return -1;
+}
+
+/* sendto(name) on an AF_UNIX datagram socket. */
+static uint64_t lx_udg_sendto(struct aoi_proc *p, uint64_t buf, uint64_t len, uint64_t sa, uint64_t salen)
+{
+    char key[AOI_PATH];
+    int rc, d;
+    uint64_t r;
+    if ((rc = lx_unix_key(p, sa, salen, key))) return err(rc);
+    if ((d = lx_udg_dest(p, key)) < 0) return herr();
+    r = len ? (uint64_t)xfer(p, d, buf, len, 0, -1) : (send(d, "", 0, 0) < 0 ? herr() : 0);
+    close(d);
+    if (r == err(L_EPIPE) || r == err(L_ENOTCONN)) r = err(L_ECONNREFUSED);   /* (its reader is gone) */
+    return r;
+}
+
 static uint64_t lx_unix_connect(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t sa, uint64_t len)
 {
     char key[AOI_PATH], h[AOI_PATH];
     int i, c[2], rc;
     struct stat st;
     if ((rc = lx_unix_key(p, sa, len, key))) return err(rc);
+    if (f->ptype == 2) {                                           /* datagram: sends go to that name */
+        int d;
+        if (f->kind != AOI_FD_SOCKET) return err(L_ENOTSUP);       /* (bound and connected: not yet) */
+        if ((d = lx_udg_dest(p, key)) < 0) return herr();
+        if (f->host > 2) close(f->host);
+        f->host = d;
+        f->kind = AOI_FD_PIPE;
+        f->pair = 0;
+        snprintf(f->path, AOI_PATH, "socket:[unix-to %s]", key);
+        return 0;
+    }
     pthread_mutex_lock(&lx_unix_mu);
     i = lx_unix_find(key);
     if (i >= 0 && !lx_unix_alive(i)) { lx_unix_drop(i); i = -1; }
@@ -4421,7 +4461,10 @@ static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t n
     if (nr == NR_bind) {
         int fd;
         if (f->kind != AOI_FD_SOCKET) return err(L_EINVAL);
-        if ((rc = lx_unix_key(p, a1, a2, key))) return err(rc);
+        if (a2 == 2) {                                             /* autobind: an abstract name of its own */
+            static int seq;
+            snprintf(key, sizeof key, "@%05x", (unsigned)(PID(p) * 31 + __atomic_add_fetch(&seq, 1, __ATOMIC_SEQ_CST)) & 0xfffff);
+        } else if ((rc = lx_unix_key(p, a1, a2, key))) return err(rc);
         if (key[0] == '/') {                                       /* the name in the file system, as Linux */
             to_host(p, key, h);
             if ((fd = open(h, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0) return errno == EEXIST ? err(98) : herr();
@@ -4430,6 +4473,25 @@ static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t n
         }
         snprintf(f->path, AOI_PATH, "socket:[unix %s", key);
         strncat(f->path, "]", AOI_PATH - strlen(f->path) - 1);
+        if (f->ptype == 2) {                                       /* a datagram socket: receives at its name */
+            int sv[2];
+            if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv)) return herr();
+            fcntl(sv[0], F_SETFL, O_NONBLOCK); fcntl(sv[1], F_SETFL, O_NONBLOCK);
+            fcntl(sv[0], F_SETFD, FD_CLOEXEC); fcntl(sv[1], F_SETFD, FD_CLOEXEC);
+            pthread_mutex_lock(&lx_unix_mu);
+            if ((i = lx_unix_find(key)) >= 0) lx_unix_drop(i);
+            for (i = 0; i < LX_UNIX && lx_unix[i].used; i++) {}
+            if (i == LX_UNIX) { pthread_mutex_unlock(&lx_unix_mu); close(sv[0]); close(sv[1]); return err(L_ENOMEM); }
+            lx_unix[i].used = 1; lx_unix[i].type = 2; lx_unix[i].keep = sv[1]; lx_unix[i].nq = 0;
+            snprintf(lx_unix[i].key, AOI_PATH, "%s", key);
+            pthread_mutex_unlock(&lx_unix_mu);
+            if (f->host > 2) close(f->host);
+            f->host = sv[0];
+            f->kind = AOI_FD_PIPE;
+            f->pair = 0;
+            if (p->trace) fprintf(p->trace, "[unix] datagram socket at %s
+", key);
+        }
         return 0;
     }
     if (nr == NR_listen) {
@@ -5155,6 +5217,11 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         if (f->kind == AOI_FD_DNS && nr == NR_sendto) { r = dns_write(p, f, a1, a2); break; }
+        if (p->linux_mode && nr == NR_sendto && a4 && f->ptype == 2 && (f->kind == AOI_FD_SOCKET || f->kind == AOI_FD_PIPE)) {
+            r = lx_udg_sendto(p, a1, a2, a4, a5);                  /* AF_UNIX datagram to a name */
+            break;
+        }
+        if (p->linux_mode && f->kind == AOI_FD_SOCKET && f->ptype == 2 && nr == NR_sendto) { r = err(L_ENOTCONN); break; }
         if (f->kind != AOI_FD_PIPE && f->kind != AOI_FD_DNS) { r = err(L_ENOTSOCK); break; }
         r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, nr == NR_recvfrom, -1) : 0;
         if (r == err(L_EAGAIN) && !f->nonblock && !(a3 & 0x40)) r = block_and_retry(p, 1000000);   /* MSG_DONTWAIT */
@@ -5168,7 +5235,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((f = fd_get(p, a0)) && f->kind == AOI_FD_INET) { r = net_sockopt(p, f, a1, a2, a3, a4, 0); break; }
         if (p->linux_mode && f && a1 == 1 && (a2 == 17 || a2 == 3)) {   /* SO_PEERCRED (who: this one), SO_TYPE */
             uint32_t cr[3] = { (uint32_t)PID(p), p->cred[1], p->cred[4] }, l = a2 == 17 ? 12 : 4;
-            if (a2 == 3) cr[0] = f->ptype == 5 ? 5 : 1;
+            if (a2 == 3) cr[0] = f->ptype == 5 || f->ptype == 2 ? (uint32_t)f->ptype : 1;
             r = (a3 && !put(p, a3, cr, l)) || (a4 && !put(p, a4, &l, 4)) ? err(L_EFAULT) : 0;
             break;
         }                                          /* an int option: 0, or the buffer size */
@@ -5232,7 +5299,7 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
         if ((n = fd_new(p, d, "socket:[unix]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
         p->fd[n].kind = AOI_FD_SOCKET;
         p->fd[n].nonblock = (a1 & 04000) != 0;
-        p->fd[n].ptype = (a1 & 0xf) == 1 ? 1 : 5;                  /* stream, else message boundaries */
+        p->fd[n].ptype = (a1 & 0xf) == 1 ? 1 : (a1 & 0xf) == 2 ? 2 : 5;   /* stream, datagram, seqpacket */
         r = (uint64_t)n;
         break;
     }

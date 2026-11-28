@@ -119,6 +119,18 @@ t0 = time.monotonic(); none = signal.sigtimedwait([S], 0.3); dt = time.monotonic
 print("sigwait", pend, got == S, got2 == S, none, dt >= 0.25)
 PY
     check "sigpending, sigwait, sigtimedwait" "sigwait True True True None True" 60 /bin/bash -c 'timeout 30 python3 /tmp/sigwait.py'
+    cat > "$R/tmp/udg.py" <<'PY'
+import os, socket
+P = "/tmp/udg.sock"
+if os.path.exists(P): os.unlink(P)
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); srv.bind(P)
+a = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); a.sendto(b"one", P)
+b = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); b.connect(P); b.send(b"two"); b.send(b"three")
+got = [srv.recv(100) for _ in range(3)]
+c = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); c.bind(""); auto = c.getsockname()
+print("udg", got, auto[:1] == "\0" if isinstance(auto, str) else auto[:1] == b"\0")
+PY
+    check "AF_UNIX datagram sockets" "udg [b'one', b'two', b'three'] True" 60 /bin/bash -c 'python3 /tmp/udg.py'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"
