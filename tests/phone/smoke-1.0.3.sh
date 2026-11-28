@@ -60,7 +60,7 @@ import select, socket, time
 a, b = socket.socketpair(); t0 = time.process_time(); r = select.select([a], [], [], 0.3)
 print('sel', r == ([], [], []), time.process_time() - t0 < 0.2)\""
 t "network interfaces (netlink)" "eth0"     "python3 -c \"import socket; print([n for _, n in socket.if_nameindex()])\""
-t "the phone's address"        "."          "python3 -c \"
+t "the phone's address"        "getifaddrs True"        "python3 -c \"
 import ctypes, socket
 print('getifaddrs', ctypes.CDLL(None).getifaddrs(ctypes.byref(ctypes.c_void_p())) == 0, socket.gethostname())\""
 echo "== packages"
