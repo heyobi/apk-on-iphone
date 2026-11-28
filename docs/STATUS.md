@@ -17,6 +17,18 @@ failing files verbosely. Fixed from it, each with a `tests/linux/run_rpm.sh` che
   tty, readline and the asyncio pty tests.
 - sched_* check their pid and policy; sched_rr_get_interval; ioctl on a closed fd is EBADF.
 
+Then (2026-11-28), each with a `run_rpm.sh` check:
+
+- **Signals to sigwait.** A signal sent to the process goes to a thread waiting for it in
+  sigwait/sigtimedwait; a timed-out sigtimedwait returns EAGAIN; rt_sigpending reports.
+- **Durable fsync on Darwin.** A guest fsync/fdatasync of a file is `fcntl(F_FULLFSYNC)`.
+- **AF_UNIX datagram sockets with a name** (syslog's /dev/log, Python logging); autobind.
+- **NETLINK_ROUTE** link and address dumps: getifaddrs, if_nameindex, `ip addr`.
+
+Most "worker non-zero exit" files were slowness, not faults: test_json, test_lib2to3,
+test_regrtest and test_multiprocessing_spawn.test_misc pass alone (13 min for test_json)
+and only overran the suite's 300 s per file (`tools/explore/pycrash.sh`).
+
 Still open from the list: forkserver fd passing (SCM_RIGHTS), memfd_create of large sizes,
 F_SETPIPE_SZ, epoll/select edge cases, unix socket peer names, /dev/stdin on a pipe,
 process/thread CPU time, the multiprocessing test files' worker crashes.
