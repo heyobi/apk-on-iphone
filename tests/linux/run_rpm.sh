@@ -131,6 +131,16 @@ c = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); c.bind(""); auto = c.getso
 print("udg", got, auto[:1] == "\0" if isinstance(auto, str) else auto[:1] == b"\0")
 PY
     check "AF_UNIX datagram sockets" "udg [b'one', b'two', b'three'] True" 60 /bin/bash -c 'python3 /tmp/udg.py'
+    cat > "$R/tmp/nl.py" <<'PY'
+import socket
+names = [n for _, n in socket.if_nameindex()]
+import ctypes, ctypes.util
+libc = ctypes.CDLL(None); p = ctypes.c_void_p()
+ok = libc.getifaddrs(ctypes.byref(p)) == 0
+if ok: libc.freeifaddrs(p)
+print("netlink", names, ok)
+PY
+    check "if_nameindex, getifaddrs (netlink)" "netlink ['lo', 'eth0'] True" 60 /bin/bash -c 'python3 /tmp/nl.py'
     if [ -x "$R/usr/bin/systemd-sysusers" ]; then                  # rpm's %sysusers scriptlets
         check "systemd-sysusers" "sysusers-ok" 120 /bin/bash -c 'printf "u lxtest - \"test\" /tmp\n" | systemd-sysusers - 2>&1; getent passwd lxtest && echo sysusers-ok'
         echo "== failing syscalls of systemd-sysusers"

@@ -31,6 +31,10 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#ifndef __EMSCRIPTEN__
+#include <ifaddrs.h>
+#include <net/if.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
@@ -2691,6 +2695,109 @@ static uint64_t net_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp, 
  * kind, path, pair...) waits in `inflight`, found again by the host file's identity. */
 static struct { dev_t dev; ino_t ino; struct aoi_proc_fd f; int used; } inflight[64];
 
+/* ---------- Linux mode: NETLINK_ROUTE (getifaddrs, if_nameindex, ip addr) ----------
+ * Answers the link and address dumps: lo (127.0.0.1, ::1) and eth0 with the host's first
+ * IPv4 address. An answer replaces the socket's host end with a fresh datagram pair
+ * holding it (dup2), so poll and recv see it as the socket's queue. */
+static void nl_attr(uint8_t *b, size_t *o, uint16_t type, const void *d, size_t n)
+{
+    uint16_t l = (uint16_t)(4 + n);
+    memset(b + *o, 0, (4 + n + 3) & ~(size_t)3);
+    memcpy(b + *o, &l, 2); memcpy(b + *o + 2, &type, 2); memcpy(b + *o + 4, d, n);
+    *o += (4 + n + 3) & ~(size_t)3;
+}
+
+static void nl_hdr(uint8_t *b, size_t at, size_t end, uint16_t type, uint32_t seq, uint32_t pid)
+{
+    uint32_t len = (uint32_t)(end - at);
+    uint16_t fl = 2;                                               /* NLM_F_MULTI */
+    memcpy(b + at, &len, 4); memcpy(b + at + 4, &type, 2); memcpy(b + at + 6, &fl, 2);
+    memcpy(b + at + 8, &seq, 4); memcpy(b + at + 12, &pid, 4);
+}
+
+static uint64_t nl_answer(struct aoi_proc *p, struct aoi_proc_fd *f, const uint8_t *req, size_t n)
+{
+    static uint8_t b[4096];
+    size_t o = 0, at;
+    uint16_t type, rfl;
+    uint32_t seq, pid = (uint32_t)PID(p), ip4 = 0;
+    uint8_t fam = 0;
+    int sv[2], k;
+    if (n < 16) return err(L_EINVAL);
+    memcpy(&type, req + 4, 2); memcpy(&rfl, req + 6, 2); memcpy(&seq, req + 8, 4);
+    if (n >= 17) fam = req[16];
+    memset(b, 0, sizeof b);
+#ifndef __EMSCRIPTEN__
+    {
+        struct ifaddrs *ia, *e;
+        if (!getifaddrs(&ia)) {
+            for (e = ia; e && !ip4; e = e->ifa_next)
+                if (e->ifa_addr && e->ifa_addr->sa_family == AF_INET && (e->ifa_flags & IFF_UP) && !(e->ifa_flags & IFF_LOOPBACK))
+                    ip4 = ((struct sockaddr_in *)e->ifa_addr)->sin_addr.s_addr;
+            freeifaddrs(ia);
+        }
+    }
+#endif
+    if (type == 18 && (rfl & 0x300)) {                             /* RTM_GETLINK, dump: RTM_NEWLINK each */
+        for (k = 1; k <= 2; k++) {
+            static const uint8_t mac2[6] = { 0x02, 0x50, 0x44, 0x00, 0x00, 0x01 };
+            uint8_t ifi[16], mac[6], bc[6], st = 6;
+            uint16_t ht = k == 1 ? 772 : 1;                        /* ARPHRD_LOOPBACK, ARPHRD_ETHER */
+            int32_t idx = k;
+            uint32_t fl = k == 1 ? 0x49 : 0x1043, mtu = k == 1 ? 65536 : 1500, q = 1000;   /* UP RUNNING LOOPBACK / BROADCAST MULTICAST */
+            memset(ifi, 0, sizeof ifi); memset(mac, 0, 6); memset(bc, 0, 6);
+            if (k == 2) { memcpy(mac, mac2, 6); memset(bc, 0xff, 6); }
+            at = o; o += 16;
+            memcpy(ifi + 2, &ht, 2); memcpy(ifi + 4, &idx, 4); memcpy(ifi + 8, &fl, 4);
+            memcpy(b + o, ifi, 16); o += 16;
+            nl_attr(b, &o, 3, k == 1 ? "lo" : "eth0", k == 1 ? 3 : 5);   /* IFLA_IFNAME */
+            nl_attr(b, &o, 1, mac, 6); nl_attr(b, &o, 2, bc, 6);   /* IFLA_ADDRESS, IFLA_BROADCAST */
+            nl_attr(b, &o, 4, &mtu, 4); nl_attr(b, &o, 13, &q, 4); /* IFLA_MTU, IFLA_TXQLEN */
+            nl_attr(b, &o, 16, &st, 1);                            /* IFLA_OPERSTATE: up */
+            nl_hdr(b, at, o, 16, seq, pid);
+        }
+    } else if (type == 22 && (rfl & 0x300)) {                      /* RTM_GETADDR, dump: RTM_NEWADDR each */
+        for (k = 0; k < 3; k++) {
+            uint8_t ifa[8], a[16];
+            uint32_t idx = k == 2 ? 2 : 1;
+            int v6 = k == 1;
+            if ((fam == 2 && v6) || (fam == 10 && !v6) || (k == 2 && !ip4)) continue;
+            memset(ifa, 0, sizeof ifa); memset(a, 0, sizeof a);
+            at = o; o += 16;
+            ifa[0] = v6 ? 10 : 2; ifa[1] = v6 ? 128 : k == 0 ? 8 : 24; ifa[2] = 0x80;   /* IFA_F_PERMANENT */
+            ifa[3] = k == 2 ? 0 : 254;                             /* RT_SCOPE_UNIVERSE / HOST */
+            memcpy(ifa + 4, &idx, 4);
+            memcpy(b + o, ifa, 8); o += 8;
+            if (v6) a[15] = 1;
+            else if (k == 0) { a[0] = 127; a[3] = 1; }
+            else memcpy(a, &ip4, 4);
+            nl_attr(b, &o, 1, a, v6 ? 16 : 4);                     /* IFA_ADDRESS */
+            if (!v6) nl_attr(b, &o, 2, a, 4);                      /* IFA_LOCAL */
+            if (k == 2) { a[3] = 255; nl_attr(b, &o, 4, a, 4); }   /* IFA_BROADCAST (a /24) */
+            if (!v6) nl_attr(b, &o, 3, k == 0 ? "lo" : "eth0", k == 0 ? 3 : 5);   /* IFA_LABEL */
+            nl_hdr(b, at, o, 20, seq, pid);
+        }
+    } else if (!(rfl & 0x300)) {                                   /* anything else: EOPNOTSUPP */
+        int32_t e = -95;
+        at = o; o += 16;
+        memcpy(b + o, &e, 4); memcpy(b + o + 4, req, 16); o += 20;
+        nl_hdr(b, at, o, 2, seq, pid);                             /* NLMSG_ERROR */
+    }
+    if (rfl & 0x300) {                                             /* a dump ends with NLMSG_DONE */
+        at = o; o += 20;
+        nl_hdr(b, at, o, 3, seq, pid);
+    }
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv)) return herr();
+    k = 65536; setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &k, sizeof k); setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &k, sizeof k);
+    if (write(sv[1], b, o) < 0) {}
+    close(sv[1]);
+    fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    dup2(sv[0], f->host);
+    fcntl(f->host, F_SETFD, FD_CLOEXEC);
+    close(sv[0]);
+    return (uint64_t)n;
+}
+
 static uint64_t unix_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp, uint64_t flags, int recv)
 {
     uint8_t m[56], cg[1024];
@@ -2741,6 +2848,7 @@ static uint64_t unix_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp,
                 o += (len + 7) & ~(uint64_t)7;
             }
         }
+        if (f->ptype == 16) return nl_answer(p, f, net_buf, (size_t)n);   /* a netlink request */
         hv.iov_base = net_buf; hv.iov_len = (size_t)n;
         if (nfd) {
             hm.msg_control = hc.b; hm.msg_controllen = CMSG_SPACE(nfd * sizeof(int));
@@ -2815,7 +2923,11 @@ static uint64_t unix_msg(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t mp,
             }
         }
         if (ctl && gl && !put(p, ctl, cg, gl)) return err(L_EFAULT);
-        put(p, mp + 8, &z, 4);                                     /* no address */
+        if (f->ptype == 16 && u64(m)) {                            /* netlink: from the kernel (nl_pid 0) */
+            uint8_t nl[12] = { 16 };
+            uint32_t l12 = 12;
+            put(p, u64(m), nl, 12); put(p, mp + 8, &l12, 4);
+        } else put(p, mp + 8, &z, 4);                              /* no address */
         { uint64_t g64 = gl; put(p, mp + 40, &g64, 8); }           /* msg_controllen */
         if (hm.msg_flags & MSG_TRUNC) mflags |= 0x20;
         if (hm.msg_flags & MSG_CTRUNC) mflags |= 8;
@@ -5216,6 +5328,17 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             break;
         }
         if (f->kind == AOI_FD_DNS && nr == NR_sendto) { r = dns_write(p, f, a1, a2); break; }
+        if (f->ptype == 16 && f->kind == AOI_FD_PIPE) {           /* netlink: a request, or its answer */
+            if (nr == NR_sendto) {
+                if (a2 > sizeof net_buf) { r = err(L_EMSGSIZE); break; }
+                r = get(p, a1, net_buf, a2) ? nl_answer(p, f, net_buf, (size_t)a2) : err(L_EFAULT);
+                break;
+            }
+            r = a2 ? (uint64_t)xfer(p, f->host, a1, a2, 1, -1) : 0;
+            if (r == err(L_EAGAIN) && !f->nonblock && !(a3 & 0x40)) r = block_and_retry(p, 1000000);
+            if (a4 && (int64_t)r >= 0) { uint8_t nl[12] = { 16 }; uint32_t l12 = 12; put(p, a4, nl, 12); if (a5) put(p, a5, &l12, 4); }
+            break;
+        }
         if (p->linux_mode && nr == NR_sendto && a4 && f->ptype == 2 && (f->kind == AOI_FD_SOCKET || f->kind == AOI_FD_PIPE)) {
             r = lx_udg_sendto(p, a1, a2, a4, a5);                  /* AF_UNIX datagram to a name */
             break;
@@ -5275,6 +5398,15 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
             r = shutdown(f->host, (int)a1) && errno != ENOTSOCK ? herr() : 0;
             break;
         }
+        if (f->kind == AOI_FD_PIPE && f->ptype == 16 && nr != NR_sendmsg && nr != NR_recvmsg) {   /* netlink */
+            uint8_t nl[12] = { 16 };
+            uint32_t l12 = 12, me = (uint32_t)PID(p);
+            if (nr == NR_getsockname || nr == NR_getpeername) {
+                if (nr == NR_getsockname) memcpy(nl + 4, &me, 4);  /* bound to its pid */
+                r = (a1 && !put(p, a1, nl, 12)) || (a2 && !put(p, a2, &l12, 4)) ? err(L_EFAULT) : 0;
+            } else r = nr == NR_bind || nr == NR_shutdown ? 0 : err(L_ENOTSUP);
+            break;
+        }
         if (p->linux_mode && (f->kind == AOI_FD_SOCKET || f->kind == AOI_FD_ULISTEN || f->kind == AOI_FD_PIPE) &&
             nr != NR_sendmsg && nr != NR_recvmsg && nr != NR_shutdown) { r = lx_unix_op(p, f, nr, a1, a2, a3); break; }
         if (f->kind != AOI_FD_INET) { r = err(L_ENOSYS); break; }  /* other AF_UNIX: as before */
@@ -5293,6 +5425,19 @@ uint64_t aoi_proc_syscall(struct aoi_cpu *c)
     case NR_socket: {                                              /* AF_UNIX: logd, dnsproxyd; AF_INET(6) */
         int n, d;
         if (a0 == 2 || a0 == 10) { r = net_socket(p, a0, a1, a2); break; }
+        if (a0 == 16 && a2 == 0 && p->linux_mode) {                /* AF_NETLINK, NETLINK_ROUTE: nl_answer */
+            int sv[2];
+            if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv)) { r = herr(); break; }
+            close(sv[1]);
+            fcntl(sv[0], F_SETFL, O_NONBLOCK); fcntl(sv[0], F_SETFD, FD_CLOEXEC);
+            if ((n = fd_new(p, sv[0], "socket:[netlink]", 0)) < 0) { close(sv[0]); r = err(L_EMFILE); break; }
+            p->fd[n].kind = AOI_FD_PIPE;
+            p->fd[n].ptype = 16;
+            p->fd[n].nonblock = (a1 & 04000) != 0;
+            p->fd[n].cloexec = (a1 & 02000000) != 0;
+            r = (uint64_t)n;
+            break;
+        }
         if (a0 != 1) { r = err(L_EAFNOSUPPORT); break; }
         if ((d = open("/dev/null", O_RDWR | O_CLOEXEC)) < 0) { r = herr(); break; }
         if ((n = fd_new(p, d, "socket:[unix]", 0)) < 0) { close(d); r = err(L_EMFILE); break; }
