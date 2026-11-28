@@ -4489,8 +4489,7 @@ static uint64_t lx_unix_op(struct aoi_proc *p, struct aoi_proc_fd *f, uint64_t n
             f->host = sv[0];
             f->kind = AOI_FD_PIPE;
             f->pair = 0;
-            if (p->trace) fprintf(p->trace, "[unix] datagram socket at %s
-", key);
+            if (p->trace) fprintf(p->trace, "[unix] datagram socket at %s\n", key);
         }
         return 0;
     }
